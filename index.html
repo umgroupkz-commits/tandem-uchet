@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<meta name="theme-color" content="#1F3864">
+<title>Тандем KZ — дневной отчёт точки</title>
+<style>
+  :root{--ink:#1B2430;--ink2:#4A5568;--muted:#8A94A6;--line:#E2E7EF;--bg:#F5F7FB;
+        --card:#fff;--accent:#1F3864;--accent2:#3E6EA8;--ok:#0B6B4F;--okbg:#E3F3EC;
+        --bad:#B4453C;--badbg:#FBEAE8;--warnbg:#FCF3E1;--warn:#8A6412;--in:#FFFBF0}
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:16px/1.5 -apple-system,"Segoe UI",Roboto,Arial,sans-serif}
+  .wrap{max-width:560px;margin:0 auto;padding:16px 14px 48px}
+  .wide{max-width:1180px}
+  header{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;
+    padding-bottom:12px;border-bottom:2px solid var(--accent);margin-bottom:16px}
+  h1{font-size:19px;margin:0;color:var(--accent);letter-spacing:-.2px}
+  .sub{font-size:12.5px;color:var(--muted);margin-top:3px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;
+    padding:16px;margin-bottom:14px}
+  h2{font-size:12px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);
+    margin:0 0 12px;font-weight:700}
+  label{display:block;font-size:12.5px;color:var(--ink2);margin:12px 0 5px;font-weight:600}
+  label:first-of-type{margin-top:0}
+  input,select,textarea{width:100%;padding:11px 12px;border:1px solid var(--line);
+    border-radius:9px;font:inherit;font-size:16px;background:var(--in);color:var(--ink)}
+  input:focus,select:focus,textarea:focus{outline:2px solid var(--accent2);outline-offset:-1px;background:#fff}
+  textarea{min-height:60px;resize:vertical}
+  button{font:inherit;font-size:15px;font-weight:600;padding:12px 16px;border-radius:9px;
+    border:1px solid var(--accent);background:var(--accent);color:#fff;cursor:pointer;width:100%}
+  button:disabled{opacity:.5}
+  button.ghost{background:#fff;color:var(--accent)}
+  button.small{width:auto;padding:8px 14px;font-size:13.5px}
+  button.x{width:34px;padding:6px;background:#fff;color:var(--bad);border-color:var(--line);
+    font-size:18px;line-height:1;font-weight:400}
+  .row2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .row3{display:grid;grid-template-columns:1fr auto;gap:8px;align-items:end}
+  .tot{display:flex;justify-content:space-between;align-items:baseline;
+    padding:12px 14px;background:#EEF2F8;border-radius:9px;margin-top:14px}
+  .tot span:first-child{font-size:13px;color:var(--ink2)}
+  .tot span:last-child{font-size:21px;font-weight:700;color:var(--accent);
+    font-variant-numeric:tabular-nums}
+  .chk{padding:10px 12px;border-radius:8px;font-size:13.5px;margin-top:8px;font-weight:600}
+  .chk.ok{background:var(--okbg);color:var(--ok)}
+  .chk.bad{background:var(--badbg);color:var(--bad)}
+  .chk.wait{background:var(--warnbg);color:var(--warn)}
+  .empty{color:var(--muted);font-size:13.5px;text-align:center;padding:14px 4px}
+  .erow{display:grid;grid-template-columns:1fr 92px 92px 34px;gap:6px;margin-bottom:7px}
+  .erow input{padding:9px 10px;font-size:14px}
+  .trow{display:grid;grid-template-columns:1fr 70px 70px 66px 34px;gap:6px;
+    align-items:center;padding:5px 0;border-bottom:1px solid var(--line)}
+  .trow.th{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);
+    font-weight:700;border-bottom:1px solid var(--line);padding-bottom:7px}
+  .trow input{padding:8px 6px;font-size:14px;text-align:center}
+  .tn{font-size:13.5px;line-height:1.25}
+  .tn i{display:block;font-style:normal;font-size:11px;color:var(--muted)}
+  .tp{text-align:right;font-weight:700;font-variant-numeric:tabular-nums;font-size:14px}
+  .tp.bad{color:var(--bad)}
+  .srow{display:grid;grid-template-columns:1fr 90px 34px;gap:6px;align-items:center;
+    padding:5px 0;border-bottom:1px solid var(--line)}
+  .sn{font-size:13.5px}
+  .srow input{padding:8px 6px;font-size:14px;text-align:center}
+  .err{color:var(--bad);font-size:13.5px;margin-top:10px;font-weight:600}
+  .msg{color:var(--ok);font-size:13.5px;margin-top:10px;font-weight:600;text-align:center}
+  .hint{font-size:12.5px;color:var(--muted);margin-top:8px;line-height:1.45}
+  .rule{background:var(--warnbg);border-left:4px solid #B4801F;padding:11px 13px;
+    border-radius:0 8px 8px 0;font-size:13px;color:#5C4715;margin-bottom:14px}
+  .link{background:none;border:none;color:var(--accent2);font-size:13.5px;padding:6px 0;
+    width:auto;text-decoration:underline;font-weight:500}
+  .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:14px}
+  .kpi{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:13px 15px}
+  .kl{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:7px}
+  .kv{font-size:22px;font-weight:700;letter-spacing:-.4px;font-variant-numeric:tabular-nums}
+  .kv.ok{color:var(--ok)} .kv.bad{color:var(--bad)}
+  table{width:100%;border-collapse:collapse;font-size:13.5px}
+  th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.05em;
+    color:var(--ink2);background:#F2F5FA;padding:9px 10px;border-bottom:1px solid var(--line);font-weight:700}
+  td{padding:9px 10px;border-bottom:1px solid var(--line)}
+  td.n{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+  td.b{font-weight:700}
+  .scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
+  .pill{display:inline-block;font-size:11.5px;padding:2px 9px;border-radius:20px;font-weight:600}
+  .pill.ok{background:var(--okbg);color:var(--ok)}
+  .pill.bad{background:var(--badbg);color:var(--bad)}
+  .dtools{display:flex;gap:10px;align-items:end;flex-wrap:wrap;margin-bottom:14px}
+  .dtools>div{flex:0 0 150px}
+  .dtools button{width:auto}
+</style>
+</head>
+<body>
+
+<div class="wrap" id="screen-login">
+  <header>
+    <div>
+      <h1>Тандем KZ · дневной отчёт</h1>
+      <div class="sub">Заполняется в конце смены</div>
+    </div>
+  </header>
+
+  <div class="rule"><b>Правило одно.</b> Вся выручка сдаётся полностью. Любой расход — только через подотчёт, отдельной строкой и с номером чека.</div>
+
+  <div class="card">
+    <h2>Вход для точки</h2>
+    <label for="lpoint">Точка</label>
+    <select id="lpoint"></select>
+    <label for="lpin">Код точки</label>
+    <input id="lpin" inputmode="numeric" autocomplete="off" placeholder="4 цифры">
+    <div style="margin-top:16px"><button id="btn-login">Войти</button></div>
+    <div class="err" id="lerr"></div>
+    <div class="hint">Код выдаёт руководитель. Телефон запомнит вход — вводить каждый день не нужно.</div>
+  </div>
+
+  <button class="link" id="btn-owner-toggle">Я собственник — открыть сводку</button>
+  <div class="card" id="ownerbox" hidden>
+    <h2>Вход для собственника</h2>
+    <label for="opin">Код доступа</label>
+    <input id="opin" inputmode="numeric" autocomplete="off" placeholder="код">
+    <div style="margin-top:16px"><button id="btn-owner">Открыть сводку</button></div>
+    <div class="err" id="oerr"></div>
+  </div>
+</div>
+
+<div class="wrap" id="screen-form" hidden>
+  <header>
+    <div>
+      <h1 id="fpoint">Точка</h1>
+      <div class="sub">Режим: <span id="fmode"></span></div>
+    </div>
+    <button class="link" id="logout" style="flex:0 0 auto">Выйти</button>
+  </header>
+
+  <div class="card">
+    <h2>Смена</h2>
+    <label for="date">Дата</label>
+    <input id="date" type="date">
+    <label for="shift_by">Смену сдал</label>
+    <input id="shift_by" placeholder="Фамилия и инициалы">
+    <div class="hint" id="saved"></div>
+  </div>
+
+  <div class="card">
+    <h2>Выручка за смену</h2>
+    <label for="cash">Наличные, ₸</label>
+    <input id="cash" inputmode="decimal" placeholder="0">
+    <label for="kaspi_qr">Kaspi QR, ₸</label>
+    <input id="kaspi_qr" inputmode="decimal" placeholder="0">
+    <label for="transfer">Перевод на счёт, ₸</label>
+    <input id="transfer" inputmode="decimal" placeholder="0">
+    <div class="tot"><span>Итого выручка</span><span id="total">0 ₸</span></div>
+  </div>
+
+  <div class="card">
+    <h2>Сверка с выписками</h2>
+    <div class="row2">
+      <div><label for="qr_statement">QR по выписке</label><input id="qr_statement" inputmode="decimal" placeholder="—"></div>
+      <div><label for="tr_statement">Переводы по выписке</label><input id="tr_statement" inputmode="decimal" placeholder="—"></div>
+    </div>
+    <div class="hint">Заполняется в тот же день из личного кабинета терминала и выписки счёта. Если не заполнить — отчёт примут, но он останется непроверенным.</div>
+  </div>
+
+  <div class="card">
+    <h2>Движение наличных</h2>
+    <div class="row2">
+      <div><label for="cash_open">Остаток на начало</label><input id="cash_open" inputmode="decimal" placeholder="0"></div>
+      <div><label for="cash_handed">Сдано / инкассация</label><input id="cash_handed" inputmode="decimal" placeholder="0"></div>
+    </div>
+    <div class="tot"><span>Выдано под отчёт</span><span id="podotchet">0 ₸</span></div>
+    <div class="tot"><span>Должно остаться в кассе</span><span id="cash_expected">0 ₸</span></div>
+    <label for="cash_counted">Фактически пересчитано, ₸</label>
+    <input id="cash_counted" inputmode="decimal" placeholder="пересчитайте руками">
+  </div>
+
+  <div class="card">
+    <h2>Расходы под отчёт</h2>
+    <div id="exp"></div>
+    <div style="margin-top:10px"><button class="ghost small" id="addexp" type="button">+ строка расхода</button></div>
+    <div class="hint">Строка без номера чека считается нарушением регламента и подсвечивается в сводке у руководителя.</div>
+  </div>
+
+  <div class="card" id="block-takeout" hidden>
+    <h2>Заборный лист</h2>
+    <div class="hint" style="margin:0 0 12px">Выдали на раздачу → в конце дня перевесили остаток. Продано считается само.</div>
+    <div class="row3">
+      <select id="tsel"></select>
+      <button class="ghost small" id="addtk" type="button">+ добавить</button>
+    </div>
+    <div id="tk" style="margin-top:12px"></div>
+  </div>
+
+  <div class="card" id="block-sales" hidden>
+    <h2>Продажи по позициям</h2>
+    <div class="row3">
+      <select id="ssel"></select>
+      <button class="ghost small" id="addsl" type="button">+ добавить</button>
+    </div>
+    <div id="sl" style="margin-top:12px"></div>
+  </div>
+
+  <div class="card">
+    <h2>Проверки</h2>
+    <div id="checks"></div>
+    <label for="comment" style="margin-top:14px">Комментарий</label>
+    <textarea id="comment" placeholder="Что нужно объяснить: расхождение, поломка, возврат"></textarea>
+  </div>
+
+  <button id="savebtn">Сохранить отчёт</button>
+  <div class="msg" id="savemsg"></div>
+</div>
+
+<div class="wrap wide" id="screen-dash" hidden>
+  <header>
+    <div>
+      <h1>Сводка по точкам</h1>
+      <div class="sub">Дневные отчёты · Тандем KZ</div>
+    </div>
+    <button class="link" id="logout2" style="flex:0 0 auto">Выйти</button>
+  </header>
+
+  <div class="dtools">
+    <div><label for="dfrom">С</label><input id="dfrom" type="date"></div>
+    <div><label for="dto">По</label><input id="dto" type="date"></div>
+    <button class="small" id="dreload" type="button">Обновить</button>
+    <button class="ghost small" id="dcsv" type="button">Выгрузить CSV</button>
+  </div>
+
+  <div class="kpis">
+    <div class="kpi"><div class="kl">Выручка за период</div><div class="kv" id="k1">—</div></div>
+    <div class="kpi"><div class="kl">Отчётов сдано</div><div class="kv" id="k2">—</div></div>
+    <div class="kpi"><div class="kl">Ушло под отчёт</div><div class="kv" id="k3">—</div></div>
+    <div class="kpi"><div class="kl">Отчётов с расхождением</div><div class="kv" id="k4">—</div></div>
+  </div>
+
+  <div class="card">
+    <h2>По точкам</h2>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>Точка</th><th style="text-align:right">Выручка</th><th style="text-align:right">Дней</th><th style="text-align:right">В среднем в день</th></tr></thead>
+        <tbody id="pbody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Все отчёты</h2>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>Дата</th><th>Точка</th><th style="text-align:right">Нал.</th><th style="text-align:right">QR</th>
+          <th style="text-align:right">Перевод</th><th style="text-align:right">Итого</th>
+          <th style="text-align:right">Сдано</th><th style="text-align:right">Подотчёт</th><th>Проверка</th></tr></thead>
+        <tbody id="dbody"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
