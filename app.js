@@ -86,26 +86,105 @@ function showForm() {
   $('block-sales').hidden = (S.mode !== 'position');
   api('items', {}).then(function (r) {
     S.items = (r && r.items) ? r.items : [];
-    fillItemSelect('tsel'); fillItemSelect('ssel');
+    for (var i = 0; i < S.items.length; i++) S.items[i]._n = norm(S.items[i].name);
+    if (S.mode === 'takeout') mountSearch('tq', 'thint', 'tres', addTakeout);
+    if (S.mode === 'position') mountSearch('sq', 'shint', 'sres', addSale);
+    drawFav();
     loadReport();
   });
 }
 
-function fillItemSelect(id) {
-  var sel = $(id); if (!sel) return;
-  sel.innerHTML = '';
-  for (var i = 0; i < S.items.length; i++) {
-    var it = S.items[i];
-    var o = document.createElement('option');
-    o.value = it.code;
-    o.textContent = it.name + ' · ' + it.unit;
-    sel.appendChild(o);
+/* ── поиск по номенклатуре ───────────────────────────────────────────────
+   Список позиций точки грузится один раз и ищется в браузере: у Енешки их
+   больше четырёхсот, и запрос на каждую букву на плохой связи не годится. */
+function norm(s) {
+  return String(s || '').toLowerCase().replace(/ё/g, 'е')
+    .replace(/[^a-zа-я0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+function esc(s) {
+  return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+function hl(name, words) {
+  var out = esc(name);
+  for (var i = 0; i < words.length; i++) {
+    if (!words[i]) continue;
+    var re = new RegExp('(' + words[i].replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'ig');
+    out = out.replace(re, '<b>$1</b>');
   }
+  return out;
+}
+function findItems(q) {
+  if (!q) return { list: S.items.slice(0, 40), words: [], all: S.items.length };
+  var w = q.split(' ').filter(Boolean);
+  var res = S.items.filter(function (m) {
+    for (var i = 0; i < w.length; i++) { if (m._n.indexOf(w[i]) < 0) return false; }
+    return true;
+  });
+  res.sort(function (a, b) { return a._n.indexOf(w[0]) - b._n.indexOf(w[0]); });
+  return { list: res.slice(0, 60), words: w, all: res.length };
+}
+function mountSearch(inputId, hintId, resId, onPick) {
+  var inp = $(inputId); if (!inp) return;
+  function draw() {
+    var q = norm(inp.value);
+    var r = findItems(q);
+    $(hintId).textContent = !q
+      ? 'Показаны первые 40 из ' + S.items.length + '. Начните вводить название — список сузится.'
+      : (r.all ? 'Найдено ' + r.all + (r.all > 60 ? ', показаны первые 60' : '')
+        : 'Ничего не найдено. Попробуйте часть слова — «баур», «котлет».');
+    var w = $(resId); w.innerHTML = '';
+    for (var i = 0; i < r.list.length; i++) {
+      var m = r.list[i];
+      var b = document.createElement('button');
+      b.type = 'button'; b.className = 'sitem';
+      b.innerHTML = '<span style="color:var(--ink);font-size:14px">' + hl(m.name, r.words) + '</span>' +
+        '<span>' + esc(m.unit) + (m.price ? ' · ' + fmt(m.price) + ' ₸' : ' · без цены') + '</span>';
+      (function (code) { b.onclick = function () { onPick(code); inp.value = ''; draw(); }; })(m.code);
+      w.appendChild(b);
+    }
+  }
+  inp.oninput = draw;
+  inp.onfocus = draw;
+  draw();
+}
+
+/* Частые позиции: сверху плитки, чтобы ходовое добавлялось без поиска.
+   Порядок берётся из истории продаж iiko (поле rank), пока своей истории нет. */
+function drawFav() {
+  var isPos = S.mode === 'position';
+  var box = $(isPos ? 'sfav' : 'tfav'); if (!box) return;
+  var top = S.items.filter(function (m) { return m.rank; })
+    .sort(function (a, b) { return a.rank - b.rank; }).slice(0, 12);
+  box.innerHTML = '';
+  if ($('sfavh')) $('sfavh').hidden = !(isPos && top.length);
+  if (!top.length) return;
+  for (var i = 0; i < top.length; i++) {
+    var b = document.createElement('button');
+    b.type = 'button'; b.textContent = top[i].name;
+    (function (code) {
+      b.onclick = function () { (isPos ? addSale : addTakeout)(code); };
+    })(top[i].code);
+    box.appendChild(b);
+  }
+}
+function itemByCode(code) {
+  for (var i = 0; i < S.items.length; i++) { if (S.items[i].code === code) return S.items[i]; }
+  return null;
 }
 
 function loadReport() {
   api('get_report', { date: $('date').value }).then(function (r) {
     S.expenses = r.expenses || []; S.takeout = r.takeout || []; S.sales = r.sales || [];
+    // В строках продаж не хранится единица измерения — восстанавливаем из справочника,
+    // иначе шаг «+/−» для килограммов станет штучным.
+    for (var q = 0; q < S.sales.length; q++) {
+      var ref = itemByCode(S.sales[q].item_code);
+      if (ref) {
+        S.sales[q].unit = ref.unit;
+        if (!S.sales[q].price) S.sales[q].price = ref.price || '';
+      }
+    }
     var rep = r.report;
     var f = ['cash', 'kaspi_qr', 'transfer', 'qr_statement', 'tr_statement', 'cash_open', 'cash_handed', 'cash_counted'];
     for (var i = 0; i < f.length; i++) {
@@ -144,14 +223,19 @@ function drawExp() {
   recalc();
 }
 
-function addTakeout() {
-  var code = $('tsel').value; if (!code) return;
-  for (var i = 0; i < S.takeout.length; i++) { if (S.takeout[i].item_code === code) return; }
-  var it = null;
-  for (var j = 0; j < S.items.length; j++) { if (S.items[j].code === code) it = S.items[j]; }
-  if (!it) return;
+function addTakeout(code) {
+  if (!code) return;
+  for (var i = 0; i < S.takeout.length; i++) {
+    if (S.takeout[i].item_code === code) { flash('tk'); return; }
+  }
+  var it = itemByCode(code); if (!it) return;
   S.takeout.push({ item_code: it.code, item_name: it.name, unit: it.unit, issued: '', returned: '', price: it.price || '' });
   drawTakeout();
+}
+function flash(id) {
+  var el = $(id); if (!el) return;
+  el.style.transition = 'none'; el.style.background = '#FDF3C7';
+  setTimeout(function () { el.style.transition = 'background .5s'; el.style.background = ''; }, 60);
 }
 function drawTakeout() {
   var w = $('tk'); if (!w) return;
@@ -177,33 +261,82 @@ function drawTakeout() {
     })(i, row);
     w.appendChild(row);
   }
+  var sum = 0;
+  for (var k = 0; k < S.takeout.length; k++) {
+    sum += (num(S.takeout[k].issued) - num(S.takeout[k].returned)) * num(S.takeout[k].price);
+  }
+  if ($('ttotal')) $('ttotal').textContent = fmt(sum) + ' ₸';
+  recalc();
 }
 
-function addSale() {
-  var code = $('ssel').value; if (!code) return;
-  for (var i = 0; i < S.sales.length; i++) { if (S.sales[i].item_code === code) return; }
-  var it = null;
-  for (var j = 0; j < S.items.length; j++) { if (S.items[j].code === code) it = S.items[j]; }
-  if (!it) return;
-  S.sales.push({ item_code: it.code, item_name: it.name, qty: '', price: it.price || '' });
+/* Шаг количества: килограммы полкило, штучное — по одной. */
+function step(unit) { return unit === 'кг' || unit === 'л' ? 0.5 : 1; }
+
+function addSale(code) {
+  if (!code) return;
+  var it = itemByCode(code); if (!it) return;
+  for (var i = 0; i < S.sales.length; i++) {
+    if (S.sales[i].item_code === code) {
+      S.sales[i].qty = num(S.sales[i].qty) + step(it.unit);
+      drawSales(); flash('sl'); return;
+    }
+  }
+  S.sales.push({
+    item_code: it.code, item_name: it.name, unit: it.unit,
+    qty: step(it.unit), price: it.price || ''
+  });
+  drawSales();
+}
+function chgSale(idx, d) {
+  var s = S.sales[idx];
+  var q = Math.round((num(s.qty) + d * step(s.unit)) * 100) / 100;
+  if (q <= 0) { S.sales.splice(idx, 1); } else { s.qty = q; }
   drawSales();
 }
 function drawSales() {
   var w = $('sl'); if (!w) return;
   w.innerHTML = '';
-  if (!S.sales.length) { w.innerHTML = '<div class="empty">Позиции не добавлены. Это поле необязательное — суммы важнее</div>'; return; }
+  if (!S.sales.length) {
+    w.innerHTML = '<div class="empty">Ничего не пробито. Найдите позицию выше или нажмите частую.</div>';
+    if ($('stotal')) $('stotal').textContent = '0 ₸';
+    recalc(); return;
+  }
+  var sum = 0;
   for (var i = 0; i < S.sales.length; i++) {
     var s = S.sales[i];
+    var line = num(s.qty) * num(s.price);
+    sum += line;
     var row = document.createElement('div'); row.className = 'srow';
-    row.innerHTML = '<span class="sn">' + s.item_name + '</span>' +
-      '<input class="sq" inputmode="decimal" placeholder="кол-во" value="' + (s.qty || '') + '">' +
+    row.innerHTML =
+      '<span class="sn">' + esc(s.item_name) +
+      '<i>' + esc(s.unit || '') + (s.price ? ' · ' + fmt(s.price) + ' ₸' : ' · цены нет') + '</i></span>' +
+      '<button class="pm minus" type="button">−</button>' +
+      '<input class="sq" inputmode="decimal" value="' + (s.qty === '' ? '' : s.qty) + '">' +
+      '<button class="pm plus" type="button">+</button>' +
+      '<span class="ssum">' + fmt(line) + '</span>' +
       '<button class="x" type="button">×</button>';
     (function (idx, row) {
-      row.querySelector('.sq').oninput = function () { S.sales[idx].qty = this.value; };
+      row.querySelector('.sq').oninput = function () { S.sales[idx].qty = this.value; drawSales(); };
+      row.querySelector('.minus').onclick = function () { chgSale(idx, -1); };
+      row.querySelector('.plus').onclick = function () { chgSale(idx, +1); };
       row.querySelector('.x').onclick = function () { S.sales.splice(idx, 1); drawSales(); };
     })(i, row);
     w.appendChild(row);
   }
+  if ($('stotal')) $('stotal').textContent = fmt(sum) + ' ₸';
+  recalc();
+}
+function salesTotal() {
+  var sum = 0;
+  for (var i = 0; i < S.sales.length; i++) sum += num(S.sales[i].qty) * num(S.sales[i].price);
+  return sum;
+}
+function takeoutTotal() {
+  var sum = 0;
+  for (var i = 0; i < S.takeout.length; i++) {
+    sum += (num(S.takeout[i].issued) - num(S.takeout[i].returned)) * num(S.takeout[i].price);
+  }
+  return sum;
 }
 
 function recalc() {
@@ -239,6 +372,24 @@ function recalc() {
   }
   if (noReceipt > 0) checks.push(['bad', 'Строк подотчёта без номера чека: ' + noReceipt]);
   else if (pod > 0) checks.push(['ok', 'Подотчёт подтверждён чеками']);
+
+  // Сверка ассортимента с деньгами — до сохранения, чтобы кассир увидел сразу.
+  var byItems = S.mode === 'position' ? salesTotal() : (S.mode === 'takeout' ? takeoutTotal() : 0);
+  var label = S.mode === 'position' ? 'позициям' : 'заборному листу';
+  if (S.mode === 'position' || S.mode === 'takeout') {
+    if (byItems === 0) {
+      checks.push(['wait', 'По ' + label + ' пока ничего не внесено']);
+    } else if (total === 0) {
+      checks.push(['wait', 'Выручка не заполнена — сверить не с чем']);
+    } else {
+      var d = byItems - total;
+      var pct = Math.abs(d) / total * 100;
+      if (pct < 0.5) checks.push(['ok', 'Сумма по ' + label + ' сходится с выручкой']);
+      else checks.push([pct <= 5 ? 'wait' : 'bad',
+        'По ' + label + ' ' + fmt(byItems) + ' ₸, в кассе ' + fmt(total) +
+        ' ₸ — расхождение ' + fmt(d) + ' ₸ (' + (Math.round(pct * 10) / 10) + ' %)']);
+    }
+  }
 
   var w = $('checks'); w.innerHTML = '';
   for (var k = 0; k < checks.length; k++) {
@@ -359,8 +510,6 @@ window.addEventListener('DOMContentLoaded', function () {
   $('btn-owner-toggle').onclick = function () { $('ownerbox').hidden = !$('ownerbox').hidden; };
   $('date').onchange = loadReport;
   $('addexp').onclick = addExp;
-  $('addtk').onclick = addTakeout;
-  $('addsl').onclick = addSale;
   $('savebtn').onclick = saveReport;
   $('logout').onclick = logout;
   $('logout2').onclick = logout;

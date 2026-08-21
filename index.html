@@ -58,10 +58,32 @@
   .tn i{display:block;font-style:normal;font-size:11px;color:var(--muted)}
   .tp{text-align:right;font-weight:700;font-variant-numeric:tabular-nums;font-size:14px}
   .tp.bad{color:var(--bad)}
-  .srow{display:grid;grid-template-columns:1fr 90px 34px;gap:6px;align-items:center;
-    padding:5px 0;border-bottom:1px solid var(--line)}
-  .sn{font-size:13.5px}
-  .srow input{padding:8px 6px;font-size:14px;text-align:center}
+  .srow{display:grid;grid-template-columns:1fr 30px 54px 30px 74px 30px;gap:5px;align-items:center;
+    padding:6px 0;border-bottom:1px solid var(--line)}
+  .sn{font-size:13.5px;line-height:1.25}
+  .sn i{display:block;font-style:normal;font-size:11px;color:var(--muted)}
+  .srow input{padding:8px 4px;font-size:14px;text-align:center}
+  .srow .pm{width:30px;padding:8px 0;font-size:17px;font-weight:700;background:#fff;
+    color:var(--accent);line-height:1}
+  .ssum{text-align:right;font-weight:700;font-size:14px;font-variant-numeric:tabular-nums}
+  /* поиск по номенклатуре */
+  .sbox{position:relative}
+  .sbox input{font-size:16px}
+  .shint{font-size:12px;color:var(--muted);margin-top:6px}
+  .sres{margin-top:8px;max-height:290px;overflow-y:auto;border:1px solid var(--line);
+    border-radius:9px;background:#fff}
+  .sres:empty{display:none}
+  .sitem{display:flex;justify-content:space-between;align-items:baseline;gap:10px;width:100%;
+    text-align:left;background:#fff;border:none;border-bottom:1px solid var(--line);
+    border-radius:0;padding:11px 12px;color:var(--ink);font-weight:500;font-size:14px}
+  .sitem:last-child{border-bottom:none}
+  .sitem b{font-weight:700;background:#FDF3C7;border-radius:3px}
+  .sitem span{font-size:11.5px;color:var(--muted);white-space:nowrap}
+  .fav{display:flex;flex-wrap:wrap;gap:6px;margin:10px 0 2px}
+  .fav button{width:auto;flex:0 0 auto;padding:9px 11px;font-size:13px;font-weight:600;
+    background:#EEF2F8;color:var(--accent);border:1px solid #D6DFEC}
+  .favh{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);
+    font-weight:700;margin-top:12px}
   .err{color:var(--bad);font-size:13.5px;margin-top:10px;font-weight:600}
   .msg{color:var(--ok);font-size:13.5px;margin-top:10px;font-weight:600;text-align:center}
   .hint{font-size:12.5px;color:var(--muted);margin-top:8px;line-height:1.45}
@@ -182,20 +204,27 @@
   <div class="card" id="block-takeout" hidden>
     <h2>Заборный лист</h2>
     <div class="hint" style="margin:0 0 12px">Выдали на раздачу → в конце дня перевесили остаток. Продано считается само.</div>
-    <div class="row3">
-      <select id="tsel"></select>
-      <button class="ghost small" id="addtk" type="button">+ добавить</button>
+    <div class="fav" id="tfav"></div>
+    <div class="sbox">
+      <input id="tq" autocomplete="off" placeholder="Название позиции — борщ, котлет, компот">
+      <div class="shint" id="thint"></div>
+      <div class="sres" id="tres"></div>
     </div>
     <div id="tk" style="margin-top:12px"></div>
+    <div class="tot"><span>Расчётная сумма по листу</span><span id="ttotal">0 ₸</span></div>
   </div>
 
   <div class="card" id="block-sales" hidden>
     <h2>Продажи по позициям</h2>
-    <div class="row3">
-      <select id="ssel"></select>
-      <button class="ghost small" id="addsl" type="button">+ добавить</button>
+    <div class="favh" id="sfavh" hidden>Частые позиции</div>
+    <div class="fav" id="sfav"></div>
+    <div class="sbox">
+      <input id="sq" autocomplete="off" placeholder="Две буквы названия — и список сузится">
+      <div class="shint" id="shint"></div>
+      <div class="sres" id="sres"></div>
     </div>
     <div id="sl" style="margin-top:12px"></div>
+    <div class="tot"><span>Итого по позициям</span><span id="stotal">0 ₸</span></div>
   </div>
 
   <div class="card">
