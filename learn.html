@@ -114,7 +114,7 @@
 
 <div class="card" id="c-money">
   <h2>Выручка за смену</h2>
-  <label for="d-cash">Наличные, ₸</label><input id="d-cash" inputmode="decimal" value="38850">
+  <label for="d-cash">Наличные, ₸</label><input id="d-cash" inputmode="decimal" value="47010">
   <label for="d-qr">Kaspi QR, ₸</label><input id="d-qr" inputmode="decimal" value="12400">
   <label for="d-tr">Перевод на счёт, ₸</label><input id="d-tr" inputmode="decimal" value="0">
   <div class="tot"><span>Итого выручка</span><span id="d-total">0 ₸</span></div>
@@ -134,7 +134,7 @@
     <div><label for="d-handed">Сдано / инкассация</label><input id="d-handed" inputmode="decimal" value="40000"></div>
   </div>
   <div class="tot"><span>Должно остаться в кассе</span><span id="d-expected">0 ₸</span></div>
-  <label for="d-counted">Фактически пересчитано, ₸</label><input id="d-counted" inputmode="decimal" value="2850">
+  <label for="d-counted">Фактически пересчитано, ₸</label><input id="d-counted" inputmode="decimal" value="11010">
 </div>
 
 <div class="card" id="c-exp">
@@ -179,7 +179,7 @@
 
 <div class="start" id="startbar">
   <div class="tour-in">
-    <button type="button" id="btn-start">Пройти обучение — 12 шагов</button>
+    <button type="button" id="btn-start">Пройти обучение</button>
     <div class="hint" style="text-align:center;margin-top:7px">Или просто попробуйте всё сами</div>
   </div>
 </div>
@@ -441,6 +441,7 @@ $('d-save').onclick = function () {
 
 drawFav();
 recalc();
+$('btn-start').textContent = 'Пройти обучение — ' + STEPS.length + ' шагов';
 </script>
 </body>
 </html>
