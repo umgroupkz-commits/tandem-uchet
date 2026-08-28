@@ -193,6 +193,16 @@ function loadReport() {
     $('shift_by').value = rep && rep.shift_by ? rep.shift_by : '';
     $('comment').value = rep && rep.comment ? rep.comment : '';
     $('saved').textContent = rep ? 'Отчёт за этот день уже был сохранён — можно поправить' : '';
+    // Восстанавливаем фасовку из справочника: в строках листа она не хранится.
+    for (var z = 0; z < S.takeout.length; z++) {
+      var rt = itemByCode(S.takeout[z].item_code);
+      if (rt) {
+        S.takeout[z].pack_factor = rt.pack_factor;
+        S.takeout[z].pack_unit = rt.pack_unit;
+        S.takeout[z].pack_price = rt.pack_price;
+      }
+    }
+    if (S.mode === 'takeout') prefillShortList();
     drawExp(); drawTakeout(); drawSales(); recalc();
   });
 }
@@ -229,8 +239,37 @@ function addTakeout(code) {
     if (S.takeout[i].item_code === code) { flash('tk'); return; }
   }
   var it = itemByCode(code); if (!it) return;
-  S.takeout.push({ item_code: it.code, item_name: it.name, unit: it.unit, issued: '', returned: '', price: it.price || '' });
+  S.takeout.push({
+    item_code: it.code, item_name: it.name, unit: it.unit,
+    issued: '', returned: '', price: it.price || '',
+    pack_factor: it.pack_factor, pack_unit: it.pack_unit, pack_price: it.pack_price
+  });
   drawTakeout();
+}
+
+/* Короткий лист: то, что на точке реально идёт на раздачу.
+   Подставляется сам, когда лист ещё пуст — кассиру не нужно ничего искать. */
+function shortListItems() {
+  return S.items.filter(function (m) { return m.short; })
+    .sort(function (a, b) { return (a.rank || 999) - (b.rank || 999); });
+}
+function prefillShortList() {
+  var list = shortListItems();
+  if (!list.length || S.takeout.length) return;
+  for (var i = 0; i < list.length; i++) addTakeout(list[i].code);
+}
+
+/* Сумма строки заборного листа. Если задана фасовка — продано пересчитывается
+   в мелкие единицы: 4 литра компота при 5 стаканах в литре дают 20 стаканов. */
+function soldOf(t) { return num(t.issued) - num(t.returned); }
+function lineSmall(t) {
+  var f = num(t.pack_factor);
+  return f > 0 ? Math.round(soldOf(t) * f * 100) / 100 : null;
+}
+function lineSum(t) {
+  var small = lineSmall(t);
+  if (small !== null && num(t.pack_price) > 0) return small * num(t.pack_price);
+  return soldOf(t) * num(t.price);
 }
 function flash(id) {
   var el = $(id); if (!el) return;
@@ -246,13 +285,22 @@ function drawTakeout() {
   w.appendChild(head);
   for (var i = 0; i < S.takeout.length; i++) {
     var t = S.takeout[i];
-    var sold = num(t.issued) - num(t.returned);
+    var sold = soldOf(t);
+    var small = lineSmall(t);
+    // Подпись под названием: единица, а при фасовке — во что и почём пересчитывается.
+    var sub = esc(t.unit || '');
+    if (small !== null) {
+      sub += ' → ' + fmt(t.pack_factor) + ' ' + esc(t.pack_unit || 'шт') +
+        (num(t.pack_price) > 0 ? ' по ' + fmt(t.pack_price) + ' ₸' : '');
+    }
+    var soldText = fmt(sold);
+    if (small !== null) soldText += '<b>' + fmt(small) + ' ' + esc(t.pack_unit || 'шт') + '</b>';
     var row = document.createElement('div'); row.className = 'trow';
     row.innerHTML =
-      '<span class="tn">' + t.item_name + '<i>' + t.unit + '</i></span>' +
+      '<span class="tn">' + esc(t.item_name) + '<i>' + sub + '</i></span>' +
       '<input class="ti" inputmode="decimal" value="' + (t.issued || '') + '">' +
       '<input class="tr" inputmode="decimal" value="' + (t.returned || '') + '">' +
-      '<span class="tp' + (sold < 0 ? ' bad' : '') + '">' + fmt(sold) + '</span>' +
+      '<span class="tp' + (sold < 0 ? ' bad' : '') + '">' + soldText + '</span>' +
       '<button class="x" type="button">×</button>';
     (function (idx, row) {
       row.querySelector('.ti').oninput = function () { S.takeout[idx].issued = this.value; drawTakeout(); };
@@ -261,11 +309,7 @@ function drawTakeout() {
     })(i, row);
     w.appendChild(row);
   }
-  var sum = 0;
-  for (var k = 0; k < S.takeout.length; k++) {
-    sum += (num(S.takeout[k].issued) - num(S.takeout[k].returned)) * num(S.takeout[k].price);
-  }
-  if ($('ttotal')) $('ttotal').textContent = fmt(sum) + ' ₸';
+  if ($('ttotal')) $('ttotal').textContent = fmt(takeoutTotal()) + ' ₸';
   recalc();
 }
 
@@ -333,9 +377,7 @@ function salesTotal() {
 }
 function takeoutTotal() {
   var sum = 0;
-  for (var i = 0; i < S.takeout.length; i++) {
-    sum += (num(S.takeout[i].issued) - num(S.takeout[i].returned)) * num(S.takeout[i].price);
-  }
+  for (var i = 0; i < S.takeout.length; i++) sum += lineSum(S.takeout[i]);
   return sum;
 }
 
