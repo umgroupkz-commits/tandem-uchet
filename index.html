@@ -123,6 +123,7 @@
   .dtools{display:flex;gap:10px;align-items:end;flex-wrap:wrap;margin-bottom:14px}
   .dtools>div{flex:0 0 150px}
   .dtools button{width:auto}
+  .dper.on{background:var(--accent);color:#fff}
 </style>
 </head>
 <body>
@@ -277,10 +278,16 @@
     <button class="link" id="logout2" style="flex:0 0 auto">Выйти</button>
   </header>
 
+  <div class="dtools" style="margin-bottom:8px">
+    <button class="ghost small dper" data-per="today" type="button">Сегодня</button>
+    <button class="ghost small dper" data-per="yesterday" type="button">Вчера</button>
+    <button class="ghost small dper" data-per="week" type="button">Неделя</button>
+    <button class="ghost small dper" data-per="month" type="button">Месяц</button>
+  </div>
   <div class="dtools">
     <div><label for="dfrom">С</label><input id="dfrom" type="date"></div>
     <div><label for="dto">По</label><input id="dto" type="date"></div>
-    <button class="small" id="dreload" type="button">Обновить</button>
+    <button class="small" id="dreload" type="button">Показать</button>
     <button class="ghost small" id="dcsv" type="button">Выгрузить CSV</button>
   </div>
 

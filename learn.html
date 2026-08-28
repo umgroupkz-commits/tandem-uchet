@@ -385,24 +385,69 @@ function mountMoneyDemo() {
 }
 
 /* ── Директор ── */
+var DIR_PERIODS = {
+  today:  { label: 'Сегодня', rev: '318 400 ₸', bad: 1, miss: ['Столовая Актау'] },
+  week:   { label: 'Неделя',  rev: '2 481 300 ₸', bad: 3, miss: ['Буфет КМК-профиль', 'Столовая Актау'] },
+  month:  { label: 'Месяц',   rev: '9 874 200 ₸', bad: 7, miss: ['Буфет КМК-профиль', 'Столовая Актау'] }
+};
+var dirPer = 'week';
+
+function cardDir0() {
+  return el('<div class="card" id="c-dir0"><h2>Период</h2>' +
+    '<div class="fav" id="dperiods"></div>' +
+    '<div class="hint">Один тап — и вся сводка пересчитана: сегодня, вчера, неделя, месяц. Любой другой диапазон задаётся датами С и По.</div></div>');
+}
 function cardDir1() {
-  return el('<div class="card" id="c-dir1"><h2>Не сдали отчёт за вчера</h2>' +
-    '<span class="pill bad">Буфет КМК-профиль</span><span class="pill bad">Столовая Актау</span>' +
+  return el('<div class="card" id="c-dir1"><h2>Не сдали отчёт за вчера</h2><div id="dmissx"></div>' +
     '<div class="hint">Пустой отчёт — тоже сигнал. Позвоните, пока помнят вчерашний день.</div></div>');
 }
 function cardDir2() {
-  return el('<div class="card" id="c-dir2"><h2>Деньги за неделю</h2><div class="kpis">' +
-    '<div class="kpi"><div class="kl">Выручка</div><div class="kv">2 481 300 ₸</div></div>' +
-    '<div class="kpi"><div class="kl">Отчётов с расхождением</div><div class="kv bad">3</div></div></div>' +
+  return el('<div class="card" id="c-dir2"><h2>Деньги за период</h2><div class="kpis">' +
+    '<div class="kpi"><div class="kl">Выручка</div><div class="kv" id="drev">—</div></div>' +
+    '<div class="kpi"><div class="kl">Отчётов с расхождением</div><div class="kv bad" id="dbad">—</div></div></div>' +
     '<div style="margin-top:10px">' +
-    '<div class="rrow"><span>Наличные</span><b>1 671 000 ₸ · 67 %</b></div>' +
-    '<div class="rrow"><span>Kaspi QR</span><b>712 300 ₸ · 29 %</b></div>' +
-    '<div class="rrow"><span>Перевод на счёт</span><b>98 000 ₸ · 4 %</b></div>' +
-    '<div class="rrow"><span style="color:var(--muted)">ТОО «Тандем KZ»</span><b>2 214 800 ₸</b></div>' +
-    '<div class="rrow"><span style="color:var(--muted)">ИП Глухих С. А.</span><b>266 500 ₸</b></div></div></div>');
+    '<div class="rrow"><span>Наличные</span><b>67 %</b></div>' +
+    '<div class="rrow"><span>Kaspi QR</span><b>29 %</b></div>' +
+    '<div class="rrow"><span>Перевод на счёт</span><b>4 %</b></div>' +
+    '<div class="rrow"><span style="color:var(--muted)">ТОО «Тандем KZ»</span><b>89 %</b></div>' +
+    '<div class="rrow"><span style="color:var(--muted)">ИП Глухих С. А.</span><b>11 %</b></div></div></div>');
+}
+function cardDirPoints() {
+  return el('<div class="card" id="c-dirp"><h2>По точкам: бьётся или нет</h2>' +
+    '<div style="overflow-x:auto"><table><thead><tr><th>Точка</th><th style="text-align:right">Выручка</th>' +
+    '<th style="text-align:right">Сдано</th><th style="text-align:right">Не сдано</th>' +
+    '<th style="text-align:right">С расхожд.</th><th style="text-align:right">Расхожд., ₸</th></tr></thead><tbody>' +
+    '<tr><td>Енешка-магазин</td><td class="n"><b>892 400</b></td><td class="n">7</td><td class="n">0</td>' +
+    '<td class="n" style="color:var(--warn);font-weight:700">2</td><td class="n" style="color:var(--bad)">3 700</td></tr>' +
+    '<tr><td>Столовая КарИУ</td><td class="n"><b>486 250</b></td><td class="n">7</td><td class="n">0</td>' +
+    '<td class="n">—</td><td class="n">—</td></tr>' +
+    '<tr><td>Буфет КМК-профиль</td><td class="n"><b>163 800</b></td><td class="n">5</td>' +
+    '<td class="n" style="color:var(--bad);font-weight:700">2</td><td class="n">—</td><td class="n">—</td></tr>' +
+    '</tbody></table></div>' +
+    '<div class="hint">Енешка и буфет КМК здесь раздельно — хотя в iiko их чеки идут через одну кассу. Это разделение даёт только наша программа.</div></div>');
+}
+var DIRDET = '<td colspan="5" style="background:#F7F9FC;padding:12px 14px;font-size:13px">' +
+  '<b style="font-size:11px;text-transform:uppercase;color:var(--muted)">Продажи по позициям (2)</b>' +
+  '<div class="rrow"><span>Манты1 × 80</span><b>12 000 ₸</b></div>' +
+  '<div class="rrow"><span>Беляш жареный №3 × 40 <span style="color:var(--warn)">(скидка 2 400)</span></span><b>8 000 ₸</b></div>' +
+  '<b style="font-size:11px;text-transform:uppercase;color:var(--muted)">Расходы под отчёт</b>' +
+  '<div class="rrow"><span>Хлеб, магазин у входа · <span style="color:var(--bad)">без чека</span></span><b>1 000 ₸</b></div>' +
+  '<b style="font-size:11px;text-transform:uppercase;color:var(--muted)">Деньги</b>' +
+  '<div class="rrow"><span>Касса: должно 10 000 ₸, пересчитано 9 500 ₸</span><b style="color:var(--bad)">−500 ₸</b></div></td>';
+function cardDirReports() {
+  return el('<div class="card" id="c-dirr"><h2>Все отчёты</h2>' +
+    '<div class="hint" style="margin:0 0 10px">Нажмите на строку — раскроется весь день точки.</div>' +
+    '<div style="overflow-x:auto"><table><thead><tr><th>Дата</th><th>Точка</th>' +
+    '<th style="text-align:right">Итого</th><th style="text-align:right">Сдано</th><th>Проверка</th></tr></thead>' +
+    '<tbody id="dirrb">' +
+    '<tr class="dirrow" style="cursor:pointer"><td>27.08</td><td>Енешка-магазин</td>' +
+    '<td class="n"><b>33 000</b></td><td class="n">20 000</td><td><span class="pill bad">касса −500 · без чека: 1</span></td></tr>' +
+    '<tr class="dirrow" style="cursor:pointer"><td>27.08</td><td>Столовая КарИУ</td>' +
+    '<td class="n"><b>19 250</b></td><td class="n">19 250</td><td><span class="pill" style="background:var(--okbg);color:var(--ok)">ОК</span></td></tr>' +
+    '</tbody></table></div></div>');
 }
 function cardDir3() {
-  return el('<div class="card" id="c-dir3"><h2>Что продано — топ за неделю</h2>' +
+  return el('<div class="card" id="c-dir3"><h2>Что продано — топ за период</h2>' +
     '<table><thead><tr><th>Позиция</th><th style="text-align:right">Кол-во</th><th style="text-align:right">Сумма</th><th style="text-align:right">Скидка</th></tr></thead><tbody>' +
     '<tr><td>Беляш жареный №3</td><td class="n">446</td><td class="n"><b>82 264</b></td><td class="n" style="color:var(--warn)">33 696</td></tr>' +
     '<tr><td>Борщ№1</td><td class="n">184</td><td class="n"><b>101 200</b></td><td class="n">—</td></tr>' +
@@ -417,6 +462,40 @@ function cardDir4() {
     '<div class="rrow"><span>Бульон говяжий ПФ</span><b>18,4 кг</b></div>' +
     '<div style="margin-top:12px" class="rrow"><span><b>Бассейн Жастар</b></span><b style="color:var(--bad)">480 000 ₸</b></div>' +
     '<div class="hint">Расход — по техкартам iiko на проданное: сверяйте со списанием. Долги — из журнала водителя.</div></div>');
+}
+function drawDirPeriod() {
+  var d = DIR_PERIODS[dirPer];
+  if ($('drev')) $('drev').textContent = d.rev;
+  if ($('dbad')) $('dbad').textContent = d.bad;
+  if ($('dmissx')) $('dmissx').innerHTML = d.miss.map(function (m) {
+    return '<span class="pill bad">' + m + '</span>';
+  }).join('');
+  var bs = document.querySelectorAll('#dperiods button');
+  [].forEach.call(bs, function (b) {
+    b.style.background = b.dataset.per === dirPer ? 'var(--accent)' : '#EEF2F8';
+    b.style.color = b.dataset.per === dirPer ? '#fff' : 'var(--accent)';
+  });
+}
+function mountDirDemo() {
+  var w = $('dperiods');
+  Object.keys(DIR_PERIODS).forEach(function (k) {
+    var b = el('<button type="button" data-per="' + k + '">' + DIR_PERIODS[k].label + '</button>');
+    b.onclick = function () { dirPer = k; drawDirPeriod(); };
+    w.appendChild(b);
+  });
+  drawDirPeriod();
+  [].forEach.call(document.querySelectorAll('#dirrb .dirrow'), function (tr) {
+    tr.onclick = function () {
+      var nx = tr.nextElementSibling;
+      if (nx && nx.className === 'dirdet') { nx.remove(); return; }
+      var open = tr.parentNode.querySelector('.dirdet');
+      if (open) open.remove();
+      var d = document.createElement('tr');
+      d.className = 'dirdet';
+      d.innerHTML = DIRDET;
+      tr.parentNode.insertBefore(d, tr.nextSibling);
+    };
+  });
 }
 
 /* ── Роли и сценарии ── */
@@ -483,14 +562,16 @@ var SCEN = {
   },
   dir: {
     title: 'Директор: утренняя сводка', sub: 'Три минуты за чаем — и картина дня',
-    cards: [cardDir1, cardDir2, cardDir3, cardDir4], mount: [],
+    cards: [cardDir0, cardDir1, cardDirPoints, cardDirReports, cardDir2, cardDir3, cardDir4],
+    mount: [mountDirDemo],
     steps: [
+      ['c-dir0', 'Период — одним тапом', 'Сегодня, неделя, месяц — нажмите кнопки, цифры сводки пересчитаются. Любой другой диапазон задаётся датами. Утром обычно смотрят «Вчера».'],
       ['c-dir1', 'Первое: кто не сдал', 'Красные плашки — точки без вчерашнего отчёта. Это первое, что видно утром. Пустота больше не маскируется нулями.'],
+      ['c-dirp', 'По точкам: бьётся или нет', 'По каждой точке: выручка, сколько дней сдано и не сдано, сколько дней с расхождением и на какую сумму. У Енешки за неделю два дня не сошлись на 3 700 ₸ — видно сразу, без раскопок.'],
+      ['c-dirr', 'Любой отчёт — по клику', 'Нажмите строку Енешки — раскроется весь её день: позиции со скидками, расход без чека, недостача по кассе 500 ₸. Не выходя из сводки и никому не звоня.'],
       ['c-dir2', 'Деньги: каналы и юрлица', 'Выручка периода по способам оплаты и раздельно по ТОО и ИП. Фотографии кассы в WhatsApp больше не нужны — всё стеклось сюда само.'],
-      ['c-dir2', 'Любой отчёт — по клику', 'В таблице «Все отчёты» нажмите на строку — раскроется весь день точки: позиции, заборный лист, расходы с чеками, касса. Не выходя из сводки и никому не звоня.'],
       ['c-dir3', 'Что продано и где скидки', 'Впервые видно продажи по позициям со всех точек — и сколько скидки роздано. Жёлтая цифра у беляша — скидка сотрудникам завода в Актау.'],
-      ['c-dir4', 'Сырьё и долги', 'Расход продуктов по техкартам на проданное — для сверки со списанием. И долги по реализации из журнала водителя: бассейн должен 480 тысяч, и это видно каждый день, а не при случайном пересчёте.'],
-      ['c-dir1', 'Правило одно', 'Программа не добавляет вам работы — она её снимает: смотреть, а не собирать. Если точка постоянно в красном — это разговор с точкой, а не с программой.']
+      ['c-dir4', 'Сырьё и долги', 'Расход продуктов по техкартам на проданное — для сверки со списанием. И долги по реализации из журнала водителя: бассейн должен 480 тысяч, и это видно каждый день.']
     ]
   }
 };

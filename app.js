@@ -785,11 +785,25 @@ function saveReport() {
 }
 
 function showDash() {
-  $('screen-login').hidden = true; $('screen-form').hidden = true; $('screen-dash').hidden = false;
-  var d = new Date(); d.setDate(d.getDate() - 30);
-  $('dfrom').value = d.toISOString().slice(0, 10);
-  $('dto').value = today();
+  $('screen-login').hidden = true; $('screen-form').hidden = true;
+  $('screen-driver').hidden = true; $('screen-dash').hidden = false;
+  setPeriod('week');
+}
+
+/* Быстрые периоды: сегодня, вчера, неделя, месяц. Произвольный — через поля С/По. */
+function setPeriod(per) {
+  var to = new Date(), from = new Date();
+  if (per === 'yesterday') { from.setDate(from.getDate() - 1); to = new Date(from); }
+  if (per === 'week') from.setDate(from.getDate() - 6);
+  if (per === 'month') from.setDate(from.getDate() - 29);
+  $('dfrom').value = from.toISOString().slice(0, 10);
+  $('dto').value = to.toISOString().slice(0, 10);
+  markPeriod(per);
   loadDash();
+}
+function markPeriod(per) {
+  var bs = document.querySelectorAll('.dper');
+  for (var i = 0; i < bs.length; i++) bs[i].classList.toggle('on', bs[i].dataset.per === per);
 }
 function loadDash() {
   api('dashboard', { from: $('dfrom').value, to: $('dto').value }).then(function (r) {
@@ -1016,7 +1030,13 @@ window.addEventListener('DOMContentLoaded', function () {
   $('logout3').onclick = logout;
   $('likeyesterday').onclick = likeYesterday;
   $('rsave').onclick = saveRealization;
-  $('dreload').onclick = loadDash;
+  $('dreload').onclick = function () { markPeriod(''); loadDash(); };
+  (function () {
+    var bs = document.querySelectorAll('.dper');
+    for (var i = 0; i < bs.length; i++) {
+      bs[i].onclick = (function (b) { return function () { setPeriod(b.dataset.per); }; })(bs[i]);
+    }
+  })();
   $('dcsv').onclick = exportCsv;
   var ids = ['cash', 'kaspi_qr', 'transfer', 'qr_statement', 'tr_statement', 'cash_open', 'cash_handed', 'cash_counted'];
   for (var i = 0; i < ids.length; i++) { $(ids[i]).oninput = recalc; }
