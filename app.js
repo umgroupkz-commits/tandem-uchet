@@ -2,7 +2,7 @@ const API = "https://qeehxcnnuzuwskznhdyg.supabase.co/functions/v1/uchet";
 
 var S = {
   role: null, point: null, pin: '', items: [], mode: null,
-  expenses: [], takeout: [], sales: [], dash: null
+  expenses: [], takeout: [], sales: [], dash: null, charts: null
 };
 var $ = function (id) { return document.getElementById(id); };
 var fmt = function (n) {
@@ -90,6 +90,7 @@ function showForm() {
     if (S.mode === 'takeout') mountSearch('tq', 'thint', 'tres', addTakeout);
     if (S.mode === 'position') mountSearch('sq', 'shint', 'sres', addSale);
     drawFav();
+    api('charts', {}).then(function (c) { S.charts = (c && c.ok) ? c.charts : null; drawRaw(); });
     loadReport();
   });
 }
@@ -171,6 +172,50 @@ function drawFav() {
 function itemByCode(code) {
   for (var i = 0; i < S.items.length; i++) { if (S.items[i].code === code) return S.items[i]; }
   return null;
+}
+
+/* Расход сырья: по калькуляциям из iiko считаем, сколько продуктов должно было
+   уйти на пробитое за смену. Это ответ на вопрос «спекли 200 пирожков — сколько
+   ушло муки и мяса», и материал для сверки с фактическим списанием. */
+function drawRaw() {
+  var box = $('raw'), card = $('block-raw');
+  if (!box || !card) return;
+  if (!S.charts) { card.hidden = true; return; }
+
+  var used = {};
+  var lines = S.mode === 'takeout'
+    ? S.takeout.map(function (t) { return { code: t.item_code, qty: soldOf(t) }; })
+    : S.sales.map(function (s) { return { code: s.item_code, qty: num(s.qty) }; });
+
+  var covered = 0, total = 0;
+  for (var i = 0; i < lines.length; i++) {
+    if (!(lines[i].qty > 0)) continue;
+    total++;
+    var chart = S.charts[lines[i].code];
+    if (!chart) continue;
+    covered++;
+    for (var k = 0; k < chart.length; k++) {
+      var n = chart[k].n;
+      used[n] = (used[n] || 0) + Number(chart[k].a) * lines[i].qty;
+    }
+  }
+
+  var names = Object.keys(used).sort(function (a, b) { return used[b] - used[a]; });
+  if (!names.length) { card.hidden = true; return; }
+  card.hidden = false;
+
+  var html = '';
+  for (var j = 0; j < names.length && j < 20; j++) {
+    var v = used[names[j]];
+    html += '<div class="rrow"><span>' + esc(names[j]) + '</span><b>' +
+      (v < 1 ? (Math.round(v * 1000) / 1000) : fmt(Math.round(v * 100) / 100)) + '</b></div>';
+  }
+  if (names.length > 20) {
+    html += '<div class="empty">и ещё ' + (names.length - 20) + ' позиций сырья</div>';
+  }
+  html += '<div class="hint" style="margin-top:10px">Карты нашлись у ' + covered + ' позиций из ' + total +
+    '. Для остальных калькуляции в iiko пока нет.</div>';
+  box.innerHTML = html;
 }
 
 function loadReport() {
@@ -310,6 +355,7 @@ function drawTakeout() {
     w.appendChild(row);
   }
   if ($('ttotal')) $('ttotal').textContent = fmt(takeoutTotal()) + ' ₸';
+  drawRaw();
   recalc();
 }
 
@@ -343,7 +389,7 @@ function drawSales() {
   if (!S.sales.length) {
     w.innerHTML = '<div class="empty">Ничего не пробито. Найдите позицию выше или нажмите частую.</div>';
     if ($('stotal')) $('stotal').textContent = '0 ₸';
-    recalc(); return;
+    drawRaw(); recalc(); return;
   }
   var sum = 0;
   for (var i = 0; i < S.sales.length; i++) {
@@ -368,6 +414,7 @@ function drawSales() {
     w.appendChild(row);
   }
   if ($('stotal')) $('stotal').textContent = fmt(sum) + ' ₸';
+  drawRaw();
   recalc();
 }
 function salesTotal() {

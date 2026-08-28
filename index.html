@@ -83,6 +83,10 @@
   .fav{display:flex;flex-wrap:wrap;gap:6px;margin:10px 0 2px}
   .fav button{width:auto;flex:0 0 auto;padding:9px 11px;font-size:13px;font-weight:600;
     background:#EEF2F8;color:var(--accent);border:1px solid #D6DFEC}
+  .rrow{display:flex;justify-content:space-between;gap:10px;padding:7px 0;
+    border-bottom:1px solid var(--line);font-size:13.5px}
+  .rrow:last-child{border-bottom:none}
+  .rrow b{font-weight:700;font-variant-numeric:tabular-nums;white-space:nowrap}
   .favh{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);
     font-weight:700;margin-top:12px}
   .err{color:var(--bad);font-size:13.5px;margin-top:10px;font-weight:600}
@@ -226,6 +230,12 @@
     </div>
     <div id="sl" style="margin-top:12px"></div>
     <div class="tot"><span>Итого по позициям</span><span id="stotal">0 ₸</span></div>
+  </div>
+
+  <div class="card" id="block-raw" hidden>
+    <h2>Расход сырья по техкартам</h2>
+    <div class="hint" style="margin:0 0 10px">Сколько продуктов должно было уйти на то, что пробито за смену. Считается по калькуляциям из iiko — сверяйте с фактическим списанием.</div>
+    <div id="raw"></div>
   </div>
 
   <div class="card">
