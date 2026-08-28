@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
 <meta name="theme-color" content="#1F3864">
-<title>Тандем KZ — как заполнять дневной отчёт</title>
+<title>Тандем KZ — обучение работе с программой</title>
 <style>
   :root{--ink:#1B2430;--ink2:#4A5568;--muted:#8A94A6;--line:#E2E7EF;--bg:#F5F7FB;
         --card:#fff;--accent:#1F3864;--accent2:#3E6EA8;--ok:#0B6B4F;--okbg:#E3F3EC;
@@ -12,12 +12,14 @@
         --spot:#F5C518}
   *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
   body{margin:0;background:var(--bg);color:var(--ink);
-    font:16px/1.5 -apple-system,"Segoe UI",Roboto,Arial,sans-serif;padding-bottom:150px}
+    font:16px/1.5 -apple-system,"Segoe UI",Roboto,Arial,sans-serif;padding-bottom:160px}
   .wrap{max-width:560px;margin:0 auto;padding:16px 14px 20px}
-  header{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;
+  header{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;
     padding-bottom:12px;border-bottom:2px solid var(--accent);margin-bottom:14px}
   h1{font-size:19px;margin:0;color:var(--accent);letter-spacing:-.2px}
   .sub{font-size:12.5px;color:var(--muted);margin-top:3px}
+  .back{background:none;border:none;color:var(--accent2);font-size:13.5px;padding:6px 0;
+    width:auto;text-decoration:underline;font-weight:500;cursor:pointer;flex:0 0 auto}
   .card{background:var(--card);border:1px solid var(--line);border-radius:12px;
     padding:16px;margin-bottom:14px;transition:box-shadow .25s,border-color .25s,opacity .25s}
   h2{font-size:12px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);
@@ -28,7 +30,7 @@
     border-radius:9px;font:inherit;font-size:16px;background:var(--in);color:var(--ink)}
   input:focus,select:focus{outline:2px solid var(--accent2);outline-offset:-1px;background:#fff}
   button{font:inherit;font-size:15px;font-weight:600;padding:12px 16px;border-radius:9px;
-    border:1px solid var(--accent);background:var(--accent);color:#fff;cursor:pointer;width:100%}
+    border:1px solid var(--accent);background:var(--accent);color:#fff;cursor:pointer;width:100%;min-height:44px}
   button.ghost{background:#fff;color:var(--accent)}
   .row2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
   .tot{display:flex;justify-content:space-between;align-items:baseline;
@@ -39,156 +41,103 @@
   .chk{padding:10px 12px;border-radius:8px;font-size:13.5px;margin-top:8px;font-weight:600}
   .chk.ok{background:var(--okbg);color:var(--ok)}
   .chk.bad{background:var(--badbg);color:var(--bad)}
-  .chk.wait{background:var(--warnbg);color:var(--warn)}
-  .trow{display:grid;grid-template-columns:1fr 70px 70px 66px;gap:6px;align-items:center;
+  .trow{display:grid;grid-template-columns:1fr 66px 66px 62px;gap:6px;align-items:center;
     padding:5px 0;border-bottom:1px solid var(--line)}
   .trow.th{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);
     font-weight:700;padding-bottom:7px}
-  .trow input{padding:8px 6px;font-size:14px;text-align:center}
+  .trow input{padding:8px 6px;font-size:14px;text-align:center;min-height:0}
   .tn{font-size:13.5px;line-height:1.25}
   .tn i{display:block;font-style:normal;font-size:11px;color:var(--muted)}
   .tp{text-align:right;font-weight:700;font-variant-numeric:tabular-nums;font-size:14px}
   .tp b{display:block;font-size:11px;color:var(--accent2)}
+  .srow{display:grid;grid-template-columns:1fr 30px 48px 30px 66px;gap:5px;align-items:center;
+    padding:6px 0;border-bottom:1px solid var(--line)}
+  .srow input{padding:8px 4px;font-size:14px;text-align:center;min-height:0}
+  .srow .pm{width:30px;min-height:0;padding:8px 0;font-size:17px;font-weight:700;background:#fff;
+    color:var(--accent);line-height:1}
+  .spc{background:#FDF3C7 !important;border-color:#E0C24A !important}
   .fav{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px}
-  .fav button{width:auto;flex:0 0 auto;padding:12px 13px;font-size:13px;min-height:44px;
+  .fav button{width:auto;flex:0 0 auto;padding:12px 13px;font-size:13px;
     background:#EEF2F8;color:var(--accent);border:1px solid #D6DFEC}
-  .sres{margin-top:8px;border:1px solid var(--line);border-radius:9px;background:#fff;overflow:hidden}
-  .sres:empty{display:none}
-  .sitem{display:flex;justify-content:space-between;gap:10px;width:100%;text-align:left;
-    background:#fff;border:none;border-bottom:1px solid var(--line);border-radius:0;
-    padding:11px 12px;color:var(--ink);font-weight:500;font-size:14px}
-  .sitem:last-child{border-bottom:none}
-  .sitem span:last-child{font-size:11.5px;color:var(--muted);white-space:nowrap}
   .rrow{display:flex;justify-content:space-between;gap:10px;padding:7px 0;
     border-bottom:1px solid var(--line);font-size:13.5px}
   .rrow:last-child{border-bottom:none}
-  .rrow b{font-variant-numeric:tabular-nums}
+  .rrow b{font-variant-numeric:tabular-nums;font-weight:700}
+  .irow{display:grid;grid-template-columns:1fr 1fr;gap:8px;align-items:center;
+    padding:7px 0;border-bottom:1px solid var(--line);font-size:13.5px}
+  .irow.miss{background:#FFFBEF}
+  .iname i{display:block;font-style:normal;font-size:11px;color:var(--muted)}
+  .iok{color:var(--ok);font-weight:600;font-size:12.5px}
+  .pill{display:inline-block;font-size:11.5px;padding:3px 10px;border-radius:20px;font-weight:600;margin:0 6px 6px 0}
+  .pill.bad{background:var(--badbg);color:var(--bad)}
   .hint{font-size:12.5px;color:var(--muted);margin-top:8px;line-height:1.45}
   .demo{background:var(--warnbg);border-left:4px solid #B4801F;padding:11px 13px;
     border-radius:0 8px 8px 0;font-size:13px;color:#5C4715;margin-bottom:16px}
-
-  /* Подсветка шага. Остальные блоки приглушаются, активный — поднимается. */
+  .role{display:flex;gap:13px;align-items:flex-start;width:100%;text-align:left;
+    background:var(--card);border:1px solid var(--line);border-radius:12px;
+    padding:15px 16px;margin-bottom:11px;color:var(--ink);cursor:pointer;min-height:0}
+  .role:active{border-color:var(--accent2)}
+  .rn{flex:0 0 34px;height:34px;border-radius:50%;background:#EEF2F8;color:var(--accent);
+    font-weight:700;font-size:15px;display:flex;align-items:center;justify-content:center}
+  .role b{display:block;font-size:16px;color:var(--accent);margin-bottom:3px}
+  .role p{margin:0;font-size:13.5px;color:var(--ink2);font-weight:400}
   body.touring .card{opacity:.38}
   body.touring .card.spot{opacity:1;border-color:var(--spot);
     box-shadow:0 0 0 3px rgba(245,197,24,.35),0 8px 24px rgba(27,36,48,.12)}
-
-  /* Панель шагов */
   .tour{position:fixed;left:0;right:0;bottom:0;background:var(--card);
     border-top:2px solid var(--accent);box-shadow:0 -6px 22px rgba(27,36,48,.12);z-index:50}
   .tour-in{max-width:560px;margin:0 auto;padding:13px 14px calc(13px + env(safe-area-inset-bottom))}
   .tour-top{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:6px}
-  .tour-num{font-size:11.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;
-    color:var(--accent2)}
-  .tour-close{width:auto;padding:10px 8px;font-size:12.5px;background:none;border:none;
-    color:var(--muted);text-decoration:underline;font-weight:500;min-height:44px}
+  .tour-num{font-size:11.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--accent2)}
+  .tour-close{width:auto;min-height:44px;padding:10px 8px;font-size:12.5px;background:none;border:none;
+    color:var(--muted);text-decoration:underline;font-weight:500}
   .tour-title{font-size:16.5px;font-weight:700;color:var(--accent);margin-bottom:4px}
   .tour-text{font-size:14.5px;color:var(--ink2);line-height:1.5}
   .tour-btns{display:grid;grid-template-columns:auto 1fr;gap:8px;margin-top:11px}
-  .tour-btns button{padding:11px 14px}
   .bar{height:3px;background:var(--line);border-radius:2px;margin-top:10px;overflow:hidden}
   .bar i{display:block;height:100%;background:var(--accent2);transition:width .3s}
-  .start{position:fixed;left:0;right:0;bottom:0;background:var(--card);
-    border-top:2px solid var(--accent);z-index:50}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th{text-align:left;font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;
+    color:var(--ink2);background:#F2F5FA;padding:8px 9px;border-bottom:1px solid var(--line)}
+  td{padding:8px 9px;border-bottom:1px solid var(--line)}
+  td.n{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+  .kpis{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .kpi{background:#F2F5FA;border-radius:10px;padding:12px 14px}
+  .kl{font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:6px}
+  .kv{font-size:20px;font-weight:700;letter-spacing:-.4px;font-variant-numeric:tabular-nums}
+  .kv.bad{color:var(--bad)}
   @media (prefers-reduced-motion:reduce){*{transition:none!important}}
 </style>
 </head>
 <body>
 
-<div class="wrap">
-<header>
-  <div>
-    <h1>Как заполнять дневной отчёт</h1>
-    <div class="sub">Учебная версия · столовая КарИУ · заборный лист</div>
-  </div>
-</header>
-
-<div class="demo"><b>Это тренажёр, а не рабочая программа.</b> Цифры здесь придуманы, ничего никуда не сохраняется. Нажимайте что угодно — сломать нельзя. Рабочая программа открывается по другой ссылке.</div>
-
-<div class="card" id="c-shift">
-  <h2>Смена</h2>
-  <div class="row2">
-    <div><label for="d-date">Дата</label><input id="d-date" type="date" value="2026-08-22"></div>
-    <div><label for="d-who">Смену сдал</label><input id="d-who" value="Асель"></div>
-  </div>
+<div class="wrap" id="pick">
+  <header>
+    <div>
+      <h1>Как работает программа учёта</h1>
+      <div class="sub">Тренажёр · ничего не сохраняется, сломать нельзя</div>
+    </div>
+  </header>
+  <div class="demo"><b>Выберите свою роль</b> — покажем ваш экран и проведём по шагам. Цифры придуманы, нажимать можно что угодно. Рабочая программа открывается по другой ссылке.</div>
+  <div id="roles"></div>
 </div>
 
-<div class="card" id="c-money">
-  <h2>Выручка за смену</h2>
-  <label for="d-cash">Наличные, ₸</label><input id="d-cash" inputmode="decimal" value="47010">
-  <label for="d-qr">Kaspi QR, ₸</label><input id="d-qr" inputmode="decimal" value="12400">
-  <label for="d-tr">Перевод на счёт, ₸</label><input id="d-tr" inputmode="decimal" value="0">
-  <div class="tot"><span>Итого выручка</span><span id="d-total">0 ₸</span></div>
-</div>
-
-<div class="card" id="c-recon">
-  <h2>Сверка с выписками</h2>
-  <label for="d-qrs">QR по выписке</label><input id="d-qrs" inputmode="decimal" value="12400">
-  <label for="d-trs">Переводы по выписке</label><input id="d-trs" inputmode="decimal" value="">
-  <div class="hint">Заполняется в тот же день из личного кабинета терминала. Если не заполнить — отчёт примут, но он останется непроверенным.</div>
-</div>
-
-<div class="card" id="c-cash">
-  <h2>Движение наличных</h2>
-  <div class="row2">
-    <div><label for="d-open">Остаток на начало</label><input id="d-open" inputmode="decimal" value="5000"></div>
-    <div><label for="d-handed">Сдано / инкассация</label><input id="d-handed" inputmode="decimal" value="40000"></div>
-  </div>
-  <div class="tot"><span>Должно остаться в кассе</span><span id="d-expected">0 ₸</span></div>
-  <label for="d-counted">Фактически пересчитано, ₸</label><input id="d-counted" inputmode="decimal" value="11010">
-</div>
-
-<div class="card" id="c-exp">
-  <h2>Расходы под отчёт</h2>
-  <div class="row2" style="grid-template-columns:1fr 90px">
-    <div><label for="d-ep">Кому и на что</label><input id="d-ep" value="Хлеб, магазин у входа"></div>
-    <div><label for="d-ea">Сумма</label><input id="d-ea" inputmode="decimal" value="1000"></div>
-  </div>
-  <label for="d-er">Номер чека</label><input id="d-er" value="" placeholder="без чека — нарушение">
-  <div class="hint">Строка без номера чека считается нарушением регламента и подсвечивается в сводке у руководителя.</div>
-</div>
-
-<div class="card" id="c-list">
-  <h2>Заборный лист</h2>
-  <div class="hint" style="margin:0 0 11px">Выдали на раздачу → в конце дня перевесили остаток. Продано считается само.</div>
-  <div class="fav" id="d-fav"></div>
-  <label for="d-q" style="margin-top:0">Найти позицию</label>
-  <input id="d-q" autocomplete="off" placeholder="Две буквы названия — «бор», «котл»">
-  <div class="hint" id="d-qhint"></div>
-  <div class="sres" id="d-res"></div>
-  <div id="d-rows" style="margin-top:12px"></div>
-  <div class="tot"><span>Расчётная сумма по листу</span><span id="d-ltotal">0 ₸</span></div>
-</div>
-
-<div class="card" id="c-raw">
-  <h2>Расход сырья по техкартам</h2>
-  <div class="hint" style="margin:0 0 10px">Сколько продуктов должно было уйти на то, что продано. Считается по калькуляциям из iiko.</div>
-  <div id="d-raw"></div>
-</div>
-
-<div class="card" id="c-checks">
-  <h2>Проверки</h2>
-  <div id="d-checks"></div>
-</div>
-
-<div class="card" id="c-save">
-  <h2>Отправка</h2>
-  <button type="button" id="d-save">Сохранить отчёт</button>
-  <div class="hint" id="d-savemsg">Отчёт можно поправить и сохранить заново — до конца следующего дня.</div>
-</div>
-</div>
-
-<div class="start" id="startbar">
-  <div class="tour-in">
-    <button type="button" id="btn-start">Пройти обучение</button>
-    <div class="hint" style="text-align:center;margin-top:7px">Или просто попробуйте всё сами</div>
-  </div>
+<div class="wrap" id="stage" hidden>
+  <header>
+    <div>
+      <h1 id="rtitle"></h1>
+      <div class="sub" id="rsub"></div>
+    </div>
+    <button class="back" id="toroles">← Все роли</button>
+  </header>
+  <div id="cards"></div>
 </div>
 
 <div class="tour" id="tour" hidden>
   <div class="tour-in">
     <div class="tour-top">
-      <span class="tour-num" id="t-num">Шаг 1 из 12</span>
-      <button type="button" class="tour-close" id="t-close">Закрыть</button>
+      <span class="tour-num" id="t-num"></span>
+      <button type="button" class="tour-close" id="t-close">Закрыть подсказки</button>
     </div>
     <div class="tour-title" id="t-title"></div>
     <div class="tour-text" id="t-text"></div>
@@ -205,243 +154,393 @@ var $ = function (id) { return document.getElementById(id); };
 var fmt = function (n) { return (Math.round(Number(n || 0) * 100) / 100).toLocaleString('ru-RU'); };
 var num = function (v) { var x = parseFloat(String(v).replace(/\s/g, '').replace(',', '.')); return isNaN(x) ? 0 : x; };
 var esc = function (s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); };
+var el = function (html) { var d = document.createElement('div'); d.innerHTML = html; return d.firstElementChild; };
 
-/* Учебная номенклатура — срез настоящей: те же названия, единицы и цены,
-   что у столовой КарИУ, включая компот с фасовкой «литр → стакан». */
-var MENU = [
-  { code: '847',  name: 'Борщ№1',              unit: 'порц', price: 550 },
-  { code: '825',  name: 'Гуляш говяжий№1',     unit: 'порц', price: 700 },
-  { code: '934',  name: 'Картофельное пюре№1', unit: 'порц', price: 260 },
-  { code: '935',  name: 'Гречка отварная№1',   unit: 'порц', price: 260 },
-  { code: '1154', name: 'Котлета говяжья 1',   unit: 'порц', price: 400 },
-  { code: '1363', name: 'Котлета куриная1',    unit: 'порц', price: 400 },
-  { code: '2180', name: 'Компот 200гр№1',      unit: 'порц', price: 100 },
-  { code: '597',  name: 'Компот в бачке',      unit: 'л',    price: 400, factor: 5, punit: 'стакан', pprice: 100 },
-  { code: '1355', name: 'Котлета пожарс 1',    unit: 'порц', price: 500 },
-  { code: '2521', name: 'Котлета буржуйская № 1', unit: 'порц', price: 420 },
-  { code: '1362', name: 'Котлета рыбная1',     unit: 'порц', price: 700 },
-  { code: '2118', name: 'Гуляш из печени №1',  unit: 'порц', price: 500 }
+/* ── Демо-данные: срез настоящей номенклатуры ── */
+var MENU_POS = [
+  { code: '2545', name: 'Котлета 1кг говяжья', unit: 'кг', price: 1600, step: 0.5 },
+  { code: '2953', name: 'Пельмени гов 1кг', unit: 'кг', price: 4250, step: 0.5 },
+  { code: '3466', name: 'Вареники с вишней 0,7', unit: 'порц', price: 2980, step: 1 },
+  { code: '1151', name: 'Манты1', unit: 'порц', price: 220, step: 1 },
+  { code: '1570', name: 'Сосиска в тесте печ', unit: 'шт', price: 250, step: 1 },
+  { code: '636',  name: 'Гамбургер розн', unit: 'шт', price: 550, step: 1 },
+  { code: '2180', name: 'Компот 200гр№1', unit: 'порц', price: 100, step: 1 },
+  { code: '847',  name: 'Борщ№1', unit: 'порц', price: 550, step: 1 },
+  { code: '1154', name: 'Котлета говяжья 1', unit: 'порц', price: 400, step: 1 }
 ];
-var CHARTS = {
-  '847':  [['Бульон говяжий ПФ', .1], ['Вода ПФ', .07], ['Картофель очищ ПФ', .044], ['Капуста очищенная ПФ', .044], ['Свекла очищенная', .044], ['Лук репчатый очищ ПФ', .01], ['Грудка отварная ПФ', .015]],
-  '825':  [['Мясо говядина триммер', .079], ['Лук репчатый очищ ПФ', .015], ['Томат ПФ', .01], ['Мука 1 сорт', .02]],
-  '934':  [['Картофель очищ ПФ', .18], ['Молоко', .02], ['Масло сливочное', .01]],
-  '1154': [['Фарш говяжий ПФ', .075], ['Хлеб белый', .015], ['Лук репчатый очищ ПФ', .01]]
-};
-var START = [
-  { code: '847', issued: 40, returned: 5 },
-  { code: '825', issued: 30, returned: 2 },
-  { code: '934', issued: 35, returned: 4 },
-  { code: '1154', issued: 25, returned: 0 },
-  { code: '597', issued: 6, returned: 1 }
+var MENU_TAKE = [
+  { name: 'Борщ№1', unit: 'порц', price: 550, issued: 40, returned: 5 },
+  { name: 'Гуляш говяжий№1', unit: 'порц', price: 700, issued: 30, returned: 2 },
+  { name: 'Картофельное пюре№1', unit: 'порц', price: 260, issued: '', returned: '' },
+  { name: 'Гречка отварная№1', unit: 'порц', price: 260, issued: '', returned: '' },
+  { name: 'Котлета говяжья 1', unit: 'порц', price: 400, issued: '', returned: '' },
+  { name: 'Компот в бачке', unit: 'л', price: 400, factor: 5, punit: 'стакан', pprice: 100, issued: 6, returned: 1 }
 ];
 
-var rows = START.map(function (r) {
-  var m = MENU.filter(function (x) { return x.code === r.code; })[0];
-  return { code: m.code, name: m.name, unit: m.unit, price: m.price,
-           factor: m.factor, punit: m.punit, pprice: m.pprice,
-           issued: r.issued, returned: r.returned };
-});
+var sales = [], take = [];
 
-function soldOf(t) { return num(t.issued) - num(t.returned); }
-function smallOf(t) { return t.factor ? Math.round(soldOf(t) * t.factor * 100) / 100 : null; }
-function sumOf(t) {
-  var s = smallOf(t);
-  return (s !== null && t.pprice) ? s * t.pprice : soldOf(t) * num(t.price);
+/* ── Чек с плитками, поиском и правкой цены ── */
+function cardSales() {
+  return el('<div class="card" id="c-sales"><h2>Чек</h2>' +
+    '<div class="fav" id="dfav"></div>' +
+    '<label for="dq">Найти позицию</label><input id="dq" autocomplete="off" placeholder="Две буквы — «пель», «котл»">' +
+    '<div class="hint" id="dqh"></div><div id="dres"></div><div id="dsl" style="margin-top:12px"></div>' +
+    '<div class="tot"><span>Итого по чеку</span><span id="dst">0 ₸</span></div>' +
+    '<div class="hint">Цена в строке — жёлтое поле: можно поправить, если продали по другой цене. Отличие от прайса руководитель увидит как скидку.</div></div>');
 }
-function listTotal() { return rows.reduce(function (a, t) { return a + sumOf(t); }, 0); }
-
-function drawRows() {
-  var w = $('d-rows'); w.innerHTML = '';
-  var head = document.createElement('div');
-  head.className = 'trow th';
-  head.innerHTML = '<span>Позиция</span><span style="text-align:center">Выдано</span><span style="text-align:center">Остаток</span><span class="tp">Продано</span>';
-  w.appendChild(head);
-  rows.forEach(function (t, i) {
-    var sold = soldOf(t), small = smallOf(t);
-    var sub = esc(t.unit) + (small !== null ? ' → ' + t.factor + ' ' + esc(t.punit) + ' по ' + fmt(t.pprice) + ' ₸' : '');
-    var soldTxt = fmt(sold) + (small !== null ? '<b>' + fmt(small) + ' ' + esc(t.punit) + '</b>' : '');
-    var row = document.createElement('div');
-    row.className = 'trow';
-    row.innerHTML = '<span class="tn">' + esc(t.name) + '<i>' + sub + '</i></span>' +
-      '<input class="ti" inputmode="decimal" aria-label="Выдано, ' + esc(t.name) + '" value="' + t.issued + '">' +
-      '<input class="tr" inputmode="decimal" aria-label="Остаток, ' + esc(t.name) + '" value="' + t.returned + '">' +
-      '<span class="tp">' + soldTxt + '</span>';
-    row.querySelector('.ti').oninput = function () { rows[i].issued = this.value; recalc(); };
-    row.querySelector('.tr').oninput = function () { rows[i].returned = this.value; recalc(); };
+function drawSalesDemo() {
+  var w = $('dsl'); if (!w) return; w.innerHTML = '';
+  var sum = 0;
+  sales.forEach(function (s, i) {
+    sum += num(s.qty) * num(s.price);
+    var changed = num(s.price) !== num(s.price_list);
+    var row = el('<div class="srow"><span class="tn">' + esc(s.name) +
+      '<i>' + esc(s.unit) + (changed ? ' · по прайсу ' + fmt(s.price_list) + ' ₸' : '') + '</i></span>' +
+      '<button class="pm m" type="button">−</button>' +
+      '<input class="q" inputmode="decimal" value="' + s.qty + '">' +
+      '<button class="pm p" type="button">+</button>' +
+      '<input class="pr' + (changed ? ' spc' : '') + '" inputmode="decimal" value="' + s.price + '">' +
+      '</div>');
+    row.querySelector('.m').onclick = function () { s.qty = Math.max(0, num(s.qty) - s.step); if (!s.qty) sales.splice(i, 1); drawSalesDemo(); };
+    row.querySelector('.p').onclick = function () { s.qty = num(s.qty) + s.step; drawSalesDemo(); };
+    row.querySelector('.q').oninput = function () { s.qty = this.value; drawSalesDemo(); };
+    row.querySelector('.pr').oninput = function () { s.price = this.value; drawSalesDemo(); };
     w.appendChild(row);
   });
-  $('d-ltotal').textContent = fmt(listTotal()) + ' ₸';
+  if (!sales.length) w.innerHTML = '<div class="hint" style="text-align:center">Нажмите плитку или найдите позицию</div>';
+  $('dst').textContent = fmt(sum) + ' ₸';
 }
-
-function drawFav() {
-  var box = $('d-fav'); box.innerHTML = '';
-  MENU.slice(0, 6).forEach(function (m) {
-    var b = document.createElement('button');
-    b.type = 'button'; b.textContent = m.name;
-    b.onclick = function () { addRow(m.code); };
-    box.appendChild(b);
-  });
-}
-
-function addRow(code) {
-  if (rows.some(function (t) { return t.code === code; })) return;
-  var m = MENU.filter(function (x) { return x.code === code; })[0];
-  if (!m) return;
-  rows.push({ code: m.code, name: m.name, unit: m.unit, price: m.price,
-              factor: m.factor, punit: m.punit, pprice: m.pprice, issued: '', returned: '' });
-  recalc();
-}
-
-function search() {
-  var q = $('d-q').value.toLowerCase().replace(/ё/g, 'е').trim();
-  var res = q ? MENU.filter(function (m) { return m.name.toLowerCase().replace(/ё/g, 'е').indexOf(q) >= 0; }) : [];
-  $('d-qhint').textContent = q ? (res.length ? 'Найдено ' + res.length : 'Ничего не найдено — попробуйте часть слова') : '';
-  var w = $('d-res'); w.innerHTML = '';
-  res.slice(0, 6).forEach(function (m) {
-    var b = document.createElement('button');
-    b.type = 'button'; b.className = 'sitem';
-    b.innerHTML = '<span>' + esc(m.name) + '</span><span>' + esc(m.unit) + ' · ' + fmt(m.price) + ' ₸</span>';
-    b.onclick = function () { addRow(m.code); $('d-q').value = ''; search(); };
-    w.appendChild(b);
-  });
-}
-
-function drawRaw() {
-  var used = {};
-  rows.forEach(function (t) {
-    var ch = CHARTS[t.code]; if (!ch || !(soldOf(t) > 0)) return;
-    ch.forEach(function (p) { used[p[0]] = (used[p[0]] || 0) + p[1] * soldOf(t); });
-  });
-  var names = Object.keys(used).sort(function (a, b) { return used[b] - used[a]; });
-  var covered = rows.filter(function (t) { return CHARTS[t.code] && soldOf(t) > 0; }).length;
-  var total = rows.filter(function (t) { return soldOf(t) > 0; }).length;
-  $('d-raw').innerHTML = names.length
-    ? names.map(function (n) {
-        return '<div class="rrow"><span>' + esc(n) + '</span><b>' + (used[n] < 1 ? Math.round(used[n] * 1000) / 1000 : fmt(used[n])) + ' кг</b></div>';
-      }).join('') + '<div class="hint">Карты нашлись у ' + covered + ' позиций из ' + total + '. Для остальных калькуляции в iiko пока нет.</div>'
-    : '<div class="hint">Пока нечего считать — заполните заборный лист.</div>';
-}
-
-function recalc() {
-  drawRows(); drawRaw();
-  var cash = num($('d-cash').value), qr = num($('d-qr').value), tr = num($('d-tr').value);
-  var total = cash + qr + tr;
-  $('d-total').textContent = fmt(total) + ' ₸';
-  var pod = num($('d-ea').value);
-  var expected = num($('d-open').value) + cash - num($('d-handed').value) - pod;
-  $('d-expected').textContent = fmt(expected) + ' ₸';
-
-  var checks = [];
-  var qs = $('d-qrs').value, ts = $('d-trs').value;
-  if (qs === '' && ts === '') checks.push(['wait', 'Сверка с выписками не заполнена']);
-  else {
-    var dq = qs === '' ? 0 : qr - num(qs), dt = ts === '' ? 0 : tr - num(ts);
-    checks.push((dq === 0 && dt === 0)
-      ? ['ok', 'Выручка сходится с выписками']
-      : ['bad', 'Расхождение с выписками: QR ' + fmt(dq) + ', переводы ' + fmt(dt)]);
+function addDemoSale(code) {
+  var m = MENU_POS.filter(function (x) { return x.code === code; })[0];
+  var ex = sales.filter(function (x) { return x.code === code; })[0];
+  if (ex) { ex.qty = num(ex.qty) + m.step; } else {
+    sales.push({ code: m.code, name: m.name, unit: m.unit, qty: m.step, step: m.step, price: m.price, price_list: m.price });
   }
-  var cc = $('d-counted').value;
-  if (cc === '') checks.push(['wait', 'Касса не пересчитана']);
-  else {
-    var dc = expected - num(cc);
-    checks.push(dc === 0 ? ['ok', 'Касса сходится'] : ['bad', 'Расхождение по кассе: ' + fmt(dc) + ' ₸']);
-  }
-  if (pod > 0 && !$('d-er').value.trim()) checks.push(['bad', 'Строк подотчёта без номера чека: 1']);
-  else if (pod > 0) checks.push(['ok', 'Подотчёт подтверждён чеками']);
-
-  var byList = listTotal();
-  if (byList === 0) checks.push(['wait', 'По заборному листу пока ничего не внесено']);
-  else if (total === 0) checks.push(['wait', 'Выручка не заполнена — сверить не с чем']);
-  else {
-    var d = byList - total, pct = Math.abs(d) / total * 100;
-    checks.push(pct < 0.5 ? ['ok', 'Сумма по заборному листу сходится с выручкой']
-      : [pct <= 5 ? 'wait' : 'bad', 'По заборному листу ' + fmt(byList) + ' ₸, в кассе ' + fmt(total) +
-         ' ₸ — расхождение ' + fmt(d) + ' ₸ (' + (Math.round(pct * 10) / 10) + ' %)']);
-  }
-  $('d-checks').innerHTML = checks.map(function (c) {
-    return '<div class="chk ' + c[0] + '">' + esc(c[1]) + '</div>';
-  }).join('');
+  drawSalesDemo();
+}
+function mountSalesDemo() {
+  var fav = $('dfav');
+  MENU_POS.slice(0, 6).forEach(function (m) {
+    var b = el('<button type="button">' + esc(m.name) + '</button>');
+    b.onclick = function () { addDemoSale(m.code); };
+    fav.appendChild(b);
+  });
+  $('dq').oninput = function () {
+    var q = this.value.toLowerCase().replace(/ё/g, 'е').trim();
+    var res = q.length >= 2 ? MENU_POS.filter(function (m) { return m.name.toLowerCase().indexOf(q) >= 0; }) : [];
+    $('dqh').textContent = q.length >= 2 ? (res.length ? 'Найдено ' + res.length : 'Не нашлось — попробуйте часть слова') : '';
+    var w = $('dres'); w.innerHTML = '';
+    res.slice(0, 5).forEach(function (m) {
+      var b = el('<button class="ghost" type="button" style="margin-top:6px;text-align:left">' + esc(m.name) + ' · ' + fmt(m.price) + ' ₸</button>');
+      b.onclick = function () { addDemoSale(m.code); $('dq').value = ''; $('dq').dispatchEvent(new Event('input')); };
+      w.appendChild(b);
+    });
+  };
+  sales = [];
+  addDemoSale('1151'); sales[0].qty = 4;
+  drawSalesDemo();
 }
 
-/* ── Пошаговое объяснение ────────────────────────────────────────────── */
-var STEPS = [
-  { el: null, t: 'С чего всё начинается',
-    x: 'Каждый вечер, закрывая смену, вы заполняете этот отчёт с телефона. Устанавливать ничего не нужно — открывается по ссылке. Пройдём по нему сверху вниз: двенадцать шагов, минуты три.' },
-  { el: 'c-shift', t: 'Смена',
-    x: 'Дата ставится сама — сегодняшняя. Если заполняете за вчера, поменяйте. «Смену сдал» — кто отвечает за эти цифры; руководитель видит это имя в сводке.' },
-  { el: 'c-money', t: 'Выручка за смену',
-    x: 'Три строки по способам оплаты. Наличные — то, что в ящике. Kaspi QR — то, что пришло на терминал. Перевод — если платили на счёт. Итог считается сам, складывать в уме не надо.' },
-  { el: 'c-recon', t: 'Сверка с выписками',
-    x: 'Сюда переносите суммы из личного кабинета Kaspi и из выписки счёта. Это не лишняя работа: если ваша цифра и банковская разойдутся, вы увидите это сегодня, а не через месяц на ревизии.' },
-  { el: 'c-cash', t: 'Движение наличных',
-    x: 'Остаток на начало плюс наличная выручка минус сданное и минус подотчёт — программа сама считает, сколько должно остаться в ящике. Вы пересчитываете и вписываете фактическую сумму.' },
-  { el: 'c-exp', t: 'Расходы под отчёт',
-    x: 'Если из кассы что-то потратили — вписываете сюда, отдельной строкой, с номером чека. Без номера чека строка помечается нарушением и всплывает у руководителя. Это не придирка: так наличные перестают уходить незаметно.' },
-  { el: 'c-list', t: 'Заборный лист',
-    x: 'Главный экран для столовой. Сверху — ваши обычные позиции, они подставляются сами, искать не нужно. Утром вписываете, сколько выдали на раздачу; вечером — сколько осталось.' },
-  { el: 'c-list', t: 'Продано считается само',
-    x: 'Выдано минус остаток — это и есть продажи. Попробуйте поменять любую цифру в колонках «Выдано» и «Остаток»: третья колонка и сумма внизу пересчитаются сразу.' },
-  { el: 'c-list', t: 'Компот в бачке',
-    x: 'Посмотрите на строку «Компот в бачке»: учёт идёт в литрах, а продаёте вы стаканами. Программа знает, что в литре пять стаканов по 100 ₸, и переводит сама — вам считать не надо.' },
-  { el: 'c-list', t: 'Если позиции нет в списке',
-    x: 'Наберите в поиске две-три буквы — «котл», «гуляш». Список сузится, нажимаете нужное, оно добавится в лист. Полностью название набирать не нужно.' },
-  { el: 'c-raw', t: 'Расход сырья',
-    x: 'По калькуляциям из iiko программа показывает, сколько продуктов должно было уйти на проданное. Это подсказка для сверки со списанием: если разошлось сильно — есть что обсудить с кухней.' },
-  { el: 'c-checks', t: 'Проверки перед отправкой',
-    x: 'Зелёное — сошлось. Жёлтое — вы чего-то не заполнили. Красное — есть расхождение, и его лучше объяснить сразу, пока помните. Отчёт примут и с красным, но вопрос останется.' },
-  { el: 'c-save', t: 'Готово',
-    x: 'Нажимаете «Сохранить отчёт» — и он ушёл руководителю. Ошиблись? Откройте эту же дату и поправьте, отчёт перезапишется. Всё, смена закрыта.' }
+/* ── Заборный лист ── */
+function cardTake() {
+  return el('<div class="card" id="c-take"><h2>Заборный лист</h2>' +
+    '<button class="ghost" type="button" id="dyest" style="margin-bottom:10px">Заполнить как вчера</button>' +
+    '<div id="dtk"></div>' +
+    '<div class="tot"><span>Расчётная сумма по листу</span><span id="dtt">0 ₸</span></div></div>');
+}
+function drawTakeDemo() {
+  var w = $('dtk'); if (!w) return; w.innerHTML = '';
+  w.appendChild(el('<div class="trow th"><span>Позиция</span><span style="text-align:center">Выдано</span><span style="text-align:center">Остаток</span><span class="tp">Продано</span></div>'));
+  var sum = 0;
+  take.forEach(function (t) {
+    var sold = num(t.issued) - num(t.returned);
+    var small = t.factor ? Math.round(sold * t.factor * 100) / 100 : null;
+    sum += small !== null ? small * t.pprice : sold * t.price;
+    var row = el('<div class="trow"><span class="tn">' + esc(t.name) +
+      '<i>' + esc(t.unit) + (t.factor ? ' → ' + t.factor + ' ' + esc(t.punit) + ' по ' + fmt(t.pprice) + ' ₸' : '') + '</i></span>' +
+      '<input class="i" inputmode="decimal" value="' + (t.issued || '') + '">' +
+      '<input class="r" inputmode="decimal" value="' + (t.returned || '') + '">' +
+      '<span class="tp">' + fmt(sold) + (small !== null ? '<b>' + fmt(small) + ' ' + esc(t.punit) + '</b>' : '') + '</span></div>');
+    row.querySelector('.i').oninput = function () { t.issued = this.value; drawTakeDemo(); };
+    row.querySelector('.r').oninput = function () { t.returned = this.value; drawTakeDemo(); };
+    w.appendChild(row);
+  });
+  $('dtt').textContent = fmt(sum) + ' ₸';
+}
+function mountTakeDemo() {
+  take = MENU_TAKE.map(function (m) { return Object.assign({}, m); });
+  $('dyest').onclick = function () {
+    var demo = [35, 28, 30, 25, 20, 5];
+    take.forEach(function (t, i) { if (!t.issued) t.issued = demo[i] || 20; });
+    drawTakeDemo();
+  };
+  drawTakeDemo();
+}
+
+/* ── Импорт Актау ── */
+function cardImport() {
+  return el('<div class="card" id="c-imp"><h2>Загрузка листа продаж</h2>' +
+    '<div class="hint" style="margin:0 0 11px">В заводской программе: Отчёты → Сводка по товарообороту за день → Сохранить в Excel. Потом здесь:</div>' +
+    '<button type="button" id="dimp">Выбрать файл (в тренажёре — образец)</button>' +
+    '<div class="hint" id="dimps"></div><div id="dimpm" style="margin-top:10px"></div>' +
+    '<button type="button" id="dimpa" hidden style="margin-top:10px">Добавить в отчёт</button></div>');
+}
+var IMPD = [
+  { name: 'БЕЛЯШ', qty: 446, full: 260, disc: 184.45, to: 'Беляш жареный №3' },
+  { name: 'БУЛОЧКА С МАКОМ', qty: 914, full: 150, disc: 122.63, to: 'Булочка с маком1' },
+  { name: 'Биточки с фабрики', qty: 361, full: 460, disc: 379.72, to: '' },
+  { name: 'байкал 1литр', qty: 46, full: 550, disc: 550, to: 'Напиток Байкал 1л' }
 ];
-var step = 0;
+function drawImportDemo() {
+  var matched = IMPD.filter(function (r) { return r.to; }).length;
+  $('dimps').textContent = 'Файл разобран. Строк: 4 · распознано: ' + matched +
+    (matched < 4 ? ' · требует сопоставления: ' + (4 - matched) : '. Программа запомнила — в следующий раз сама.');
+  var w = $('dimpm'); w.innerHTML = '';
+  IMPD.forEach(function (r) {
+    var right = r.to
+      ? '<span class="iok">' + esc(r.to) + '</span>'
+      : '<input placeholder="Наберите: бито…" style="padding:8px 10px;font-size:13.5px;min-height:0">';
+    var row = el('<div class="irow' + (r.to ? '' : ' miss') + '"><span class="iname">' + esc(r.name) +
+      '<i>' + fmt(r.qty) + ' × ' + fmt(r.disc) + ' ₸ (полная ' + fmt(r.full) + ')</i></span>' + right + '</div>');
+    if (!r.to) {
+      row.querySelector('input').oninput = function () {
+        if (this.value.toLowerCase().indexOf('бит') >= 0) { r.to = 'Биточки паровые №3'; drawImportDemo(); }
+      };
+    }
+    w.appendChild(row);
+  });
+  $('dimpa').hidden = false;
+}
+function mountImportDemo() {
+  $('dimp').onclick = drawImportDemo;
+  $('dimpa').onclick = function () {
+    $('dimps').textContent = 'В отчёт добавлено 4 позиции. Скидка завода видна отдельно — полная цена хранится рядом с учётной. Осталось сохранить отчёт.';
+    $('dimpm').innerHTML = ''; $('dimpa').hidden = true;
+  };
+}
 
+/* ── Водитель ── */
+function cardDriver() {
+  return el('<div class="card" id="c-drv"><h2>Долги по точкам</h2><div id="ddl"></div>' +
+    '<div class="hint">Долг = отвезено − заплачено − возвраты. Красное — больше 100 тысяч.</div></div>');
+}
+function cardDriverForm() {
+  return el('<div class="card" id="c-drvf"><h2>Записать развоз</h2>' +
+    '<label>Куда возили</label><select id="ddc"><option>Бассейн Жастар</option><option>Магазин Сабина</option><option>Рынок, отдел 16</option></select>' +
+    '<div class="row2"><div><label>Отвёз по накладной, ₸</label><input id="ddd" inputmode="decimal" placeholder="0"></div>' +
+    '<div><label>Принял деньгами, ₸</label><input id="ddp" inputmode="decimal" placeholder="0"></div></div>' +
+    '<button type="button" id="dds" style="margin-top:14px">Записать</button>' +
+    '<div class="hint" id="ddm"></div></div>');
+}
+var DRVD = [['Бассейн Жастар', 480000], ['Магазин Сабина', 12400], ['Рынок, отдел 16', 0]];
+function drawDriverDemo() {
+  var w = $('ddl'); if (!w) return; w.innerHTML = '';
+  DRVD.forEach(function (d) {
+    w.appendChild(el('<div class="rrow"><span>' + d[0] + '</span><b style="color:' +
+      (d[1] > 100000 ? 'var(--bad)' : d[1] > 0 ? 'var(--warn)' : 'var(--ok)') + '">' + fmt(d[1]) + ' ₸</b></div>'));
+  });
+}
+function mountDriverDemo() {
+  drawDriverDemo();
+  $('dds').onclick = function () {
+    var i = $('ddc').selectedIndex;
+    DRVD[i][1] += num($('ddd').value) - num($('ddp').value);
+    drawDriverDemo();
+    $('ddm').textContent = 'Записано. Долг пересчитался сразу — и у вас, и у директора в сводке.';
+    $('ddd').value = ''; $('ddp').value = '';
+  };
+}
+
+/* ── Деньги смены ── */
+function cardMoney() {
+  return el('<div class="card" id="c-money"><h2>Выручка за смену</h2>' +
+    '<label>Наличные, ₸</label><input id="mc" inputmode="decimal" value="47010">' +
+    '<label>Kaspi QR, ₸</label><input id="mq" inputmode="decimal" value="12400">' +
+    '<label>Перевод на счёт, ₸</label><input id="mt" inputmode="decimal" value="0">' +
+    '<div class="tot"><span>Итого выручка</span><span id="mtot">59 410 ₸</span></div></div>');
+}
+function cardMoney2() {
+  return el('<div class="card" id="c-money2"><h2>Движение наличных</h2>' +
+    '<div class="row2"><div><label>Остаток на начало</label><input id="mo" inputmode="decimal" value="5000"></div>' +
+    '<div><label>Сдано / инкассация</label><input id="mh" inputmode="decimal" value="40000"></div></div>' +
+    '<label>Выдано под отчёт (№ чека обязателен)</label><input id="mp" inputmode="decimal" value="1000">' +
+    '<div class="tot"><span>Должно остаться в кассе</span><span id="mexp">11 010 ₸</span></div>' +
+    '<label>Фактически пересчитано, ₸</label><input id="mf" inputmode="decimal" value="11010">' +
+    '<div id="mchk"></div></div>');
+}
+function mountMoneyDemo() {
+  function re() {
+    var t = num($('mc').value) + num($('mq').value) + num($('mt').value);
+    $('mtot').textContent = fmt(t) + ' ₸';
+    if (!$('mexp')) return;
+    var exp = num($('mo').value) + num($('mc').value) - num($('mh').value) - num($('mp').value);
+    $('mexp').textContent = fmt(exp) + ' ₸';
+    var d = exp - num($('mf').value);
+    $('mchk').innerHTML = d === 0
+      ? '<div class="chk ok">Касса сходится</div>'
+      : '<div class="chk bad">Расхождение по кассе: ' + fmt(d) + ' ₸</div>';
+  }
+  ['mc', 'mq', 'mt', 'mo', 'mh', 'mp', 'mf'].forEach(function (id) { if ($(id)) $(id).oninput = re; });
+  re();
+}
+
+/* ── Директор ── */
+function cardDir1() {
+  return el('<div class="card" id="c-dir1"><h2>Не сдали отчёт за вчера</h2>' +
+    '<span class="pill bad">Буфет КМК-профиль</span><span class="pill bad">Столовая Актау</span>' +
+    '<div class="hint">Пустой отчёт — тоже сигнал. Позвоните, пока помнят вчерашний день.</div></div>');
+}
+function cardDir2() {
+  return el('<div class="card" id="c-dir2"><h2>Деньги за неделю</h2><div class="kpis">' +
+    '<div class="kpi"><div class="kl">Выручка</div><div class="kv">2 481 300 ₸</div></div>' +
+    '<div class="kpi"><div class="kl">Отчётов с расхождением</div><div class="kv bad">3</div></div></div>' +
+    '<div style="margin-top:10px">' +
+    '<div class="rrow"><span>Наличные</span><b>1 671 000 ₸ · 67 %</b></div>' +
+    '<div class="rrow"><span>Kaspi QR</span><b>712 300 ₸ · 29 %</b></div>' +
+    '<div class="rrow"><span>Перевод на счёт</span><b>98 000 ₸ · 4 %</b></div>' +
+    '<div class="rrow"><span style="color:var(--muted)">ТОО «Тандем KZ»</span><b>2 214 800 ₸</b></div>' +
+    '<div class="rrow"><span style="color:var(--muted)">ИП Глухих С. А.</span><b>266 500 ₸</b></div></div></div>');
+}
+function cardDir3() {
+  return el('<div class="card" id="c-dir3"><h2>Что продано — топ за неделю</h2>' +
+    '<table><thead><tr><th>Позиция</th><th style="text-align:right">Кол-во</th><th style="text-align:right">Сумма</th><th style="text-align:right">Скидка</th></tr></thead><tbody>' +
+    '<tr><td>Беляш жареный №3</td><td class="n">446</td><td class="n"><b>82 264</b></td><td class="n" style="color:var(--warn)">33 696</td></tr>' +
+    '<tr><td>Борщ№1</td><td class="n">184</td><td class="n"><b>101 200</b></td><td class="n">—</td></tr>' +
+    '<tr><td>Манты1</td><td class="n">312</td><td class="n"><b>68 640</b></td><td class="n">—</td></tr>' +
+    '</tbody></table>' +
+    '<div class="hint">Скидка — разница между прайсом и фактической ценой. У Актау это скидка сотрудникам завода, у Енешки — реализация.</div></div>');
+}
+function cardDir4() {
+  return el('<div class="card" id="c-dir4"><h2>Расход сырья и долги</h2>' +
+    '<div class="rrow"><span>Фарш говяжий ПФ</span><b>28,4 кг</b></div>' +
+    '<div class="rrow"><span>Картофель очищ ПФ</span><b>22,1 кг</b></div>' +
+    '<div class="rrow"><span>Бульон говяжий ПФ</span><b>18,4 кг</b></div>' +
+    '<div style="margin-top:12px" class="rrow"><span><b>Бассейн Жастар</b></span><b style="color:var(--bad)">480 000 ₸</b></div>' +
+    '<div class="hint">Расход — по техкартам iiko на проданное: сверяйте со списанием. Долги — из журнала водителя.</div></div>');
+}
+
+/* ── Роли и сценарии ── */
+var ROLES = [
+  { id: 'pos', n: '1', t: 'Продавец: Аян и Енешка', p: 'Продажи по позициям: плитки, поиск, чек. Здесь же пробивают буфет КМК и выпечку под реализацию.' },
+  { id: 'take', n: '2', t: 'Кассир столовой или буфета', p: 'Заборный лист: выдали на раздачу, вечером остаток — продано считается само. КарИУ, ВТУЗ, КМК.' },
+  { id: 'imp', n: '3', t: 'Актау: загрузка файла', p: 'Ничего не набиваем — выгружаем отчёт из заводской программы, файл разбирается сам.' },
+  { id: 'drv', n: '4', t: 'Водитель: развоз и долги', p: 'Кто взял продукцию, кто заплатил, кто должен. Бассейн, магазины, рынок.' },
+  { id: 'money', n: '5', t: 'Деньги смены — все точки', p: 'Выручка тремя способами, сверка с выпиской, касса, подотчёт. Общая часть для всех.' },
+  { id: 'dir', n: '6', t: 'Директор: утренняя сводка', p: 'Кто не сдал отчёт, деньги по каналам, что продано, расход сырья, долги по реализации.' }
+];
+
+var SCEN = {
+  pos: {
+    title: 'Продавец: Аян и Енешка', sub: 'Продажи по позициям',
+    cards: [cardSales, cardMoney], mount: [mountSalesDemo, mountMoneyDemo],
+    steps: [
+      ['c-sales', 'Плитки — самое ходовое', 'Сверху то, что продаётся чаще всего именно у вас — по вашей же истории. Один тап — позиция в чеке. Манты уже пробиты: нажмите плитку ещё раз, количество прибавится.'],
+      ['c-sales', 'Поиск с двух букв', 'Чего нет в плитках — ищите: «пель», «котл». Тап по найденному добавляет в чек. Листать сотни названий не нужно никогда.'],
+      ['c-sales', 'Количество и вес', 'Кнопки − и + меняют количество: штучное по одной, весовое по полкило. Точный вес можно вписать руками.'],
+      ['c-sales', 'Цена — жёлтое поле', 'Продали по другой цене — поправьте прямо в строке. Поле подсветится, под названием останется цена по прайсу. Руководитель увидит разницу как скидку: для реализации это нормально, но видно.'],
+      ['c-money', 'В конце смены — деньги', 'Выручка тремя способами. Итог по чекам сверится с деньгами автоматически — расхождение будет видно до сохранения.'],
+      ['c-money', 'Про Енешку', 'На кассе Енешки пробивается и буфет КМК, и выпечка под реализацию — как и раньше, ничего не меняется. Просто теперь всё это видно в одной базе.']
+    ]
+  },
+  take: {
+    title: 'Кассир столовой', sub: 'Заборный лист · КарИУ, ВТУЗ, КМК',
+    cards: [cardTake, cardMoney], mount: [mountTakeDemo, mountMoneyDemo],
+    steps: [
+      ['c-take', 'Ваши позиции уже на месте', 'Список — то, что вы обычно выдаёте на раздачу, он подставляется сам. Кнопка «как вчера» повторяет вчерашний набор одним нажатием.'],
+      ['c-take', 'Утром: выдано', 'Что и сколько поставили на раздачу — в первую колонку. Это одна минута.'],
+      ['c-take', 'Вечером: остаток', 'Перевесили, что осталось, — во вторую. «Продано» считается само: выдано минус остаток. Попробуйте поменять цифры.'],
+      ['c-take', 'Компот в бачке', 'Учёт в литрах, продажа стаканами. Программа знает: в литре 5 стаканов по 100 ₸ — и пересчитывает сама. Видно в строке компота.'],
+      ['c-money', 'Сверка с кассой', 'Расчётная сумма по листу сравнивается с деньгами в кассе. Расхождение видно сразу, до сохранения. Больше 5 % — попросит комментарий.']
+    ]
+  },
+  imp: {
+    title: 'Актау: загрузка файла', sub: 'Кассиры работают в заводской программе — и пусть работают',
+    cards: [cardImport, cardMoney], mount: [mountImportDemo, mountMoneyDemo],
+    steps: [
+      ['c-imp', 'Ничего не набиваем', 'Кассиры Актау работают в программе завода — параллельно вводить в нашу невозможно, и не нужно. Раз в день выгружается «Сводка по товарообороту» и загружается сюда файлом. Нажмите кнопку — увидите, как это выглядит.'],
+      ['c-imp', 'Названия сопоставляются один раз', 'В заводской программе «БЕЛЯШ», у нас «Беляш жареный №3». Незнакомое название программа спросит один раз — наберите пару букв в жёлтой строке. Дальше запомнит навсегда.'],
+      ['c-imp', 'Скидка завода сохраняется', 'В файле две суммы: полная и со скидкой сотрудникам. Программа хранит обе — и впервые видно, сколько скидки раздано за день, а не за месяц.'],
+      ['c-money', 'Деньги — как у всех', 'Выручка, сверка, касса заполняются как на любой точке. Теперь у Актау есть и деньги, и ассортимент.']
+    ]
+  },
+  drv: {
+    title: 'Водитель: развоз и долги', sub: 'Реализация — бассейн, магазины, рынок',
+    cards: [cardDriver, cardDriverForm], mount: [mountDriverDemo],
+    steps: [
+      ['c-drv', 'Долги всегда перед глазами', 'По каждой точке видно, сколько за ней числится: отвезли минус заплатили минус возвраты. Красное — больше ста тысяч. Держать это в голове больше не нужно.'],
+      ['c-drvf', 'Отвёз — запиши', 'Привезли продукцию — сумма по накладной в левое поле. Забрали деньги — в правое. Можно и то и другое сразу. Попробуйте: запишите развоз, долг пересчитается на глазах.'],
+      ['c-drvf', 'Деньги видны в тот же день', 'Каждая запись сразу видна руководителю. «Привезу деньги послезавтра» перестаёт быть невидимым — долг висит на точке, пока деньги не сданы.']
+    ]
+  },
+  money: {
+    title: 'Деньги смены', sub: 'Общая часть для всех точек',
+    cards: [cardMoney, cardMoney2], mount: [mountMoneyDemo],
+    steps: [
+      ['c-money', 'Три способа оплаты', 'Наличные из ящика, Kaspi QR с терминала, переводы на счёт. Итог складывается сам, а назавтра сверяется с выпиской.'],
+      ['c-money2', 'Касса должна сойтись', 'Остаток на начало плюс наличная выручка минус сданное минус подотчёт — программа говорит, сколько должно быть в ящике. Пересчитайте и впишите факт. Поменяйте любую цифру — проверка внизу отреагирует.'],
+      ['c-money2', 'Подотчёт — только с чеком', 'Потратили из кассы — запишите с номером чека. Без номера строка станет нарушением и подсветится у руководителя. Так наличные перестают исчезать незаметно.']
+    ]
+  },
+  dir: {
+    title: 'Директор: утренняя сводка', sub: 'Три минуты за чаем — и картина дня',
+    cards: [cardDir1, cardDir2, cardDir3, cardDir4], mount: [],
+    steps: [
+      ['c-dir1', 'Первое: кто не сдал', 'Красные плашки — точки без вчерашнего отчёта. Это первое, что видно утром. Пустота больше не маскируется нулями.'],
+      ['c-dir2', 'Деньги: каналы и юрлица', 'Выручка периода по способам оплаты и раздельно по ТОО и ИП. Фотографии кассы в WhatsApp больше не нужны — всё стеклось сюда само.'],
+      ['c-dir3', 'Что продано и где скидки', 'Впервые видно продажи по позициям со всех точек — и сколько скидки роздано. Жёлтая цифра у беляша — скидка сотрудникам завода в Актау.'],
+      ['c-dir4', 'Сырьё и долги', 'Расход продуктов по техкартам на проданное — для сверки со списанием. И долги по реализации из журнала водителя: бассейн должен 480 тысяч, и это видно каждый день, а не при случайном пересчёте.'],
+      ['c-dir1', 'Правило одно', 'Программа не добавляет вам работы — она её снимает: смотреть, а не собирать. Если точка постоянно в красном — это разговор с точкой, а не с программой.']
+    ]
+  }
+};
+
+/* ── Движок ── */
+var cur = null, step = 0;
+
+function showRoles() {
+  document.body.classList.remove('touring');
+  $('tour').hidden = true; $('stage').hidden = true; $('pick').hidden = false;
+  window.scrollTo(0, 0);
+}
+function openRole(id) {
+  cur = SCEN[id];
+  $('pick').hidden = true; $('stage').hidden = false;
+  $('rtitle').textContent = cur.title;
+  $('rsub').textContent = cur.sub;
+  var w = $('cards'); w.innerHTML = '';
+  cur.cards.forEach(function (fn) { w.appendChild(fn()); });
+  (cur.mount || []).forEach(function (fn) { try { fn(); } catch (e) { } });
+  $('tour').hidden = false;
+  showStep(0);
+}
 function showStep(i) {
-  step = Math.max(0, Math.min(STEPS.length - 1, i));
-  var s = STEPS[step];
+  step = Math.max(0, Math.min(cur.steps.length - 1, i));
+  var s = cur.steps[step];
   document.body.classList.add('touring');
   [].forEach.call(document.querySelectorAll('.card'), function (c) { c.classList.remove('spot'); });
-  if (s.el) {
-    var el = $(s.el);
-    el.classList.add('spot');
-    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-  } else {
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-  }
-  $('t-num').textContent = 'Шаг ' + (step + 1) + ' из ' + STEPS.length;
-  $('t-title').textContent = s.t;
-  $('t-text').textContent = s.x;
+  var c = $(s[0]);
+  if (c) { c.classList.add('spot'); c.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
+  $('t-num').textContent = 'Шаг ' + (step + 1) + ' из ' + cur.steps.length;
+  $('t-title').textContent = s[1];
+  $('t-text').textContent = s[2];
   $('t-prev').disabled = step === 0;
-  $('t-next').textContent = step === STEPS.length - 1 ? 'Закончить' : 'Дальше';
-  $('t-bar').style.width = ((step + 1) / STEPS.length * 100) + '%';
+  $('t-next').textContent = step === cur.steps.length - 1 ? 'К выбору ролей' : 'Дальше';
+  $('t-bar').style.width = ((step + 1) / cur.steps.length * 100) + '%';
 }
-function endTour() {
+$('t-next').onclick = function () { step === cur.steps.length - 1 ? showRoles() : showStep(step + 1); };
+$('t-prev').onclick = function () { showStep(step - 1); };
+$('t-close').onclick = function () {
   document.body.classList.remove('touring');
   [].forEach.call(document.querySelectorAll('.card'), function (c) { c.classList.remove('spot'); });
   $('tour').hidden = true;
-  $('startbar').hidden = false;
-  $('btn-start').textContent = 'Пройти обучение ещё раз';
-}
-
-$('btn-start').onclick = function () { $('startbar').hidden = true; $('tour').hidden = false; showStep(0); };
-$('t-next').onclick = function () { if (step === STEPS.length - 1) endTour(); else showStep(step + 1); };
-$('t-prev').onclick = function () { showStep(step - 1); };
-$('t-close').onclick = endTour;
-$('d-q').oninput = search;
-$('d-save').onclick = function () {
-  $('d-save').disabled = true;
-  $('d-savemsg').textContent = 'Сохраняю…';
-  setTimeout(function () {
-    $('d-save').disabled = false;
-    $('d-savemsg').textContent = 'В тренажёре ничего не сохраняется. В рабочей программе отчёт в этот момент уходит руководителю.';
-  }, 700);
 };
-['d-cash','d-qr','d-tr','d-qrs','d-trs','d-open','d-handed','d-counted','d-ea','d-er'].forEach(function (id) {
-  $(id).oninput = recalc;
-});
+$('toroles').onclick = showRoles;
 
-drawFav();
-recalc();
-$('btn-start').textContent = 'Пройти обучение — ' + STEPS.length + ' шагов';
+ROLES.forEach(function (r) {
+  var b = el('<button class="role" type="button"><span class="rn">' + r.n + '</span><span><b>' + r.t + '</b><p>' + r.p + '</p></span></button>');
+  b.onclick = function () { openRole(r.id); };
+  $('roles').appendChild(b);
+});
 </script>
 </body>
 </html>
