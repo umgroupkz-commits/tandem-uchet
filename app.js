@@ -797,18 +797,25 @@ function loadDash() {
     S.dash = r;
     var rows = r.rows || [];
     var byPoint = {}, tot = 0, totPod = 0, flags = 0;
+    // Сколько дней в периоде — чтобы посчитать несданные отчёты по каждой точке
+    var dFrom = new Date($('dfrom').value), dTo = new Date($('dto').value);
+    var periodDays = Math.max(1, Math.round((Math.min(dTo, new Date()) - dFrom) / 86400000) + 1);
     for (var i = 0; i < rows.length; i++) {
       var x = rows[i];
       tot += num(x.revenue_total); totPod += num(x.podotchet);
-      var bad = (x.diff_qr !== null && num(x.diff_qr) !== 0) ||
-        (x.diff_transfer !== null && num(x.diff_transfer) !== 0) ||
-        (x.diff_cash !== null && num(x.diff_cash) !== 0) ||
-        num(x.expenses_no_receipt) > 0;
+      var diffSum = Math.abs(num(x.diff_qr)) + Math.abs(num(x.diff_transfer)) + Math.abs(num(x.diff_cash));
+      var bad = diffSum > 0 || num(x.expenses_no_receipt) > 0;
       if (bad) flags++;
-      if (!byPoint[x.point_name]) byPoint[x.point_name] = { rev: 0, days: 0 };
+      if (!byPoint[x.point_name]) byPoint[x.point_name] = { rev: 0, days: 0, badDays: 0, diff: 0 };
       byPoint[x.point_name].rev += num(x.revenue_total);
       byPoint[x.point_name].days++;
+      if (bad) byPoint[x.point_name].badDays++;
+      byPoint[x.point_name].diff += diffSum;
     }
+    // точки без единого отчёта тоже должны быть видны
+    (r.points || []).forEach(function (p) {
+      if (!byPoint[p.name]) byPoint[p.name] = { rev: 0, days: 0, badDays: 0, diff: 0 };
+    });
     $('k1').textContent = fmt(tot) + ' ₸';
     $('k2').textContent = rows.length;
     $('k3').textContent = fmt(totPod) + ' ₸';
@@ -817,12 +824,17 @@ function loadDash() {
 
     var pb = $('pbody'); pb.innerHTML = '';
     var names = Object.keys(byPoint).sort(function (a, b) { return byPoint[b].rev - byPoint[a].rev; });
-    if (!names.length) pb.innerHTML = '<tr><td colspan="4" class="empty">Отчётов пока нет</td></tr>';
+    if (!names.length) pb.innerHTML = '<tr><td colspan="7" class="empty">Отчётов пока нет</td></tr>';
     for (var n = 0; n < names.length; n++) {
       var p = byPoint[names[n]];
+      var missed = Math.max(0, periodDays - p.days);
       var tr2 = document.createElement('tr');
-      tr2.innerHTML = '<td>' + names[n] + '</td><td class="n">' + fmt(p.rev) + '</td>' +
-        '<td class="n">' + p.days + '</td><td class="n">' + fmt(p.rev / (p.days || 1)) + '</td>';
+      tr2.innerHTML = '<td>' + names[n] + '</td><td class="n b">' + fmt(p.rev) + '</td>' +
+        '<td class="n">' + p.days + '</td>' +
+        '<td class="n">' + (missed ? '<span style="color:var(--bad);font-weight:700">' + missed + '</span>' : '0') + '</td>' +
+        '<td class="n">' + fmt(p.days ? p.rev / p.days : 0) + '</td>' +
+        '<td class="n">' + (p.badDays ? '<span style="color:var(--warn);font-weight:700">' + p.badDays + '</span>' : '—') + '</td>' +
+        '<td class="n">' + (p.diff ? '<span style="color:var(--bad)">' + fmt(p.diff) + '</span>' : '—') + '</td>';
       pb.appendChild(tr2);
     }
 
@@ -885,13 +897,90 @@ function loadDash() {
       if (num(y.expenses_no_receipt) > 0) issues.push('без чека: ' + y.expenses_no_receipt);
       if (y.qr_statement === null && y.tr_statement === null) issues.push('нет сверки');
       var trr = document.createElement('tr');
+      trr.style.cursor = 'pointer';
       trr.innerHTML = '<td>' + y.report_date + '</td><td>' + y.point_name + '</td>' +
         '<td class="n">' + fmt(y.cash) + '</td><td class="n">' + fmt(y.kaspi_qr) + '</td>' +
         '<td class="n">' + fmt(y.transfer) + '</td><td class="n b">' + fmt(y.revenue_total) + '</td>' +
         '<td class="n">' + fmt(y.cash_handed) + '</td><td class="n">' + fmt(y.podotchet) + '</td>' +
         '<td>' + (issues.length ? '<span class="pill bad">' + issues.join(' · ') + '</span>' : '<span class="pill ok">ОК</span>') + '</td>';
+      (function (row, tr) { tr.onclick = function () { toggleReportDetail(tr, row); }; })(y, trr);
       b.appendChild(trr);
     }
+  });
+}
+
+/* Раскрытие отчёта прямо в сводке: собственник видит весь день точки,
+   не выходя из дашборда, — позиции, заборный лист, расходы, комментарий. */
+function toggleReportDetail(tr, row) {
+  var next = tr.nextElementSibling;
+  if (next && next.className === 'detail-row') { next.remove(); return; }
+  var open = tr.parentNode.querySelector('.detail-row');
+  if (open) open.remove();
+
+  var dtr = document.createElement('tr');
+  dtr.className = 'detail-row';
+  dtr.innerHTML = '<td colspan="9" style="background:#F7F9FC;padding:14px 16px">Загружаю отчёт…</td>';
+  tr.parentNode.insertBefore(dtr, tr.nextSibling);
+
+  fetch(API, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ action: 'get_report', payload: { pin: S.pin, point_id: row.point_id, date: row.report_date } })
+  }).then(function (r) { return r.json(); }).then(function (d) {
+    var html = '<td colspan="9" style="background:#F7F9FC;padding:14px 16px">';
+    var sl = d.sales || [], tk = d.takeout || [], ex = d.expenses || [];
+
+    if (sl.length) {
+      html += '<b style="font-size:12px;text-transform:uppercase;color:var(--muted)">Продажи по позициям (' + sl.length + ')</b>';
+      var sTot = 0, sDisc = 0;
+      html += '<div style="margin:6px 0 12px">';
+      sl.forEach(function (x) {
+        var line = num(x.qty) * num(x.price); sTot += line;
+        var disc = num(x.price_list) > num(x.price) ? num(x.qty) * (num(x.price_list) - num(x.price)) : 0;
+        sDisc += disc;
+        html += '<div class="rrow"><span>' + x.item_name + ' × ' + fmt(x.qty) +
+          (disc ? ' <span style="color:var(--warn)">(скидка ' + fmt(disc) + ')</span>' : '') +
+          '</span><b>' + fmt(line) + ' ₸</b></div>';
+      });
+      html += '<div class="rrow"><span><b>Итого по позициям</b>' +
+        (sDisc ? ' · скидок на ' + fmt(sDisc) + ' ₸' : '') + '</span><b>' + fmt(sTot) + ' ₸</b></div></div>';
+    }
+    if (tk.length) {
+      html += '<b style="font-size:12px;text-transform:uppercase;color:var(--muted)">Заборный лист (' + tk.length + ')</b>';
+      var tTot = 0;
+      html += '<div style="margin:6px 0 12px">';
+      tk.forEach(function (x) {
+        var sold = num(x.issued) - num(x.returned);
+        var line = sold * num(x.price); tTot += line;
+        html += '<div class="rrow"><span>' + x.item_name + ': выдано ' + fmt(x.issued) +
+          ', остаток ' + fmt(x.returned) + ' → продано ' + fmt(sold) + '</span><b>' + fmt(line) + ' ₸</b></div>';
+      });
+      html += '<div class="rrow"><span><b>Итого по листу</b></span><b>' + fmt(tTot) + ' ₸</b></div></div>';
+    }
+    if (ex.length) {
+      html += '<b style="font-size:12px;text-transform:uppercase;color:var(--muted)">Расходы под отчёт</b>';
+      html += '<div style="margin:6px 0 12px">';
+      ex.forEach(function (x) {
+        html += '<div class="rrow"><span>' + (x.purpose || '—') +
+          (x.receipt_no ? ' · чек № ' + x.receipt_no : ' · <span style="color:var(--bad)">без чека</span>') +
+          '</span><b>' + fmt(x.amount) + ' ₸</b></div>';
+      });
+      html += '</div>';
+    }
+    var rep = d.report || {};
+    html += '<b style="font-size:12px;text-transform:uppercase;color:var(--muted)">Деньги</b><div style="margin:6px 0 0">';
+    html += '<div class="rrow"><span>Сдал: ' + (rep.shift_by || '—') + '</span><span></span></div>';
+    html += '<div class="rrow"><span>Касса: должно ' + fmt(rep.cash_expected) + ' ₸, пересчитано ' +
+      (rep.cash_counted === null || rep.cash_counted === undefined ? 'не пересчитана' : fmt(rep.cash_counted) + ' ₸') + '</span>' +
+      (num(rep.diff_cash) !== 0 && rep.diff_cash !== null ? '<b style="color:var(--bad)">' + fmt(rep.diff_cash) + ' ₸</b>' : '<b style="color:var(--ok)">ок</b>') + '</div>';
+    if (rep.comment) html += '<div class="rrow"><span>Комментарий: ' + rep.comment + '</span><span></span></div>';
+    html += '</div>';
+    if (!sl.length && !tk.length && !ex.length) {
+      html += '<div class="hint">Позиций в этом отчёте нет — точка сдала только суммы.</div>';
+    }
+    html += '</td>';
+    dtr.innerHTML = html;
+  }).catch(function () {
+    dtr.innerHTML = '<td colspan="9" style="padding:14px 16px;color:var(--bad)">Не удалось загрузить отчёт</td>';
   });
 }
 

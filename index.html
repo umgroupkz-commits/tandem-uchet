@@ -300,10 +300,13 @@
     <h2>По точкам</h2>
     <div class="scroll">
       <table>
-        <thead><tr><th>Точка</th><th style="text-align:right">Выручка</th><th style="text-align:right">Дней</th><th style="text-align:right">В среднем в день</th></tr></thead>
+        <thead><tr><th>Точка</th><th style="text-align:right">Выручка</th><th style="text-align:right">Сдано дней</th>
+          <th style="text-align:right">Не сдано</th><th style="text-align:right">В среднем в день</th>
+          <th style="text-align:right">Дней с расхождением</th><th style="text-align:right">Расхождение, ₸</th></tr></thead>
         <tbody id="pbody"></tbody>
       </table>
     </div>
+    <div class="hint">Енешка и буфет КМК здесь раздельно — хотя в iiko их чеки идут через одну кассу. Именно это разделение iiko дать не может.</div>
   </div>
 
   <div class="card">
@@ -335,6 +338,7 @@
 
   <div class="card">
     <h2>Все отчёты</h2>
+    <div class="hint" style="margin:0 0 10px">Нажмите на строку — раскроется весь отчёт: позиции, расходы, комментарий.</div>
     <div class="scroll">
       <table>
         <thead><tr><th>Дата</th><th>Точка</th><th style="text-align:right">Нал.</th><th style="text-align:right">QR</th>
