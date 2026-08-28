@@ -3,3 +3,4 @@
 *.key
 *secret*
 tools/*.local.*
+_preview*
