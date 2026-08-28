@@ -65,6 +65,7 @@ function doLogin(asOwner) {
     if (!res.ok) { $('lerr').textContent = res.error || 'Не пустило'; $('oerr').textContent = res.error || 'Не пустило'; return; }
     S.role = res.role;
     if (res.role === 'owner') { showDash(); return; }
+    if (res.role === 'driver') { showDriver(); return; }
     S.point = res.point; S.mode = res.point.mode;
     try { localStorage.setItem('tandem_login', JSON.stringify({ point_id: pid, pin: pin })); } catch (e) { }
     showForm();
@@ -73,20 +74,24 @@ function doLogin(asOwner) {
 
 function logout() {
   S.role = null; S.point = null; S.pin = '';
-  $('screen-login').hidden = false; $('screen-form').hidden = true; $('screen-dash').hidden = true;
+  $('screen-login').hidden = false; $('screen-form').hidden = true;
+  $('screen-dash').hidden = true; $('screen-driver').hidden = true;
 }
 
 function showForm() {
   $('screen-login').hidden = true; $('screen-form').hidden = false; $('screen-dash').hidden = true;
   $('fpoint').textContent = S.point.name;
   $('fmode').textContent = S.mode === 'takeout' ? 'заборный лист' :
-    (S.mode === 'position' ? 'продажи по позициям' : 'только суммы');
+    S.mode === 'position' ? 'продажи по позициям' :
+    S.mode === 'import' ? 'загрузка листа продаж' : 'только суммы';
   $('date').value = today();
   $('block-takeout').hidden = (S.mode !== 'takeout');
-  $('block-sales').hidden = (S.mode !== 'position');
+  $('block-sales').hidden = (S.mode !== 'position' && S.mode !== 'import');
+  $('block-import').hidden = (S.mode !== 'import');
+  if (S.mode === 'import') mountImport();
   api('items', {}).then(function (r) {
     S.items = (r && r.items) ? r.items : [];
-    for (var i = 0; i < S.items.length; i++) S.items[i]._n = norm(S.items[i].name);
+    for (var i = 0; i < S.items.length; i++) S.items[i]._n = norm(S.items[i].name) + ' ' + (S.items[i].artikul || '');
     if (S.mode === 'takeout') mountSearch('tq', 'thint', 'tres', addTakeout);
     if (S.mode === 'position') mountSearch('sq', 'shint', 'sres', addSale);
     drawFav();
@@ -228,8 +233,12 @@ function loadReport() {
       if (ref) {
         S.sales[q].unit = ref.unit;
         if (!S.sales[q].price) S.sales[q].price = ref.price || '';
+        if (S.sales[q].price_list === undefined || S.sales[q].price_list === null || S.sales[q].price_list === '') {
+          S.sales[q].price_list = ref.price || '';
+        }
       }
     }
+    restoreDraft(!rep);
     var rep = r.report;
     var f = ['cash', 'kaspi_qr', 'transfer', 'qr_statement', 'tr_statement', 'cash_open', 'cash_handed', 'cash_counted'];
     for (var i = 0; i < f.length; i++) {
@@ -373,7 +382,7 @@ function addSale(code) {
   }
   S.sales.push({
     item_code: it.code, item_name: it.name, unit: it.unit,
-    qty: step(it.unit), price: it.price || ''
+    qty: step(it.unit), price: it.price || '', price_list: it.price || ''
   });
   drawSales();
 }
@@ -396,17 +405,23 @@ function drawSales() {
     var s = S.sales[i];
     var line = num(s.qty) * num(s.price);
     sum += line;
+    // Цена в строке редактируется: «часто сами цены говорят». Отличие от прайса
+    // подсвечивается и считается скидкой — собственник видит её в сводке.
+    var changed = s.price_list !== undefined && s.price_list !== '' &&
+      num(s.price) !== num(s.price_list);
     var row = document.createElement('div'); row.className = 'srow';
     row.innerHTML =
       '<span class="sn">' + esc(s.item_name) +
-      '<i>' + esc(s.unit || '') + (s.price ? ' · ' + fmt(s.price) + ' ₸' : ' · цены нет') + '</i></span>' +
+      '<i>' + esc(s.unit || '') +
+      (changed ? ' · по прайсу ' + fmt(s.price_list) + ' ₸' : '') + '</i></span>' +
       '<button class="pm minus" type="button">−</button>' +
       '<input class="sq" inputmode="decimal" value="' + (s.qty === '' ? '' : s.qty) + '">' +
       '<button class="pm plus" type="button">+</button>' +
-      '<span class="ssum">' + fmt(line) + '</span>' +
+      '<input class="sq sp' + (changed ? ' spc' : '') + '" inputmode="decimal" value="' + (s.price === '' ? '' : s.price) + '">' +
       '<button class="x" type="button">×</button>';
     (function (idx, row) {
       row.querySelector('.sq').oninput = function () { S.sales[idx].qty = this.value; drawSales(); };
+      row.querySelector('.sp').oninput = function () { S.sales[idx].price = this.value; drawSales(); };
       row.querySelector('.minus').onclick = function () { chgSale(idx, -1); };
       row.querySelector('.plus').onclick = function () { chgSale(idx, +1); };
       row.querySelector('.x').onclick = function () { S.sales.splice(idx, 1); drawSales(); };
@@ -426,6 +441,263 @@ function takeoutTotal() {
   var sum = 0;
   for (var i = 0; i < S.takeout.length; i++) sum += lineSum(S.takeout[i]);
   return sum;
+}
+
+
+/* ── Черновик смены ──────────────────────────────────────────────────────
+   Связь на точках нестабильная. Всё введённое пишется в localStorage и
+   восстанавливается, если смена ещё не была сохранена на сервере. */
+function draftKey() { return 'tandem_draft_' + (S.point ? S.point.id : '') + '_' + $('date').value; }
+function saveDraft() {
+  if (!S.point) return;
+  try {
+    var f = {};
+    ['shift_by','cash','kaspi_qr','transfer','qr_statement','tr_statement',
+     'cash_open','cash_handed','cash_counted','comment'].forEach(function (id) {
+      var el = $(id); if (el) f[id] = el.value;
+    });
+    localStorage.setItem(draftKey(), JSON.stringify({
+      t: Date.now(), fields: f, expenses: S.expenses, takeout: S.takeout, sales: S.sales
+    }));
+  } catch (e) { }
+}
+function restoreDraft(serverEmpty) {
+  if (!S.point || !serverEmpty) return;
+  var raw = null;
+  try { raw = localStorage.getItem(draftKey()); } catch (e) { }
+  if (!raw) return;
+  try {
+    var d = JSON.parse(raw);
+    for (var id in (d.fields || {})) { var el = $(id); if (el && !el.value) el.value = d.fields[id]; }
+    if (!S.expenses.length && d.expenses) S.expenses = d.expenses;
+    if (!S.takeout.length && d.takeout) S.takeout = d.takeout;
+    if (!S.sales.length && d.sales) S.sales = d.sales;
+    $('savemsg').textContent = 'Восстановлен черновик — данные не потерялись';
+  } catch (e) { }
+}
+function clearDraft() { try { localStorage.removeItem(draftKey()); } catch (e) { } }
+
+/* ── «Как вчера» — заборный лист со вчерашними позициями ────────────── */
+function likeYesterday() {
+  var d = new Date($('date').value || today());
+  d.setDate(d.getDate() - 1);
+  var y = d.toISOString().slice(0, 10);
+  api('get_report', { date: y }).then(function (r) {
+    var rows = (r && r.takeout) || [];
+    if (!rows.length) { $('savemsg').textContent = 'За вчера заборного листа нет'; return; }
+    var added = 0;
+    for (var i = 0; i < rows.length; i++) {
+      var exists = S.takeout.some(function (t) { return t.item_code === rows[i].item_code; });
+      if (exists) continue;
+      var ref = itemByCode(rows[i].item_code) || {};
+      S.takeout.push({
+        item_code: rows[i].item_code, item_name: rows[i].item_name,
+        unit: rows[i].unit || ref.unit || 'шт', issued: '', returned: '',
+        price: ref.price || rows[i].price || '',
+        pack_factor: ref.pack_factor, pack_unit: ref.pack_unit, pack_price: ref.pack_price
+      });
+      added++;
+    }
+    drawTakeout();
+    $('savemsg').textContent = added ? 'Подставлено вчерашних позиций: ' + added : 'Все вчерашние позиции уже в листе';
+  });
+}
+
+/* ── Импорт листа продаж (Актау) ─────────────────────────────────────────
+   Формат заводской программы: лист TDSheet, «Сводка по товарообороту»:
+   название | цена | количество | сумма полная | сумма со скидкой.
+   Названия чужие — сопоставляются с номенклатурой один раз, карта хранится. */
+var IMP = { rows: [], aliases: {}, xlsxReady: false };
+
+function mountImport() {
+  if (!IMP.mounted) {
+    IMP.mounted = true;
+    $('impfile').onchange = handleImportFile;
+    $('impapply').onclick = applyImport;
+  }
+  api('aliases', {}).then(function (r) { if (r && r.ok) IMP.aliases = r.aliases || {}; });
+}
+
+function loadXlsxLib() {
+  return new Promise(function (resolve, reject) {
+    if (window.XLSX) return resolve();
+    var sc = document.createElement('script');
+    sc.src = 'vendor/xlsx.full.min.js';
+    sc.onload = resolve;
+    sc.onerror = function () { reject(new Error('Не удалось загрузить обработчик Excel')); };
+    document.head.appendChild(sc);
+  });
+}
+
+function normAlias(t) {
+  return String(t || '').toLowerCase().replace(/ё/g, 'е').replace(/\s+/g, ' ').trim();
+}
+
+function handleImportFile() {
+  var f = $('impfile').files[0];
+  if (!f) return;
+  $('impstatus').textContent = 'Читаю файл…';
+  loadXlsxLib().then(function () {
+    var rd = new FileReader();
+    rd.onload = function () {
+      try {
+        var wb = XLSX.read(new Uint8Array(rd.result), { type: 'array' });
+        var ws = wb.Sheets['TDSheet'] || wb.Sheets[wb.SheetNames[0]];
+        var arr = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+        parseFactoryRows(arr);
+      } catch (e) {
+        $('impstatus').textContent = 'Не получилось разобрать файл: ' + e.message;
+      }
+    };
+    rd.readAsArrayBuffer(f);
+  }).catch(function (e) { $('impstatus').textContent = e.message; });
+}
+
+function parseFactoryRows(arr) {
+  IMP.rows = [];
+  for (var i = 0; i < arr.length; i++) {
+    var r = arr[i];
+    var name = String(r[0] || '').trim();
+    var price = num(r[1]), qty = num(r[2]), sumFull = num(r[3]), sumDisc = num(r[4]);
+    // строка данных: есть название, количество и хотя бы одна сумма;
+    // шапки и итог (без названия) отсеиваются сами
+    if (!name || !(qty > 0) || !(sumFull > 0)) continue;
+    if (/^вид номенклатуры|^сводка|^итого/i.test(name)) continue;
+    IMP.rows.push({
+      name: name, qty: qty,
+      price_list: price || (qty ? sumFull / qty : 0),
+      price: qty ? (sumDisc || sumFull) / qty : 0,
+      code: IMP.aliases[normAlias(name)] || matchByName(name) || ''
+    });
+  }
+  drawImportMap();
+}
+
+function matchByName(name) {
+  var n = normAlias(name);
+  for (var i = 0; i < S.items.length; i++) {
+    if (normAlias(S.items[i].name) === n) return S.items[i].code;
+  }
+  return '';
+}
+
+function drawImportMap() {
+  var w = $('impmap'); w.innerHTML = '';
+  var matched = 0, unmatched = 0;
+  IMP.rows.forEach(function (r) { r.code ? matched++ : unmatched++; });
+  $('impstatus').textContent = 'Строк: ' + IMP.rows.length + ' · распознано: ' + matched +
+    (unmatched ? ' · требуют сопоставления: ' + unmatched : '');
+  if (!IMP.rows.length) { $('impapply').hidden = true; return; }
+
+  IMP.rows.forEach(function (r, idx) {
+    var row = document.createElement('div');
+    row.className = 'irow' + (r.code ? '' : ' miss');
+    var right = r.code
+      ? '<span class="iok">' + esc((itemByCode(r.code) || {}).name || r.code) + '</span>'
+      : '<input class="ialias" placeholder="Найти в номенклатуре" list="impdl">';
+    row.innerHTML =
+      '<span class="iname">' + esc(r.name) + '<i>' + fmt(r.qty) + ' × ' + fmt(r.price) + ' ₸</i></span>' + right;
+    if (!r.code) {
+      var inp = row.querySelector('.ialias');
+      inp.oninput = function () {
+        var q = norm(this.value);
+        if (q.length < 2) return;
+        var hit = S.items.filter(function (m) { return m._n.indexOf(q) >= 0; });
+        if (hit.length === 1 || (hit.length && norm(hit[0].name) === q)) {
+          IMP.rows[idx].code = hit[0].code;
+          IMP.newAliases = IMP.newAliases || [];
+          IMP.newAliases.push({ alias: normAlias(IMP.rows[idx].name), code: hit[0].code });
+          drawImportMap();
+        }
+      };
+    }
+    w.appendChild(row);
+  });
+
+  // подсказки для ручного сопоставления
+  if (!document.getElementById('impdl')) {
+    var dl = document.createElement('datalist');
+    dl.id = 'impdl';
+    S.items.forEach(function (m) {
+      var o = document.createElement('option'); o.value = m.name; dl.appendChild(o);
+    });
+    document.body.appendChild(dl);
+  }
+  $('impapply').hidden = false;
+  $('impapply').textContent = 'Добавить в отчёт (' + matched + ' из ' + IMP.rows.length + ')';
+}
+
+function applyImport() {
+  var added = 0;
+  IMP.rows.forEach(function (r) {
+    if (!r.code) return;
+    var it = itemByCode(r.code); if (!it) return;
+    var exists = S.sales.some(function (x) { return x.item_code === r.code; });
+    if (exists) return;
+    S.sales.push({
+      item_code: r.code, item_name: it.name, unit: it.unit,
+      qty: r.qty, price: Math.round(r.price * 100) / 100,
+      price_list: Math.round(r.price_list * 100) / 100
+    });
+    added++;
+  });
+  drawSales();
+  if (IMP.newAliases && IMP.newAliases.length) {
+    api('save_aliases', { data: IMP.newAliases });
+    IMP.newAliases = [];
+  }
+  $('impstatus').textContent = 'В отчёт добавлено позиций: ' + added + '. Проверьте сумму и сохраните отчёт.';
+}
+
+/* ── Экран водителя: реализация и долги ────────────────────────────── */
+function showDriver() {
+  $('screen-login').hidden = true; $('screen-form').hidden = true;
+  $('screen-dash').hidden = true; $('screen-driver').hidden = false;
+  $('rdate').value = today();
+  loadRealization();
+}
+function loadRealization() {
+  api('realization', { op: 'list' }).then(function (r) {
+    if (!r.ok) { $('rdebts').innerHTML = '<div class="empty">' + esc(r.error || 'нет доступа') + '</div>'; return; }
+    var sel = $('rclient'); sel.innerHTML = '';
+    var w = $('rdebts'); w.innerHTML = '';
+    (r.clients || []).forEach(function (c) {
+      var o = document.createElement('option');
+      o.value = c.id; o.textContent = c.name;
+      sel.appendChild(o);
+      var d = document.createElement('div');
+      d.className = 'rrow';
+      d.innerHTML = '<span>' + esc(c.name) + '</span><b style="' +
+        (num(c.debt) > 100000 ? 'color:var(--bad)' : num(c.debt) > 0 ? 'color:var(--warn)' : 'color:var(--ok)') +
+        '">' + fmt(c.debt) + ' ₸</b>';
+      w.appendChild(d);
+    });
+    var b = $('rbody'); b.innerHTML = '';
+    (r.recent || []).forEach(function (x) {
+      var tr = document.createElement('tr');
+      tr.innerHTML = '<td>' + esc(x.date) + '</td><td>' + esc(x.client) + '</td>' +
+        '<td class="n">' + fmt(x.delivered) + '</td><td class="n">' + fmt(x.paid) + '</td>' +
+        '<td class="n">' + fmt(x.returned) + '</td><td>' + esc(x.note || '') + '</td>';
+      b.appendChild(tr);
+    });
+    if (!(r.recent || []).length) b.innerHTML = '<tr><td colspan="6" class="empty">Записей пока нет</td></tr>';
+  });
+}
+function saveRealization() {
+  var deliv = num($('rdeliv').value), paid = num($('rpaid').value), ret = num($('rret').value);
+  if (deliv === 0 && paid === 0 && ret === 0) { $('rmsg').textContent = 'Введите хотя бы одну сумму'; return; }
+  $('rsave').disabled = true;
+  api('realization', {
+    op: 'add',
+    data: { client_id: $('rclient').value, date: $('rdate').value,
+            delivered: deliv, paid: paid, returned: ret, note: $('rnote').value }
+  }).then(function (r) {
+    $('rsave').disabled = false;
+    if (!r.ok) { $('rmsg').textContent = r.error || 'Не сохранилось'; return; }
+    $('rdeliv').value = ''; $('rpaid').value = ''; $('rret').value = ''; $('rnote').value = '';
+    $('rmsg').textContent = 'Записано';
+    loadRealization();
+  });
 }
 
 function recalc() {
@@ -480,6 +752,7 @@ function recalc() {
     }
   }
 
+  saveDraft();
   var w = $('checks'); w.innerHTML = '';
   for (var k = 0; k < checks.length; k++) {
     var d = document.createElement('div');
@@ -505,6 +778,7 @@ function saveReport() {
   api('save_report', p).then(function (r) {
     $('savebtn').disabled = false;
     if (!r.ok) { $('savemsg').textContent = 'Ошибка: ' + (r.error || 'не сохранилось'); return; }
+    clearDraft();
     $('savemsg').textContent = 'Отчёт сохранён ' + new Date().toLocaleTimeString('ru-RU');
     $('saved').textContent = 'Отчёт за этот день уже был сохранён — можно поправить';
   });
@@ -551,6 +825,54 @@ function loadDash() {
         '<td class="n">' + p.days + '</td><td class="n">' + fmt(p.rev / (p.days || 1)) + '</td>';
       pb.appendChild(tr2);
     }
+
+    // ── Не сдали за вчера ──
+    var mis = r.missing || [];
+    $('dmissing-card').hidden = !mis.length;
+    if (mis.length) {
+      $('dmissing').innerHTML = mis.map(function (m) {
+        return '<span class="pill bad" style="margin:0 6px 6px 0">' + m.name + '</span>';
+      }).join('');
+    }
+
+    // ── Каналы и юрлица ──
+    var ch = r.channels || {};
+    var chTotal = num(ch.cash) + num(ch.kaspi_qr) + num(ch.transfer);
+    var chHtml = '';
+    [['Наличные', ch.cash], ['Kaspi QR', ch.kaspi_qr], ['Перевод на счёт', ch.transfer]].forEach(function (c) {
+      var share = chTotal ? Math.round(num(c[1]) / chTotal * 100) : 0;
+      chHtml += '<div class="rrow"><span>' + c[0] + '</span><b>' + fmt(c[1]) + ' ₸ · ' + share + ' %</b></div>';
+    });
+    (r.by_legal || []).forEach(function (l) {
+      chHtml += '<div class="rrow"><span style="color:var(--muted)">' + l.legal + '</span><b>' + fmt(l.revenue) + ' ₸</b></div>';
+    });
+    $('dchannels').innerHTML = chHtml || '<div class="empty">Отчётов за период нет</div>';
+
+    // ── Топ позиций ──
+    var tb = $('dtop'); tb.innerHTML = '';
+    (r.top_items || []).forEach(function (t) {
+      var tr = document.createElement('tr');
+      tr.innerHTML = '<td>' + t.name + '</td><td class="n">' + fmt(t.qty) + '</td>' +
+        '<td class="n b">' + fmt(t.amount) + '</td>' +
+        '<td class="n">' + (num(t.discount) > 0 ? '<span style="color:var(--warn)">' + fmt(t.discount) + '</span>' : '—') + '</td>';
+      tb.appendChild(tr);
+    });
+    if (!(r.top_items || []).length) tb.innerHTML = '<tr><td colspan="4" class="empty">Позиционных данных за период нет</td></tr>';
+
+    // ── Расход сырья ──
+    $('draw').innerHTML = (r.raw_usage || []).length
+      ? r.raw_usage.map(function (u) {
+          return '<div class="rrow"><span>' + u.name + '</span><b>' + fmt(u.amount) + ' кг</b></div>';
+        }).join('')
+      : '<div class="empty">Продаж с техкартами за период нет</div>';
+
+    // ── Долги по реализации ──
+    $('ddebts').innerHTML = (r.realization || []).length
+      ? r.realization.map(function (d) {
+          return '<div class="rrow"><span>' + d.name + '</span><b style="' +
+            (num(d.debt) > 100000 ? 'color:var(--bad)' : 'color:var(--warn)') + '">' + fmt(d.debt) + ' ₸</b></div>';
+        }).join('')
+      : '<div class="empty">Долгов нет</div>';
 
     var b = $('dbody'); b.innerHTML = '';
     if (!rows.length) { b.innerHTML = '<tr><td colspan="9" class="empty">Отчётов за период нет</td></tr>'; return; }
@@ -602,6 +924,9 @@ window.addEventListener('DOMContentLoaded', function () {
   $('savebtn').onclick = saveReport;
   $('logout').onclick = logout;
   $('logout2').onclick = logout;
+  $('logout3').onclick = logout;
+  $('likeyesterday').onclick = likeYesterday;
+  $('rsave').onclick = saveRealization;
   $('dreload').onclick = loadDash;
   $('dcsv').onclick = exportCsv;
   var ids = ['cash', 'kaspi_qr', 'transfer', 'qr_statement', 'tr_statement', 'cash_open', 'cash_handed', 'cash_counted'];
