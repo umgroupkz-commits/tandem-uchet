@@ -37,9 +37,11 @@ SECTIONS.migrate = async () => {
   check("stores: вставка", r.ok && r.inserted === 1, r);
   r = await call("migrate", { pin, kind: "counteragents", rows: [{ id: C, name: "ZZ_TEST_поставщик", kind: "supplier", bin: "123", phone: null, deleted: false }] });
   check("counteragents: вставка", r.ok && r.inserted === 1, r);
-  r = await call("migrate", { pin, kind: "items", rows: [{ id: I, code: "ZZ_TEST_1", name: "ZZ_TEST_мука", artikul: "", group_id: G, unit: "кг", type: "goods", deleted: false, price: null }] });
+  // Имя нарочно не содержит «ZZ_TEST_мука» — этот текст ищет секция nomenclature,
+  // и совпадение подстроки ломает её проверку total===1, когда секции идут вместе (all).
+  r = await call("migrate", { pin, kind: "items", rows: [{ id: I, code: "ZZ_TEST_1", name: "ZZ_TEST_сырьё_миграция", artikul: "", group_id: G, unit: "кг", type: "goods", deleted: false, price: null }] });
   check("items: вставка нового", r.ok && r.inserted === 1, r);
-  r = await call("migrate", { pin, kind: "items", rows: [{ id: I, code: "ZZ_TEST_1", name: "ZZ_TEST_мука2", artikul: "", group_id: G, unit: "кг", type: "goods", deleted: false, price: null }] });
+  r = await call("migrate", { pin, kind: "items", rows: [{ id: I, code: "ZZ_TEST_1", name: "ZZ_TEST_сырьё_миграция2", artikul: "", group_id: G, unit: "кг", type: "goods", deleted: false, price: null }] });
   check("items: повтор по iiko_id обновляет", r.ok && r.updated === 1 && r.inserted === 0, r);
 
   // Fix round 1 (ревью, замечание 2): дубли ключей внутри одной пачки не должны падать
