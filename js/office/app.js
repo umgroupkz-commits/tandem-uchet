@@ -75,8 +75,13 @@ $("logout").addEventListener("click", async () => { await api("logout", {}); set
 // сессия могла протухнуть на сервере — проверяем при старте
 (async () => {
   if (session()) {
-    const r = await api("me", {});
-    if (r.ok) setSession({ ...session(), user: r.user, permissions: r.permissions, must_change_pin: r.must_change_pin });
+    try {
+      const r = await api("me", {});
+      if (r.ok) setSession({ ...session(), user: r.user, permissions: r.permissions, must_change_pin: r.must_change_pin });
+    } catch (e) {
+      // сети нет — показываем то, что помним; при первом же действии api() покажет ошибку
+      toast("Нет связи с сервером: " + e.message, "bad");
+    }
   }
   start();
 })();
