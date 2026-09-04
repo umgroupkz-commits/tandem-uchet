@@ -92,6 +92,42 @@ SECTIONS.auth = async (ctx) => {
   ctx.token = r.token;
 };
 
+SECTIONS.nomenclature = async (ctx) => {
+  const t = ctx.token;
+  let r = await call("office_groups_list", { token: t });
+  check("группы: список", r.ok && Array.isArray(r.groups) && r.groups.length > 50, r);
+  r = await call("office_group_save", { token: t, name: "ZZ_TEST_группа" });
+  check("группа: создание", r.ok && r.id, r);
+  const gid = r.id;
+  r = await call("office_group_save", { token: t, id: gid, name: "ZZ_TEST_группа переим.", active: true });
+  check("группа: переименование", r.ok, r);
+  r = await call("office_group_save", { token: t, name: "" });
+  check("группа: пустое имя — validation", r.ok === false && r.error === "validation", r);
+  r = await call("office_item_save", { token: t, name: "ZZ_TEST_мука", item_type: "goods", unit_id: "кг", group_id: gid, artikul: "ZZ1" });
+  check("позиция: создание, код выдан", r.ok && /^\d+$/.test(r.code), r);
+  const code = r.code;
+  r = await call("office_items_search", { token: t, q: "ZZ_TEST_мука" });
+  check("поиск по имени", r.ok && r.total === 1 && r.rows[0].code === code && r.rows[0].group_name.startsWith("ZZ_TEST"), r);
+  r = await call("office_items_search", { token: t, q: "ZZ1" });
+  check("поиск по артикулу", r.ok && r.total === 1, r);
+  r = await call("office_items_search", { token: t, page: 1 });
+  check("страница 200", r.ok && r.rows.length === 200 && r.pages >= 15, { total: r.total, pages: r.pages });
+  r = await call("office_item_save", { token: t, code, name: "ZZ_TEST_мука в/с", for_sale: true, price: 350 });
+  check("позиция: правка", r.ok, r);
+  r = await call("office_item_prices_save", { token: t, code, prices: [{ point_id: "eneshka", price: 400 }] });
+  check("цена точки: сохранение", r.ok, r);
+  r = await call("office_item_get", { token: t, code });
+  const ene = (r.points || []).find((p) => p.point_id === "eneshka");
+  check("карточка: имя, цена точки", r.ok && r.item.name === "ZZ_TEST_мука в/с" && ene && Number(ene.price) === 400, r);
+  r = await call("office_item_prices_save", { token: t, code, prices: [{ point_id: "eneshka", price: null }] });
+  r = await call("office_item_get", { token: t, code });
+  check("цена точки: снята", r.ok && (r.points.find((p) => p.point_id === "eneshka").price === null), r.points);
+  r = await call("office_item_get", { token: t, code: "нет-такого" });
+  check("карточка: not_found", r.ok === false && r.error === "not_found", r);
+  r = await call("office_item_save", { token: t, name: "x", item_type: "фигня", unit_id: "кг" });
+  check("тип не из списка — validation", r.ok === false && r.error === "validation", r);
+};
+
 // --- разделы добавляются здесь ---
 
 // migrate требует TANDEM_OWNER_PIN и в "all" входит только при его наличии;
