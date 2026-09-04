@@ -12,9 +12,10 @@ begin
 
   if p_kind = 'groups' then
     with inc as (
-      select (x->>'id')::uuid id, x->>'name' name, coalesce((x->>'deleted')::boolean,false) deleted,
+      select distinct on (id) (x->>'id')::uuid id, x->>'name' name, coalesce((x->>'deleted')::boolean,false) deleted,
              coalesce((x->>'sort')::int, 0) sort
       from jsonb_array_elements(p_rows) x where coalesce(x->>'id','') <> ''
+      order by id, deleted
     ),
     upd as (
       update tandem.item_groups g set name = inc.name, active = not inc.deleted, sort_order = inc.sort
@@ -27,9 +28,10 @@ begin
 
   elsif p_kind = 'stores' then
     with inc as (
-      select (x->>'id')::uuid id, x->>'name' name, nullif(x->>'organization_id','')::uuid org,
+      select distinct on (id) (x->>'id')::uuid id, x->>'name' name, nullif(x->>'organization_id','')::uuid org,
              coalesce((x->>'deleted')::boolean,false) deleted
       from jsonb_array_elements(p_rows) x where coalesce(x->>'id','') <> ''
+      order by id, deleted
     ),
     upd as (
       update tandem.stores s set name = inc.name, organization_id = inc.org, active = not inc.deleted
@@ -42,11 +44,12 @@ begin
 
   elsif p_kind = 'counteragents' then
     with inc as (
-      select (x->>'id')::uuid id, x->>'name' name,
+      select distinct on (id) (x->>'id')::uuid id, x->>'name' name,
              case when x->>'kind' in ('supplier','customer','employee') then x->>'kind' else 'other' end kind,
              nullif(x->>'bin','') bin, nullif(x->>'phone','') phone,
              coalesce((x->>'deleted')::boolean,false) deleted
       from jsonb_array_elements(p_rows) x where coalesce(x->>'id','') <> ''
+      order by id, deleted
     ),
     upd as (
       update tandem.counteragents c set name = inc.name, kind = inc.kind, bin = inc.bin,
@@ -60,8 +63,11 @@ begin
 
   elsif p_kind = 'items' then
     -- три непересекающихся набора: уже привязанные по iiko_id; старые строки по iiko_code; новые.
+    -- inc убирает дубли по id, inc2 — дубли по code (в обоих случаях живая строка побеждает
+    -- удалённую): без этого две строки одной пачки с одинаковым ключом обе метят в insert
+    -- и падают unique_violation'ом сырой ошибкой Postgres вместо {ok:false,...}.
     with inc as (
-      select (x->>'id')::uuid id, x->>'code' code, x->>'name' name, nullif(x->>'artikul','') artikul,
+      select distinct on (id) (x->>'id')::uuid id, x->>'code' code, x->>'name' name, nullif(x->>'artikul','') artikul,
              nullif(x->>'group_id','')::uuid group_id,
              case when x->>'unit' in ('шт','кг','л','порц') then x->>'unit' else 'шт' end unit,
              case when x->>'type' in ('goods','dish','prepared','service') then x->>'type' else 'dish' end typ,
@@ -69,25 +75,29 @@ begin
              nullif(x->>'price','')::numeric price
       from jsonb_array_elements(p_rows) x
       where coalesce(x->>'id','') <> '' and coalesce(x->>'code','') <> ''
+      order by id, deleted
+    ),
+    inc2 as (
+      select distinct on (code) * from inc order by code, deleted
     ),
     upd_id as (
-      update tandem.items i set name = inc.name, artikul = coalesce(inc.artikul, i.artikul),
-             group_id = inc.group_id, unit_id = inc.unit, unit = inc.unit, item_type = inc.typ,
-             active = not inc.deleted, price = coalesce(inc.price, i.price), synced_at = now()
-      from inc where i.iiko_id = inc.id returning 1),
+      update tandem.items i set name = inc2.name, artikul = coalesce(inc2.artikul, i.artikul),
+             group_id = inc2.group_id, unit_id = inc2.unit, unit = inc2.unit, item_type = inc2.typ,
+             active = not inc2.deleted, price = coalesce(inc2.price, i.price), synced_at = now()
+      from inc2 where i.iiko_id = inc2.id returning 1),
     upd_code as (
-      update tandem.items i set iiko_id = inc.id, name = inc.name, artikul = coalesce(inc.artikul, i.artikul),
-             group_id = inc.group_id, unit_id = inc.unit, unit = inc.unit, item_type = inc.typ,
-             active = not inc.deleted, synced_at = now()
-      from inc where i.iiko_id is null and i.iiko_code = inc.code returning 1),
+      update tandem.items i set iiko_id = inc2.id, name = inc2.name, artikul = coalesce(inc2.artikul, i.artikul),
+             group_id = inc2.group_id, unit_id = inc2.unit, unit = inc2.unit, item_type = inc2.typ,
+             active = not inc2.deleted, synced_at = now()
+      from inc2 where i.iiko_id is null and i.iiko_code = inc2.code returning 1),
     ins as (
       insert into tandem.items (code, name, artikul, iiko_code, iiko_id, group_id, unit_id, unit, step,
                                 item_type, product_type, price, active, for_sale, source, synced_at)
-      select inc.code, inc.name, inc.artikul, inc.code, inc.id, inc.group_id, inc.unit, inc.unit,
-             case when inc.unit in ('кг','л') then 0.5 else 1 end,
-             inc.typ, upper(inc.typ), inc.price, not inc.deleted, false, 'iiko_migrate', now()
-      from inc
-      where not exists (select 1 from tandem.items i where i.iiko_id = inc.id or i.code = inc.code)
+      select inc2.code, inc2.name, inc2.artikul, inc2.code, inc2.id, inc2.group_id, inc2.unit, inc2.unit,
+             case when inc2.unit in ('кг','л') then 0.5 else 1 end,
+             inc2.typ, upper(inc2.typ), inc2.price, not inc2.deleted, false, 'iiko_migrate', now()
+      from inc2
+      where not exists (select 1 from tandem.items i where i.iiko_id = inc2.id or i.code = inc2.code)
       returning 1)
     select (select count(*) from upd_id) + (select count(*) from upd_code), (select count(*) from ins)
       into v_upd, v_ins;
@@ -97,6 +107,9 @@ begin
   end if;
 
   return jsonb_build_object('ok', true, 'inserted', v_ins, 'updated', v_upd, 'skipped', v_total - v_ins - v_upd);
+exception
+  when unique_violation then
+    return jsonb_build_object('ok', false, 'error', 'validation', 'message', 'Дубли ключей в пачке: ' || sqlerrm);
 end $$;
 revoke all on function public.tandem_migrate(text,text,jsonb) from public, anon, authenticated;
 grant execute on function public.tandem_migrate(text,text,jsonb) to service_role;

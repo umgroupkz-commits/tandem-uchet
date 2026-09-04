@@ -41,6 +41,27 @@ SECTIONS.migrate = async () => {
   check("items: вставка нового", r.ok && r.inserted === 1, r);
   r = await call("migrate", { pin, kind: "items", rows: [{ id: I, code: "ZZ_TEST_1", name: "ZZ_TEST_мука2", artikul: "", group_id: G, unit: "кг", type: "goods", deleted: false, price: null }] });
   check("items: повтор по iiko_id обновляет", r.ok && r.updated === 1 && r.inserted === 0, r);
+
+  // Fix round 1 (ревью, замечание 2): дубли ключей внутри одной пачки не должны падать
+  // сырой ошибкой Postgres. Оба id ниже — новые, ни один ещё не привязан ни к одному iiko_id,
+  // поэтому обе строки метят в insert по одному и тому же code — именно эта гонка и роняла
+  // функцию unique_violation до фикса. (I и 55555… из брифа сюда не годятся: I уже привязан
+  // к ZZ_TEST_1 предыдущими проверками и это превращает тест в update чужой записи, а не в
+  // конфликт двух insert.)
+  const ID_DUP_A = "66666666-6666-4666-8666-666666666666";
+  const ID_DUP_B = "77777777-7777-4777-8777-777777777777";
+  r = await call("migrate", { pin, kind: "items", rows: [
+    { id: ID_DUP_A, code: "ZZ_TEST_DUP", name: "ZZ_TEST_дубль_удалённая", artikul: "", group_id: G, unit: "кг", type: "goods", deleted: true, price: null },
+    { id: ID_DUP_B, code: "ZZ_TEST_DUP", name: "ZZ_TEST_дубль_живая", artikul: "", group_id: G, unit: "кг", type: "goods", deleted: false, price: null },
+  ] });
+  check("items: дубль code в пачке — не падает, побеждает живая", r.ok && r.inserted + r.updated === 1 && r.skipped === 1, r);
+
+  r = await call("migrate", { pin, kind: "groups", rows: [
+    { id: G, name: "ZZ_TEST_группа_дубль1", deleted: false, sort: 1 },
+    { id: G, name: "ZZ_TEST_группа_дубль2", deleted: true, sort: 2 },
+  ] });
+  check("groups: дубль id в пачке считается один раз", r.ok && r.inserted + r.updated === 1, r);
+
   r = await call("migrate", { pin: "wrong", kind: "groups", rows: [] });
   check("чужой код — отказ", r.ok === false, r);
 };
