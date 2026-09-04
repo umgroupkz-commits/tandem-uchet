@@ -146,6 +146,11 @@ SECTIONS.stores = async (ctx) => {
   check("склад: виден как по умолчанию у Аяна", s && s.point_id === "aian" && s.is_default === true, s);
   r = await call("office_store_save", { token: t, id, name: "ZZ_TEST_склад", point_id: null, is_default: false, active: false });
   check("склад: отвязка и деактивация", r.ok, r);
+  r = await call("office_store_save", { token: t, id, name: "ZZ_TEST_склад", point_id: "aian", active: false, is_default: true });
+  check("выключенный склад не становится складом по умолчанию", r.ok, r);
+  r = await call("office_stores_list", { token: t });
+  const s2 = r.stores.find((x) => x.id === id);
+  check("у Аяна нет склада по умолчанию после этого", s2 && s2.is_default !== true && !r.stores.some((x) => x.point_id === "aian" && x.is_default === true), s2);
   r = await call("office_store_save", { token: t, id, name: "ZZ_TEST_склад", point_id: "нет-такой" });
   check("склад: чужая точка — validation", r.ok === false && r.error === "validation", r);
 };

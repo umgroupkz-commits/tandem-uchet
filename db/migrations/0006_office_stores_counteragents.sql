@@ -34,7 +34,8 @@ begin
       update tandem.points set default_store_id = null
         where default_store_id = v_id and (v_point is null or id <> v_point or not coalesce((payload->>'active')::boolean, true));
     end if;
-    if coalesce((payload->>'is_default')::boolean, false) and v_point is not null then
+    if coalesce((payload->>'is_default')::boolean, false) and v_point is not null
+       and exists (select 1 from tandem.stores where id = v_id and active) then
       update tandem.points set default_store_id = v_id where id = v_point;
     elsif payload ? 'is_default' and not (payload->>'is_default')::boolean then
       update tandem.points set default_store_id = null where default_store_id = v_id;
