@@ -24,8 +24,8 @@ export async function mount(r) {
   await load();
 }
 
-function select(opts, value, onchange) {
-  const s = el("select", { onchange: (e) => onchange(e.target.value) });
+function select(opts, value, onchange, disabled = false) {
+  const s = el("select", { disabled, onchange: (e) => onchange(e.target.value) });
   for (const [v, t] of Object.entries(opts)) s.append(el("option", { value: v, selected: v === value }, t));
   return s;
 }
@@ -34,7 +34,9 @@ function drawTree() {
   tree.innerHTML = "";
   tree.append(el("h2", {}, "Группы"),
     el("button", { class: state.group_id === "" ? "on" : "", onclick: () => pick("") }, "Все позиции"));
-  const kids = (pid) => groups.filter((g) => (g.parent_id || null) === pid && g.active).sort((a, b) => a.sort_order - b.sort_order || a.name.localeCompare(b.name, "ru"));
+  const byId = new Map(groups.map((g) => [g.id, g]));
+  const shownParent = (g) => { const p = g.parent_id ? byId.get(g.parent_id) : null; return p && p.active ? p.id : null; };
+  const kids = (pid) => groups.filter((g) => g.active && shownParent(g) === pid).sort((a, b) => a.sort_order - b.sort_order || a.name.localeCompare(b.name, "ru"));
   const walk = (pid, depth) => {
     for (const g of kids(pid)) {
       tree.append(el("button", { class: state.group_id === g.id ? "on" : "", style: `padding-left:${8 + depth * 14}px`, onclick: () => pick(g.id) },
@@ -85,8 +87,8 @@ async function editItem(code) {
   m.root.append(el("div", { class: "grid2" },
     field("name", "Название", el("input", { value: item.name || "", readonly: ro })),
     field("artikul", "Артикул", el("input", { value: item.artikul || "", readonly: ro })),
-    field("item_type", "Тип", select(TYPES, item.item_type, () => {})),
-    field("unit_id", "Единица", select({ "шт": "шт", "кг": "кг", "л": "л", "порц": "порц" }, item.unit_id, () => {})),
+    field("item_type", "Тип", select(TYPES, item.item_type, () => {}, ro)),
+    field("unit_id", "Единица", select({ "шт": "шт", "кг": "кг", "л": "л", "порц": "порц" }, item.unit_id, () => {}, ro)),
     field("group_id", "Группа", groupSel),
     field("price", "Цена по умолчанию", el("input", { type: "number", step: "0.01", value: item.price ?? "", readonly: ro })),
     field("pack_factor", "Фасовка: множитель", el("input", { type: "number", step: "0.001", value: item.pack_factor ?? "", readonly: ro })),
