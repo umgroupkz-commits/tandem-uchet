@@ -174,6 +174,9 @@ SECTIONS.users = async (ctx) => {
   const t = ctx.token;
   let r = await call("office_users_list", { token: t });
   check("пользователи: список", r.ok && r.users.some((u) => u.login === "admin") && r.roles.length === 5, r);
+  const me = r.users.find((u) => u.login === ctx.login);
+  r = await call("office_user_save", { token: t, id: me.id, login: me.login, name: me.name, role: "owner" });
+  check("последнего администратора нельзя понизить — validation", r.ok === false && r.error === "validation", r);
   r = await call("office_user_save", { token: t, login: "zz_test_sklad", name: "ZZ_TEST_Кладовщик", role: "storekeeper", pin: "4321" });
   check("пользователь: создание", r.ok && r.id, r);
   const uid = r.id;

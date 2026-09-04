@@ -37,6 +37,12 @@ begin
       if v_id = v_user.id and coalesce((payload->>'active')::boolean, true) = false then
         return tandem.err('validation', 'Нельзя выключить самого себя');
       end if;
+      if exists (select 1 from tandem.users where id = v_id and role = 'admin' and active)
+        and (v_role <> 'admin' or coalesce((payload->>'active')::boolean, true) = false)
+        and not exists (select 1 from tandem.users where role = 'admin' and active and id <> v_id)
+      then
+        return tandem.err('validation', 'Нельзя оставить систему без администратора');
+      end if;
       update tandem.users set login = v_login, name = v_name, role = v_role,
         active = coalesce((payload->>'active')::boolean, active) where id = v_id;
       if not found then return tandem.err('not_found', 'Пользователь не найден'); end if;
