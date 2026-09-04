@@ -170,6 +170,37 @@ SECTIONS.counteragents = async (ctx) => {
   check("контрагент: вид не из списка — validation", r.ok === false && r.error === "validation", r);
 };
 
+SECTIONS.users = async (ctx) => {
+  const t = ctx.token;
+  let r = await call("office_users_list", { token: t });
+  check("пользователи: список", r.ok && r.users.some((u) => u.login === "admin") && r.roles.length === 5, r);
+  r = await call("office_user_save", { token: t, login: "zz_test_sklad", name: "ZZ_TEST_Кладовщик", role: "storekeeper", pin: "4321" });
+  check("пользователь: создание", r.ok && r.id, r);
+  const uid = r.id;
+  r = await call("office_user_save", { token: t, login: "zz_test_sklad", name: "дубль", role: "storekeeper", pin: "4321" });
+  check("дубль логина — validation", r.ok === false && r.error === "validation", r);
+  r = await call("office_user_save", { token: t, login: "zz_test_x", name: "x", role: "storekeeper" });
+  check("без PIN при создании — validation", r.ok === false && r.error === "validation", r);
+  // права кладовщика
+  r = await call("office_login", { login: "zz_test_sklad", pin: "4321" });
+  check("кладовщик входит", r.ok && r.user.role === "storekeeper" && r.must_change_pin === true, r);
+  const st = r.token;
+  r = await call("office_items_search", { token: st, q: "мука" });
+  check("кладовщик видит номенклатуру", r.ok, r);
+  r = await call("office_item_save", { token: st, name: "ZZ_TEST_нельзя", item_type: "goods", unit_id: "кг" });
+  check("кладовщик не правит номенклатуру — forbidden", r.ok === false && r.error === "forbidden", r);
+  r = await call("office_users_list", { token: st });
+  check("кладовщик не видит пользователей — forbidden", r.ok === false && r.error === "forbidden", r);
+  r = await call("office_user_reset_pin", { token: t, id: uid, pin: "5555" });
+  check("сброс PIN администратором", r.ok, r);
+  r = await call("office_login", { login: "zz_test_sklad", pin: "5555" });
+  check("вход с новым PIN", r.ok, r);
+  r = await call("office_user_save", { token: t, id: uid, login: "zz_test_sklad", name: "ZZ_TEST_Кладовщик", role: "storekeeper", active: false });
+  check("деактивация", r.ok, r);
+  r = await call("office_login", { login: "zz_test_sklad", pin: "5555" });
+  check("выключенный не входит", r.ok === false && r.error === "unauthorized", r);
+};
+
 // --- разделы добавляются здесь ---
 
 // migrate требует TANDEM_OWNER_PIN и в "all" входит только при его наличии;
