@@ -4,3 +4,9 @@
 *secret*
 tools/*.local.*
 _preview*
+
+# клиентские данные (кэш выгрузок iiko)
+data/
+
+# рабочая папка процесса разработки
+.superpowers/
