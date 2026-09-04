@@ -23,6 +23,28 @@ export function check(name, cond, detail) {
 const SECTIONS = {};   // имя → async (ctx) => void; заполняется ниже по задачам
 const ctx = { token: null, login: process.env.TANDEM_ADMIN_LOGIN || "admin", pin: process.env.TANDEM_ADMIN_PIN || "" };
 
+SECTIONS.migrate = async () => {
+  const pin = process.env.TANDEM_OWNER_PIN || "";
+  const G = "11111111-1111-4111-8111-111111111111";
+  const S = "22222222-2222-4222-8222-222222222222";
+  const C = "33333333-3333-4333-8333-333333333333";
+  const I = "44444444-4444-4444-8444-444444444444";
+  let r = await call("migrate", { pin, kind: "groups", rows: [{ id: G, name: "ZZ_TEST_группа", deleted: false, sort: 1 }] });
+  check("groups: вставка", r.ok && r.inserted === 1, r);
+  r = await call("migrate", { pin, kind: "groups", rows: [{ id: G, name: "ZZ_TEST_группа2", deleted: true, sort: 1 }] });
+  check("groups: повтор обновляет, не дублирует", r.ok && r.updated === 1 && r.inserted === 0, r);
+  r = await call("migrate", { pin, kind: "stores", rows: [{ id: S, name: "ZZ_TEST_склад", organization_id: null, deleted: false }] });
+  check("stores: вставка", r.ok && r.inserted === 1, r);
+  r = await call("migrate", { pin, kind: "counteragents", rows: [{ id: C, name: "ZZ_TEST_поставщик", kind: "supplier", bin: "123", phone: null, deleted: false }] });
+  check("counteragents: вставка", r.ok && r.inserted === 1, r);
+  r = await call("migrate", { pin, kind: "items", rows: [{ id: I, code: "ZZ_TEST_1", name: "ZZ_TEST_мука", artikul: "", group_id: G, unit: "кг", type: "goods", deleted: false, price: null }] });
+  check("items: вставка нового", r.ok && r.inserted === 1, r);
+  r = await call("migrate", { pin, kind: "items", rows: [{ id: I, code: "ZZ_TEST_1", name: "ZZ_TEST_мука2", artikul: "", group_id: G, unit: "кг", type: "goods", deleted: false, price: null }] });
+  check("items: повтор по iiko_id обновляет", r.ok && r.updated === 1 && r.inserted === 0, r);
+  r = await call("migrate", { pin: "wrong", kind: "groups", rows: [] });
+  check("чужой код — отказ", r.ok === false, r);
+};
+
 // --- разделы добавляются здесь ---
 
 // migrate требует TANDEM_OWNER_PIN и в "all" входит только при его наличии;

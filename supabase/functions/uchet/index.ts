@@ -80,6 +80,10 @@ Deno.serve(async (req: Request) => {
     if (action === "set_short_list") {
       return await proxy("tandem_set_short_list", { p_pin: pin, p_point: payload.point ?? "", p_codes: payload.codes ?? [] });
     }
+    // Перенос справочников из iiko (скрипт tools/iiko-migrate.mjs). Защита — код собственника внутри функции.
+    if (action === "migrate") {
+      return await proxy("tandem_migrate", { p_pin: pin, p_kind: payload.kind ?? "", p_rows: payload.rows ?? [] });
+    }
 
     return await proxy("tandem_api", { action, payload });
   }
