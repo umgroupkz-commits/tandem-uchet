@@ -134,6 +134,37 @@ SECTIONS.nomenclature = async (ctx) => {
   check("тип не из списка — validation", r.ok === false && r.error === "validation", r);
 };
 
+SECTIONS.stores = async (ctx) => {
+  const t = ctx.token;
+  let r = await call("office_stores_list", { token: t });
+  check("склады: список с точками", r.ok && r.stores.length >= 27 && Array.isArray(r.points) && r.points.length >= 5, { n: r.stores && r.stores.length });
+  r = await call("office_store_save", { token: t, name: "ZZ_TEST_склад", point_id: "aian", is_default: true });
+  check("склад: создание с привязкой и по умолчанию", r.ok && r.id, r);
+  const id = r.id;
+  r = await call("office_stores_list", { token: t });
+  const s = r.stores.find((x) => x.id === id);
+  check("склад: виден как по умолчанию у Аяна", s && s.point_id === "aian" && s.is_default === true, s);
+  r = await call("office_store_save", { token: t, id, name: "ZZ_TEST_склад", point_id: null, is_default: false, active: false });
+  check("склад: отвязка и деактивация", r.ok, r);
+  r = await call("office_store_save", { token: t, id, name: "ZZ_TEST_склад", point_id: "нет-такой" });
+  check("склад: чужая точка — validation", r.ok === false && r.error === "validation", r);
+};
+
+SECTIONS.counteragents = async (ctx) => {
+  const t = ctx.token;
+  let r = await call("office_counteragent_save", { token: t, name: "ZZ_TEST_ИП Ромашка", kind: "supplier", bin: "990101300123", phone: "+7 700 000 00 00" });
+  check("контрагент: создание", r.ok && r.id, r);
+  const id = r.id;
+  r = await call("office_counteragents_list", { token: t, q: "Ромашка" });
+  check("контрагент: поиск", r.ok && r.total === 1 && r.rows[0].id === id && r.rows[0].kind === "supplier", r);
+  r = await call("office_counteragents_list", { token: t, kind: "supplier" });
+  check("контрагент: фильтр по виду", r.ok && r.total >= 175, { total: r.total });
+  r = await call("office_counteragent_save", { token: t, id, name: "ZZ_TEST_ИП Ромашка", kind: "customer", active: false });
+  check("контрагент: правка вида и деактивация", r.ok, r);
+  r = await call("office_counteragent_save", { token: t, name: "ZZ_TEST_x", kind: "бред" });
+  check("контрагент: вид не из списка — validation", r.ok === false && r.error === "validation", r);
+};
+
 // --- разделы добавляются здесь ---
 
 // migrate требует TANDEM_OWNER_PIN и в "all" входит только при его наличии;
