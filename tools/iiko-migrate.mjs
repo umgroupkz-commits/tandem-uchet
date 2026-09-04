@@ -104,15 +104,7 @@ for (const p of d.products.slice().sort((a, b) => Number(!!a.deleted) - Number(!
   if (!byCode.has(code)) byCode.set(code, p);
 }
 const dupes = d.products.length - byCode.size;
-// Найдено при боевом прогоне: в tandem.items уже ДО этой миграции есть дубль по
-// iiko_code — код "1788" и код "1788-2" оба ссылаются на iiko_code="1788", оба ещё
-// не привязаны (iiko_id null). Привязка живого товара 1788 задевает оба сразу и
-// падает unique_violation по iiko_id. Это порча старых данных, не чиним её здесь
-// (см. бриф: «не чини базу руками») — пропускаем код при переносе, чтобы не
-// останавливать всю миграцию, и оставляем как открытый вопрос владельцу.
-const KNOWN_DUPLICATE_CODES = new Set(["1788"]);
 const items = [...byCode.values()]
-  .filter((p) => !KNOWN_DUPLICATE_CODES.has(String(p.code)))
   .map((p) => ({
   id: p.productId, code: String(p.code), name: p.name, artikul: p.productArticle || "",
   group_id: p.parentGroupId || null, unit: unitName[p.amountUnitId] || "шт",
