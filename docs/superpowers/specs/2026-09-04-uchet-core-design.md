@@ -153,7 +153,10 @@ item_groups   id uuid PK, parent_id uuid null → item_groups, name text,
 units         id text PK ('шт','кг','л','порц' …), name text, precision int
 items (+)     group_id uuid → item_groups, unit_id text → units,
               item_type text ('goods'|'dish'|'prepared'|'service'),
-              iiko_id uuid unique null
+              iiko_id uuid unique null,
+              for_sale bool -- показывать на экранах точек; у всех нынешних позиций true,
+                            -- у переносимого сырья false. Фильтр в действии items
+                            -- включается ДО переноса, иначе точки увидят 1 600 строк сырья
               -- старые колонки category/group_name/unit остаются как есть
               -- до переезда экранов точек на group_id/unit_id
 stores        id uuid PK, name text, point_id text null → points,
@@ -219,9 +222,16 @@ RPC `office_login(login, pin)` → проверка `pin_hash` (bcrypt чере�
 Все списки грузятся страницами по 200 с поиском на сервере — номенклатура на
 3 700 строк целиком в браузер не тянется.
 
-### 4.6 RPC-действия (через `tandem_api`, все с `token`)
+### 4.6 RPC-действия (все с `token`)
 
-`office_login`, `office_logout`, `office_me`;
+Бэк-офис идёт через отдельную RPC `public.tandem_office(action, payload)`, а не через
+`tandem_api`: у той свой вход по кодам точек и 12 КБ логики экранов точек. Прокси
+`uchet` направляет туда любое действие с префиксом `office_`. `tandem_office` —
+диспетчер: проверяет сессию, выводит раздел и требуемое право из имени действия и
+вызывает функцию раздела `tandem.office_nomenclature / office_stores /
+office_counteragents / office_users`.
+
+`office_login`, `office_logout`, `office_me`, `office_change_pin`;
 `groups_list`, `group_save`; `items_search {q, group_id, type, active, page}`,
 `item_get`, `item_save`, `item_prices_save`; `stores_list`, `store_save`;
 `counteragents_list {q, kind, page}`, `counteragent_save`;
