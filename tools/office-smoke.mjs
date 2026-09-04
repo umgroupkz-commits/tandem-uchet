@@ -66,6 +66,32 @@ SECTIONS.migrate = async () => {
   check("чужой код — отказ", r.ok === false, r);
 };
 
+SECTIONS.auth = async (ctx) => {
+  let r = await call("office_login", { login: ctx.login, pin: "нет-такого" });
+  check("неверный PIN — unauthorized", r.ok === false && r.error === "unauthorized", r);
+  r = await call("office_login", { login: ctx.login, pin: ctx.pin });
+  check("вход администратора", r.ok && r.token && r.user && r.user.role === "admin", r);
+  ctx.token = r.token;
+  check("права пришли списком", Array.isArray(r.permissions) && r.permissions.includes("users:edit"), r.permissions);
+  r = await call("office_me", { token: ctx.token });
+  check("me по токену", r.ok && r.user.login === ctx.login, r);
+  r = await call("office_me", { token: "мусор" });
+  check("me по чужому токену — unauthorized", r.ok === false && r.error === "unauthorized", r);
+  r = await call("office_change_pin", { token: ctx.token, pin: "12" });
+  check("короткий PIN — validation", r.ok === false && r.error === "validation", r);
+  r = await call("office_change_pin", { token: ctx.token, pin: ctx.pin });
+  check("смена PIN на тот же — ok, must_change снят", r.ok && r.must_change_pin === false, r);
+  r = await call("office_nonsense", { token: ctx.token });
+  check("неизвестное действие", r.ok === false && r.error === "unknown_action", r);
+  r = await call("office_logout", { token: ctx.token });
+  check("выход", r.ok, r);
+  r = await call("office_me", { token: ctx.token });
+  check("после выхода токен мёртв", r.ok === false && r.error === "unauthorized", r);
+  // и снова входим — токен нужен следующим разделам
+  r = await call("office_login", { login: ctx.login, pin: ctx.pin });
+  ctx.token = r.token;
+};
+
 // --- разделы добавляются здесь ---
 
 // migrate требует TANDEM_OWNER_PIN и в "all" входит только при его наличии;

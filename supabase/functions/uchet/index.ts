@@ -84,6 +84,10 @@ Deno.serve(async (req: Request) => {
     if (action === "migrate") {
       return await proxy("tandem_migrate", { p_pin: pin, p_kind: payload.kind ?? "", p_rows: payload.rows ?? [] });
     }
+    // Бэк-офис: свой вход (токен сессии в payload), диспетчер tandem_office.
+    if (action.startsWith("office_")) {
+      return await proxy("tandem_office", { action: action.slice(7), payload });
+    }
 
     return await proxy("tandem_api", { action, payload });
   }
