@@ -114,6 +114,12 @@ SECTIONS.nomenclature = async (ctx) => {
   check("страница 200", r.ok && r.rows.length === 200 && r.pages >= 15, { total: r.total, pages: r.pages });
   r = await call("office_item_save", { token: t, code, name: "ZZ_TEST_мука в/с", for_sale: true, price: 350 });
   check("позиция: правка", r.ok, r);
+  r = await call("office_item_save", { token: t, code, name: "ZZ_TEST_мука в/с", unit_id: "", item_type: "" });
+  check("правка с пустыми unit_id/item_type — поля не тронуты", r.ok, r);
+  r = await call("office_item_get", { token: t, code });
+  check("после правки единица и тип прежние", r.ok && r.item.unit_id === "кг" && r.item.item_type === "goods", r.item);
+  r = await call("office_item_save", { token: t, name: "ZZ_TEST_x", item_type: "goods", unit_id: "" });
+  check("создание без единицы — validation", r.ok === false && r.error === "validation", r);
   r = await call("office_item_prices_save", { token: t, code, prices: [{ point_id: "eneshka", price: 400 }] });
   check("цена точки: сохранение", r.ok, r);
   r = await call("office_item_get", { token: t, code });

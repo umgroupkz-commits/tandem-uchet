@@ -104,10 +104,10 @@ begin
               (select name from tandem.item_groups where id = nullif(payload->>'group_id','')::uuid), 'office');
     else
       -- правка: тип и единица измерения необязательны — как остальные поля, меняются только если переданы
-      if payload ? 'item_type' and coalesce(payload->>'item_type','') not in ('goods','dish','prepared','service') then
+      if nullif(payload->>'item_type','') is not null and payload->>'item_type' not in ('goods','dish','prepared','service') then
         return tandem.err('validation', 'Тип: goods, dish, prepared или service');
       end if;
-      if payload ? 'unit_id' and not exists (select 1 from tandem.units where id = payload->>'unit_id') then
+      if nullif(payload->>'unit_id','') is not null and not exists (select 1 from tandem.units where id = payload->>'unit_id') then
         return tandem.err('validation', 'Единица измерения не из справочника');
       end if;
       update tandem.items set
