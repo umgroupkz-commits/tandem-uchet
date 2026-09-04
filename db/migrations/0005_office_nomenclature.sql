@@ -228,5 +228,12 @@ begin
     return tandem.office_users(action, payload, v_user);
   end if;
 end $$;
-revoke all on function public.tandem_office(text,jsonb) from public, anon, authenticated;
-grant execute on function public.tandem_office(text,jsonb) to service_role;
+-- Роли anon/authenticated/service_role — выдумка Supabase; на своём сервере их нет,
+-- и без обёртки файл там падает. PUBLIC есть в любом Postgres, поэтому revoke от него — снаружи.
+revoke all on function public.tandem_office(text,jsonb) from public;
+do $$ begin
+  if exists (select 1 from pg_roles where rolname = 'service_role') then
+    revoke all on function public.tandem_office(text,jsonb) from anon, authenticated;
+    grant execute on function public.tandem_office(text,jsonb) to service_role;
+  end if;
+end $$;
