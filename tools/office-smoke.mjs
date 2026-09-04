@@ -233,10 +233,12 @@ SECTIONS.users = async (ctx) => {
       perms: ["counteragents:view", "nomenclature:edit", "nomenclature:view", "stores:view"] },
   };
   const same = (a, b) => Array.isArray(a) && a.length === b.length && a.slice().sort().join("|") === b.slice().sort().join("|");
+  const ids = {};
 
   for (const [login, want] of Object.entries(MATRIX)) {
     r = await call("office_user_save", { token: t, login, name: want.name, role: want.role, pin: "4321" });
     check(`${want.role}: создан`, r.ok && r.id, r);
+    ids[login] = r.id;
     r = await call("office_login", { login, pin: "4321" });
     check(`${want.role}: входит с временным PIN`, r.ok && r.user.role === want.role && r.must_change_pin === true, r);
     const tok = r.token;
@@ -271,6 +273,12 @@ SECTIONS.users = async (ctx) => {
   r = await call("office_login", { login: "zz_test_owner", pin: "4321" });
   check("лок: шестая попытка с верным PIN отбита",
     r.ok === false && r.error === "unauthorized" && /Слишком много попыток/.test(r.message || ""), r);
+
+  // сброс PIN администратором обязан снимать и сам лок, не только менять хэш
+  r = await call("office_user_reset_pin", { token: t, id: ids.zz_test_owner, pin: "4321" });
+  check("сброс PIN снимает блокировку", r.ok, r);
+  r = await call("office_login", { login: "zz_test_owner", pin: "4321" });
+  check("после сброса вход работает", r.ok, r);
   // лок снимается вместе с пользователем — его удалит test_cleanup в конце прогона
 };
 
@@ -283,6 +291,7 @@ SECTIONS.reimport = async (ctx) => {
   let r = await call("migrate", { pin, kind: "items", rows: [row] });
   check("переимпорт: позиция заведена переносом", r.ok && r.inserted === 1, r);
   r = await call("office_group_save", { token: t, name: "ZZ_TEST_группа переимпорта" });
+  check("reimport: тестовая группа создана", r.ok && r.id, r);
   const gid = r.id;
   r = await call("office_item_save", { token: t, code: "ZZ_TEST_RE", name: "ZZ_TEST_переимпорт правлено", group_id: gid });
   check("переимпорт: правка в бэк-офисе", r.ok, r);
