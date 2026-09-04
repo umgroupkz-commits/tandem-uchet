@@ -167,7 +167,10 @@ counteragents id uuid PK, name text, kind text ('supplier'|'customer'|'employee'
               bin text null, phone text null, note text, active bool,
               iiko_id uuid unique null
 users         id uuid PK, login text unique, name text, role text,
-              pin_hash text, active bool, created_at
+              pin_hash text, active bool, created_at,
+              must_change_pin bool,   -- временный PIN не сменён: доступны только me/logout/change_pin
+              failed_attempts int,    -- неверных попыток входа подряд
+              locked_until timestamptz -- до этого момента вход запрещён (5 попыток → 15 минут)
 sessions      token text PK, user_id uuid → users, created_at, expires_at
 role_permissions role text, section text, action text ('view'|'edit'), PK(role,section,action)
 ```
@@ -203,6 +206,16 @@ RPC `office_login(login, pin)` → проверка `pin_hash` (bcrypt чере�
 ошибка `forbidden`. Выход — удаление сессии. Первый администратор создаётся
 миграцией с временным PIN, который меняется при первом входе.
 
+Подбор PIN закрыт локом: пять неверных попыток подряд по одному логину ставят
+`locked_until = now() + 15 минут`, и до этого срока вход возвращает `unauthorized`
+«Слишком много попыток, подождите 15 минут» — даже с верным PIN. Удачный вход обнуляет
+счётчик. Сравнение хэша считается всегда, в том числе когда такого логина нет: иначе
+время ответа выдаёт, существует ли пользователь.
+
+Временный PIN проверяется на сервере, а не только на экране: пока у пользователя
+`must_change_pin = true`, диспетчер пропускает только `me`, `logout` и `change_pin`,
+на остальное отвечает `forbidden` «Сначала смените временный PIN».
+
 ### 4.5 Экраны `office.html`
 
 Один файл-оболочка (шапка с именем пользователя и ролью, боковое меню разделов по
@@ -235,8 +248,17 @@ office_counteragents / office_users`.
 `groups_list`, `group_save`; `items_search {q, group_id, type, active, page}`,
 `item_get`, `item_save`, `item_prices_save`; `stores_list`, `store_save`;
 `counteragents_list {q, kind, page}`, `counteragent_save`;
-`users_list`, `user_save`, `user_reset_pin`; `tandem_migrate(kind, rows)` (только
-service_role, без токена — вызывается скриптом).
+`users_list`, `user_save`, `user_reset_pin`.
+
+Без токена, мимо диспетчера, идут два служебных RPC (только `service_role`, защита —
+код собственника из `tandem.settings.owner_pin`): `tandem_migrate(p_pin, kind, rows)` —
+перенос справочников из iiko, вызывается скриптом `tools/iiko-migrate.mjs`;
+`tandem_test_cleanup(p_pin)` — уборка записей `ZZ_TEST_*` и пользователей `zz_test_*`
+после дымового теста, возвращает `{ok, deleted:{...}, leftovers}`.
+
+Функции разделов `tandem.office_*` — `security invoker` и без прав у `PUBLIC`,
+`anon`, `authenticated`: их зовёт только диспетчер `public.tandem_office`, который
+сам `security definer`.
 
 Ошибки — единый формат `{error: код, message: текст по-русски}`; фронт показывает
 текст, коды (`forbidden`, `not_found`, `validation`) нужны для тестов.

@@ -1,6 +1,9 @@
-// Дымовой тест RPC бэк-офиса. Запуск: node tools/office-smoke.mjs <auth|nomenclature|stores|counteragents|users|all>
-// Переменные окружения: TANDEM_ADMIN_LOGIN (по умолчанию admin), TANDEM_ADMIN_PIN.
-// Создаёт сущности с префиксом ZZ_TEST_; удаление — SQL-ом после прогона (см. план).
+// Дымовой тест RPC бэк-офиса.
+// Запуск: node tools/office-smoke.mjs <auth|nomenclature|stores|counteragents|users|migrate|reimport|all>
+// Переменные окружения: TANDEM_ADMIN_LOGIN (по умолчанию admin), TANDEM_ADMIN_PIN,
+//   TANDEM_OWNER_PIN — код собственника; без него не идут разделы migrate/reimport и уборка.
+// Создаёт сущности с префиксом ZZ_TEST_ (пользователи — zz_test_). В конце прогона раннер
+// зовёт действие test_cleanup (RPC public.tandem_test_cleanup) и проверяет, что следов не осталось.
 const UCHET = "https://qeehxcnnuzuwskznhdyg.supabase.co/functions/v1/uchet";
 const section = process.argv[2] || "all";
 let failed = 0, passed = 0;
@@ -140,6 +143,8 @@ SECTIONS.stores = async (ctx) => {
   const t = ctx.token;
   let r = await call("office_stores_list", { token: t });
   check("склады: список с точками", r.ok && r.stores.length >= 27 && Array.isArray(r.points) && r.points.length >= 5, { n: r.stores && r.stores.length });
+  // Раздел трогает склад по умолчанию точки «Аян» — запоминаем, чтобы вернуть как было.
+  const aianWas = (r.stores || []).find((x) => x.point_id === "aian" && x.is_default === true) || null;
   r = await call("office_store_save", { token: t, name: "ZZ_TEST_склад", point_id: "aian", is_default: true });
   check("склад: создание с привязкой и по умолчанию", r.ok && r.id, r);
   const id = r.id;
@@ -155,6 +160,16 @@ SECTIONS.stores = async (ctx) => {
   check("у Аяна нет склада по умолчанию после этого", s2 && s2.is_default !== true && !r.stores.some((x) => x.point_id === "aian" && x.is_default === true), s2);
   r = await call("office_store_save", { token: t, id, name: "ZZ_TEST_склад", point_id: "нет-такой" });
   check("склад: чужая точка — validation", r.ok === false && r.error === "validation", r);
+  // возвращаем точке её прежний склад по умолчанию
+  if (aianWas) {
+    await call("office_store_save", { token: t, id: aianWas.id, name: aianWas.name,
+      point_id: "aian", active: aianWas.active !== false, is_default: true });
+  }
+  r = await call("office_stores_list", { token: t });
+  const aianNow = (r.stores || []).find((x) => x.point_id === "aian" && x.is_default === true) || null;
+  check("склад по умолчанию точки «Аян» — как до теста",
+    (aianNow && aianNow.id) === (aianWas && aianWas.id) || (!aianNow && !aianWas),
+    { было: aianWas && aianWas.id, стало: aianNow && aianNow.id });
 };
 
 SECTIONS.counteragents = async (ctx) => {
@@ -190,6 +205,8 @@ SECTIONS.users = async (ctx) => {
   r = await call("office_login", { login: "zz_test_sklad", pin: "4321" });
   check("кладовщик входит", r.ok && r.user.role === "storekeeper" && r.must_change_pin === true, r);
   const st = r.token;
+  r = await call("office_change_pin", { token: st, pin: "4321" });
+  check("кладовщик снял временный PIN", r.ok && r.must_change_pin === false, r);
   r = await call("office_items_search", { token: st, q: "мука" });
   check("кладовщик видит номенклатуру", r.ok, r);
   r = await call("office_item_save", { token: st, name: "ZZ_TEST_нельзя", item_type: "goods", unit_id: "кг" });
@@ -204,14 +221,85 @@ SECTIONS.users = async (ctx) => {
   check("деактивация", r.ok, r);
   r = await call("office_login", { login: "zz_test_sklad", pin: "5555" });
   check("выключенный не входит", r.ok === false && r.error === "unauthorized", r);
+
+  // --- матрица ролей: каждая роль видит ровно то, что записано в role_permissions ---
+  // Ожидания взяты из спецификации 3.5 и обязаны совпасть с содержимым таблицы.
+  const MATRIX = {
+    zz_test_owner: { role: "owner", name: "ZZ_TEST_Собственник",
+      perms: ["counteragents:edit", "counteragents:view", "nomenclature:edit", "nomenclature:view", "stores:edit", "stores:view"] },
+    zz_test_buh: { role: "accountant", name: "ZZ_TEST_Бухгалтер",
+      perms: ["counteragents:edit", "counteragents:view", "nomenclature:view", "stores:view"] },
+    zz_test_tech: { role: "technologist", name: "ZZ_TEST_Технолог",
+      perms: ["counteragents:view", "nomenclature:edit", "nomenclature:view", "stores:view"] },
+  };
+  const same = (a, b) => Array.isArray(a) && a.length === b.length && a.slice().sort().join("|") === b.slice().sort().join("|");
+
+  for (const [login, want] of Object.entries(MATRIX)) {
+    r = await call("office_user_save", { token: t, login, name: want.name, role: want.role, pin: "4321" });
+    check(`${want.role}: создан`, r.ok && r.id, r);
+    r = await call("office_login", { login, pin: "4321" });
+    check(`${want.role}: входит с временным PIN`, r.ok && r.user.role === want.role && r.must_change_pin === true, r);
+    const tok = r.token;
+    if (login === "zz_test_owner") {
+      // I2: до смены временного PIN разделы закрыты на сервере, а не только на фронте
+      const f = await call("office_items_search", { token: tok, q: "мука" });
+      check("временный PIN: раздел закрыт до смены",
+        f.ok === false && f.error === "forbidden" && /временный PIN/.test(f.message || ""), f);
+      const f2 = await call("office_me", { token: tok });
+      check("временный PIN: me по-прежнему отвечает", f2.ok === true && f2.must_change_pin === true, f2);
+    }
+    r = await call("office_change_pin", { token: tok, pin: "4321" });
+    check(`${want.role}: временный PIN снят`, r.ok && r.must_change_pin === false, r);
+    r = await call("office_me", { token: tok });
+    check(`${want.role}: права ровно по матрице`, same(r.permissions, want.perms), r.permissions);
+    r = await call("office_users_list", { token: tok });
+    check(`${want.role}: пользователей не видит`, r.ok === false && r.error === "forbidden", r);
+  }
+  // выборочно проверяем, что право edit действительно работает и действительно отсутствует
+  r = await call("office_login", { login: "zz_test_buh", pin: "4321" });
+  const buh = r.token;
+  r = await call("office_item_save", { token: buh, name: "ZZ_TEST_нельзя_буху", item_type: "goods", unit_id: "кг" });
+  check("бухгалтер не правит номенклатуру — forbidden", r.ok === false && r.error === "forbidden", r);
+  r = await call("office_counteragent_save", { token: buh, name: "ZZ_TEST_Поставщик буха", kind: "supplier" });
+  check("бухгалтер правит контрагентов", r.ok && r.id, r);
+
+  // --- C1: пять неверных PIN подряд запирают логин на 15 минут ---
+  for (let i = 1; i <= 5; i++) {
+    r = await call("office_login", { login: "zz_test_owner", pin: "0000" });
+    check(`лок: попытка ${i} — unauthorized`, r.ok === false && r.error === "unauthorized", r);
+  }
+  r = await call("office_login", { login: "zz_test_owner", pin: "4321" });
+  check("лок: шестая попытка с верным PIN отбита",
+    r.ok === false && r.error === "unauthorized" && /Слишком много попыток/.test(r.message || ""), r);
+  // лок снимается вместе с пользователем — его удалит test_cleanup в конце прогона
+};
+
+SECTIONS.reimport = async (ctx) => {
+  // I7: повторный перенос из iiko не затирает позицию, правленную в бэк-офисе.
+  const t = ctx.token;
+  const pin = process.env.TANDEM_OWNER_PIN || "";
+  const ID = "99999999-9999-4999-8999-999999999999";
+  const row = { id: ID, code: "ZZ_TEST_RE", name: "ZZ_TEST_переимпорт", artikul: "", group_id: null, unit: "кг", type: "goods", deleted: false, price: null };
+  let r = await call("migrate", { pin, kind: "items", rows: [row] });
+  check("переимпорт: позиция заведена переносом", r.ok && r.inserted === 1, r);
+  r = await call("office_group_save", { token: t, name: "ZZ_TEST_группа переимпорта" });
+  const gid = r.id;
+  r = await call("office_item_save", { token: t, code: "ZZ_TEST_RE", name: "ZZ_TEST_переимпорт правлено", group_id: gid });
+  check("переимпорт: правка в бэк-офисе", r.ok, r);
+  r = await call("migrate", { pin, kind: "items", rows: [row] });
+  check("переимпорт: правленная позиция пропущена", r.ok && r.updated === 0 && r.inserted === 0 && r.skipped === 1, r);
+  r = await call("office_items_search", { token: t, q: "ZZ_TEST_переимпорт" });
+  check("переимпорт: имя из бэк-офиса уцелело",
+    r.ok && r.total === 1 && r.rows[0].name === "ZZ_TEST_переимпорт правлено" && r.rows[0].group_id === gid, r.rows);
 };
 
 // --- разделы добавляются здесь ---
 
-// migrate требует TANDEM_OWNER_PIN и в "all" входит только при его наличии;
+// migrate и reimport требуют TANDEM_OWNER_PIN и в "all" входят только при его наличии;
 // любой раздел кроме auth/migrate сначала прогоняет auth — ему нужен токен.
+const NEEDS_OWNER = ["migrate", "reimport"];
 let names = section === "all"
-  ? Object.keys(SECTIONS).filter((n) => n !== "migrate" || process.env.TANDEM_OWNER_PIN)
+  ? Object.keys(SECTIONS).filter((n) => !NEEDS_OWNER.includes(n) || process.env.TANDEM_OWNER_PIN)
   : [section];
 if (!names.includes("auth") && names.some((n) => n !== "migrate")) names = ["auth", ...names];
 for (const n of names) {
@@ -219,5 +307,15 @@ for (const n of names) {
   console.log("\n== " + n);
   await SECTIONS[n](ctx);
 }
+
+// Уборка: тестовые записи не должны пережить прогон.
+if (process.env.TANDEM_OWNER_PIN) {
+  console.log("\n== очистка");
+  const r = await call("test_cleanup", { pin: process.env.TANDEM_OWNER_PIN });
+  check("очистка: следов нет", r.ok && r.leftovers === 0, r);
+} else {
+  console.log("\n== очистка пропущена: задайте TANDEM_OWNER_PIN, чтобы убрать записи ZZ_TEST_/zz_test_");
+}
+
 console.log(`\nпройдено ${passed}, провалено ${failed}`);
 process.exit(failed ? 1 : 0);
