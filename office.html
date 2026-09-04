@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#1F3864">
+<title>Тандем KZ — бэк-офис</title>
+<link rel="stylesheet" href="office.css?v=1">
+</head>
+<body>
+<div id="login" class="login" hidden>
+  <div class="card">
+    <h1>Тандем KZ · бэк-офис</h1>
+    <div class="sub">Справочники, склады, контрагенты · сборка 1</div>
+    <label for="llogin">Логин</label>
+    <input id="llogin" autocomplete="username" autocapitalize="off">
+    <label for="lpin">PIN</label>
+    <input id="lpin" type="password" inputmode="numeric" autocomplete="current-password">
+    <button id="lbtn">Войти</button>
+    <div class="err" id="lerr"></div>
+  </div>
+</div>
+
+<div id="pinchange" class="login" hidden>
+  <div class="card">
+    <h1>Смените PIN</h1>
+    <div class="sub">Временный PIN нужно заменить своим — не меньше 4 цифр.</div>
+    <label for="npin">Новый PIN</label>
+    <input id="npin" type="password" inputmode="numeric">
+    <label for="npin2">Ещё раз</label>
+    <input id="npin2" type="password" inputmode="numeric">
+    <button id="nbtn">Сохранить</button>
+    <div class="err" id="nerr"></div>
+  </div>
+</div>
+
+<div id="shell" hidden>
+  <header class="top">
+    <div class="brand">Тандем KZ · бэк-офис</div>
+    <nav id="menu"></nav>
+    <div class="who"><span id="uname"></span> <span id="urole" class="role"></span>
+      <button class="link" id="logout">Выйти</button></div>
+  </header>
+  <main id="main"></main>
+</div>
+<div id="toast" class="toast" hidden></div>
+<script type="module" src="js/office/app.js?v=1"></script>
+</body>
+</html>
