@@ -6,11 +6,13 @@ let root, state = { q: "", kind: "", page: 1 }, table, pager;
 
 export async function mount(r) {
   root = r;
+  state.page = 1;
   const kindSel = el("select", { onchange: (e) => { state.kind = e.target.value; state.page = 1; load(); } },
-    el("option", { value: "" }, "все виды"), ...Object.entries(KINDS).map(([v, t]) => el("option", { value: v }, t)));
+    el("option", { value: "", selected: state.kind === "" }, "все виды"),
+    ...Object.entries(KINDS).map(([v, t]) => el("option", { value: v, selected: v === state.kind }, t)));
   table = el("table"); pager = el("div", { class: "pager" });
   root.append(el("div", { class: "tools" },
-      el("input", { placeholder: "Поиск: название или БИН", oninput: debounce((e) => { state.q = e.target.value; state.page = 1; load(); }, 300) }),
+      el("input", { placeholder: "Поиск: название или БИН", value: state.q, oninput: debounce((e) => { state.q = e.target.value; state.page = 1; load(); }, 300) }),
       kindSel, can("counteragents", "edit") ? el("button", { onclick: () => edit(null) }, "+ Контрагент") : null),
     el("div", { class: "card", style: "padding:0;overflow:auto" }, table), pager);
   await load();
