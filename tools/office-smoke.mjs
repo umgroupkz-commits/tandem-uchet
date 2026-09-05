@@ -67,6 +67,33 @@ SECTIONS.migrate = async () => {
   ] });
   check("groups: дубль id в пачке считается один раз", r.ok && r.inserted + r.updated === 1, r);
 
+  // техкарты: две версии одного блюда + строка с неизвестным ингредиентом + цены закупа
+  const CH1 = "88888888-8888-4888-8888-888888888801", CH2 = "88888888-8888-4888-8888-888888888802";
+  const I2 = "44444444-4444-4444-8444-444444444402";
+  r = await call("migrate", { pin, kind: "items", rows: [
+    { id: I2, code: "ZZ_TEST_2", name: "ZZ_TEST_пф_миграция", artikul: "", group_id: G, unit: "кг", type: "prepared", deleted: false, price: null }] });
+  r = await call("migrate", { pin, kind: "chart_candidates", rows: [] });
+  check("кандидаты: тестовый полуфабрикат в списке", r.ok && (r.rows || []).some((x) => x.code === "ZZ_TEST_2" && x.iiko_id === I2), { n: r.rows && r.rows.length });
+  r = await call("migrate", { pin, kind: "charts", rows: [
+    { iiko_id: CH1, code: "ZZ_TEST_2", date_from: "2026-01-01", date_to: null, output_amount: 1, technology: "смешать",
+      lines: [{ ingredient_iiko_id: I, brutto: 2, netto: 2, output: 1.8, sort: 0 }, { ingredient_iiko_id: "99999999-9999-4999-8999-999999999999", brutto: 1, netto: 1, output: 1, sort: 1 }] },
+    { iiko_id: CH2, code: "ZZ_TEST_2", date_from: "2026-05-01", date_to: null, output_amount: 1, technology: null,
+      lines: [{ ingredient_iiko_id: I, brutto: 3, netto: 3, output: 2.7, sort: 0 }] },
+  ] });
+  check("карты: 2 вставлены, 1 строка пропущена, неизвестный ингредиент назван", r.ok && r.inserted === 2 && r.skipped_lines === 1 && Array.isArray(r.unknown) && r.unknown.length === 1, r);
+  r = await call("migrate", { pin, kind: "charts", rows: [
+    { iiko_id: CH2, code: "ZZ_TEST_2", date_from: "2026-05-01", date_to: null, output_amount: 1.5, technology: null,
+      lines: [{ ingredient_iiko_id: I, brutto: 3, netto: 3, output: 2.7, sort: 0 }] } ] });
+  check("карты: повтор обновляет, не дублирует", r.ok && r.updated === 1 && r.inserted === 0, r);
+  r = await call("migrate", { pin, kind: "charts", rows: [
+    { iiko_id: "88888888-8888-4888-8888-888888888803", code: "ZZ_TEST_2", date_from: "2026-03-01", date_to: null, output_amount: 1,
+      lines: [{ ingredient_iiko_id: "99999999-9999-4999-8999-999999999999", brutto: 1, netto: 1, output: 1, sort: 0 }] } ] });
+  check("карта без единой известной строки пропущена", r.ok && r.skipped === 1 && r.inserted === 0, r);
+  r = await call("migrate", { pin, kind: "costs", rows: [{ iiko_id: I, price: 77.5, date: "2026-07-15", source: "iiko_invoice" }] });
+  check("цены: обновлена 1", r.ok && r.updated === 1, r);
+  r = await call("migrate", { pin, kind: "costs", rows: [{ iiko_id: I, price: 1, date: "2026-07-16", source: "iiko_invoice" }] });
+  check("цены: повтор из накладной обновляет", r.ok && r.updated === 1, r);
+
   r = await call("migrate", { pin: "wrong", kind: "groups", rows: [] });
   check("чужой код — отказ", r.ok === false, r);
 };
