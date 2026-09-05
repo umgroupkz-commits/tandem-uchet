@@ -153,20 +153,31 @@ begin
         and (v_q = '' or i.name ilike '%'||v_q||'%' or i.code = v_q)
         and (coalesce((payload->>'only_nonzero')::boolean, true) = false or b.qty <> 0)
       order by s.name, i.name limit 200 offset (v_page-1)*200) x;
-    -- Итог и выгрузка считаются по всей отобранной выборке, а не по одной странице,
+    -- Итог считается по всей отобранной выборке, а не по одной странице,
     -- иначе сумма под таблицей меняется при листании.
-    select coalesce(sum(round(b.qty * b.avg_cost, 2)), 0),
-           'store;code;name;unit;qty;avg_cost;sum' || E'\n' ||
-           coalesce(string_agg(concat_ws(';', s.name, b.item_code, replace(i.name, ';', ','), i.unit_id,
-                                         b.qty, b.avg_cost, round(b.qty * b.avg_cost, 2)),
-                               E'\n' order by s.name, i.name), '')
-      into v_sum, v_csv
+    select coalesce(sum(round(b.qty * b.avg_cost, 2)), 0) into v_sum
       from tandem.stock_balances b
       join tandem.stores s on s.id = b.store_id
       join tandem.items i on i.code = b.item_code
       where (v_store is null or b.store_id = v_store)
         and (v_q = '' or i.name ilike '%'||v_q||'%' or i.code = v_q)
         and (coalesce((payload->>'only_nonzero')::boolean, true) = false or b.qty <> 0);
+    -- CSV — тяжёлая строка на весь список, строится только по явному запросу экспорта.
+    if coalesce((payload->>'export')::boolean, false) then
+      select 'store;code;name;unit;qty;avg_cost;sum' || E'\n' ||
+             coalesce(string_agg(concat_ws(';', replace(s.name, ';', ','), b.item_code, replace(i.name, ';', ','), i.unit_id,
+                                           b.qty, b.avg_cost, round(b.qty * b.avg_cost, 2)),
+                                 E'\n' order by s.name, i.name), '')
+        into v_csv
+        from tandem.stock_balances b
+        join tandem.stores s on s.id = b.store_id
+        join tandem.items i on i.code = b.item_code
+        where (v_store is null or b.store_id = v_store)
+          and (v_q = '' or i.name ilike '%'||v_q||'%' or i.code = v_q)
+          and (coalesce((payload->>'only_nonzero')::boolean, true) = false or b.qty <> 0);
+    else
+      v_csv := null;
+    end if;
     return jsonb_build_object('ok', true, 'rows', v_rows, 'total', v_total, 'page', v_page,
       'pages', greatest(ceil(v_total/200.0)::int, 1), 'total_sum', v_sum, 'csv', v_csv);
   end if;
@@ -337,6 +348,9 @@ exception
   -- Minor: кривой uuid/число/boolean в payload — это ошибка ввода, а не сбой базы.
   when invalid_text_representation then
     return tandem.err('validation', 'Неверный формат поля');
+  -- ссылка на несуществующий склад/контрагента/позицию — тоже ошибка ввода, не 500.
+  when foreign_key_violation then
+    return tandem.err('validation', 'Ссылка на несуществующую запись (склад, контрагент или позиция)');
 end $$;
 
 -- ---------------------------------------------------------------- уборка после теста

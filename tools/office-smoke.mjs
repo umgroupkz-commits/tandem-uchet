@@ -574,6 +574,15 @@ SECTIONS.stock = async (ctx) => {
   check("пересборка остатков: расхождений 0", r.ok && r.mismatches_before === 0, r);
   r = await call("office_item_stock", { token: t, code: muka });
   check("остатки в карточке: А и Б", r.ok && r.balances.length === 2 && r.moves.length > 0, r.balances);
+  // 10б. остатки: итог по выборке, CSV только по флагу export
+  r = await call("office_stock_balances", { token: t, store_id: A, only_nonzero: true, export: true });
+  const expSum = r.rows.reduce((s, x) => s + Number(x.qty) * Number(x.avg_cost), 0);
+  check("остатки: итог = Σ qty×avg по выборке", r.ok && near(r.total_sum, expSum, 0.05) && r.total === r.rows.length, { total_sum: r.total_sum, expSum });
+  check("остатки: CSV при export — шапка + строки", typeof r.csv === "string" && r.csv.split("\n").length === r.rows.length + 1, { lines: r.csv && r.csv.split("\n").length });
+  r = await call("office_stock_balances", { token: t, store_id: A, only_nonzero: true });
+  check("остатки: без export csv не отдаётся", r.ok && (r.csv === undefined || r.csv === null), Object.keys(r));
+  r = await call("office_stock_balances", { token: t, store_id: A, only_nonzero: false });
+  check("остатки: only_nonzero=false показывает и нули", r.ok && r.rows.length >= 2, { n: r.rows.length });
   // 11. права по типам
   r = await call("office_user_save", { token: t, login: "zz_test_tech_s", name: "ZZ_TEST_Технолог", role: "technologist", pin: "4321" });
   let l = await call("office_login", { login: "zz_test_tech_s", pin: "4321" }); await call("office_change_pin", { token: l.token, pin: "4321" });
@@ -583,6 +592,21 @@ SECTIONS.stock = async (ctx) => {
   check("технолог создаёт производство", r.ok, r);
   r = await call("office_doc_post", { token: l.token, id: r.id });
   check("технолог проводит производство", r.ok, r);
+  // 11б. чужой черновик, чужие права, ссылки на несуществующее
+  r = await call("office_doc_save", { token: t, doc_type: "invoice_in", doc_date: "2026-09-05", store_to: A, counteragent_id: SUP, lines: [{ item_code: muka, qty: 1, price: 1 }] });
+  const draftIn = r.id;
+  r = await call("office_doc_save", { token: l.token, id: draftIn, doc_type: "production", doc_date: "2026-09-05", store_from: A, lines: [{ item_code: testo, qty: 1 }] });
+  check("технолог не может сменить тип чужого черновика", r.ok === false && r.error === "validation" && /менять нельзя/.test(r.message), r);
+  r = await call("office_doc_delete", { token: l.token, id: draftIn });
+  check("технолог не удаляет приход — forbidden", r.ok === false && r.error === "forbidden", r);
+  r = await call("office_stock_rebuild", { token: l.token });
+  check("пересборка под неадминистратором — forbidden", r.ok === false && r.error === "forbidden", r);
+  r = await call("office_doc_save", { token: t, doc_type: "writeoff", doc_date: "2026-09-05", store_from: A, reason: "other", lines: [{ item_code: "нет-такого", qty: 1 }] });
+  check("неизвестная позиция — validation", r.ok === false && r.error === "validation", r);
+  r = await call("office_doc_save", { token: t, doc_type: "writeoff", doc_date: "2026-09-05", store_from: "00000000-0000-4000-8000-000000000000", reason: "other", lines: [{ item_code: muka, qty: 1 }] });
+  check("несуществующий склад — validation, не 500", r.ok === false && r.error === "validation", r);
+  r = await call("office_doc_delete", { token: t, id: draftIn });
+  check("удалить черновой приход админом", r.ok, r);
   r = await call("office_user_save", { token: t, login: "zz_test_buh_s", name: "ZZ_TEST_Бухгалтер", role: "accountant", pin: "4321" });
   l = await call("office_login", { login: "zz_test_buh_s", pin: "4321" }); await call("office_change_pin", { token: l.token, pin: "4321" });
   r = await call("office_doc_save", { token: l.token, doc_type: "writeoff", doc_date: "2026-09-05", store_from: A, reason: "other", lines: [{ item_code: muka, qty: 1 }] });
