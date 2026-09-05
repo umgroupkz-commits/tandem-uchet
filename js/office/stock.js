@@ -5,12 +5,17 @@ const TYPES = { invoice_in: "Приход", transfer: "Перемещение", 
 const REASONS = { spoilage: "порча", tasting: "проработка", staff_meals: "питание персонала", other: "прочее" };
 const perms = () => (session() && session().permissions) || [];
 const canDoc = (type) => perms().includes("doc:" + type + ":edit");
+const canAnyDoc = () => Object.keys(TYPES).some(canDoc);
 let root, stores = [], state = { tab: "docs", doc_type: "", store_id: "", status: "", q: "", date_from: "", date_to: "", page: 1 };
 let table, pager;
+// Список складов держим полным: выключенный склад должен читаться в карточке старого
+// документа и в остатках. Выбирать из него можно только действующие — active().
+const active = () => stores.filter((s) => s.active);
+const opts = (list) => Object.fromEntries(list.map((s) => [s.id, s.name]));
 
 export async function mount(r) {
   root = r; state.page = 1;
-  stores = ((await api("stores_list", {})).stores || []).filter((s) => s.active);
+  stores = (await api("stores_list", {})).stores || [];
   drawShell();
   await loadDocs();
 }
@@ -21,14 +26,18 @@ function drawShell() {
     el("button", { class: state.tab === "docs" ? "" : "ghost", onclick: () => { state.tab = "docs"; drawShell(); loadDocs(); } }, "Документы"),
     el("button", { class: state.tab === "bal" ? "" : "ghost", onclick: () => { state.tab = "bal"; drawShell(); loadBalances(); } }, "Остатки")));
   if (state.tab === "bal") { root.append(el("div", { id: "bal-root" })); return; }
-  const newBtn = el("select", { onchange: (e) => { if (e.target.value) { editDoc(null, e.target.value); e.target.value = ""; } } },
-    el("option", { value: "" }, "+ Новый документ…"),
-    ...Object.entries(TYPES).filter(([k]) => canDoc(k)).map(([k, v]) => el("option", { value: k }, v)));
+  // Роли без единого doc:*:edit (пока таких нет, но право снимается настройкой) видят
+  // журнал и остатки, но пустого выпадающего списка «+ Новый документ…» им не показываем.
+  const newBtn = canAnyDoc()
+    ? el("select", { onchange: (e) => { if (e.target.value) { editDoc(null, e.target.value); e.target.value = ""; } } },
+        el("option", { value: "" }, "+ Новый документ…"),
+        ...Object.entries(TYPES).filter(([k]) => canDoc(k)).map(([k, v]) => el("option", { value: k }, v)))
+    : null;
   table = el("table"); pager = el("div", { class: "pager" });
   root.append(el("div", { class: "tools" },
       el("input", { placeholder: "Номер, поставщик, комментарий", value: state.q, oninput: debounce((e) => { state.q = e.target.value; state.page = 1; loadDocs(); }, 300) }),
       sel({ "": "все типы", ...TYPES }, state.doc_type, (v) => { state.doc_type = v; state.page = 1; loadDocs(); }),
-      sel({ "": "все склады", ...Object.fromEntries(stores.map((s) => [s.id, s.name])) }, state.store_id, (v) => { state.store_id = v; state.page = 1; loadDocs(); }),
+      sel({ "": "все склады", ...opts(active()) }, state.store_id, (v) => { state.store_id = v; state.page = 1; loadDocs(); }),
       sel({ "": "все", draft: "черновики", posted: "проведённые" }, state.status, (v) => { state.status = v; state.page = 1; loadDocs(); }),
       el("input", { type: "date", title: "с", value: state.date_from, onchange: (e) => { state.date_from = e.target.value; state.page = 1; loadDocs(); } }),
       el("span", { class: "dim" }, "—"),
@@ -69,7 +78,9 @@ async function editDoc(id, newType) {
   const type = doc.doc_type, posted = doc.status === "posted";
   const ro = posted || !canDoc(type);
   const m = modal(`${TYPES[type]} ${doc.number || ""}`); m.root.style.maxWidth = "960px";
-  const storeOpts = { "": "— склад —", ...Object.fromEntries(stores.map((s) => [s.id, s.name])) };
+  // В новом документе выбирать можно только действующие склады; в уже заведённом
+  // список полный, иначе выключенный позже склад пропал бы из карточки вместе с именем.
+  const storeOpts = { "": "— склад —", ...opts(doc.id ? stores : active()) };
   const f = {
     date: el("input", { type: "date", value: doc.doc_date, readonly: ro }),
     from: sel(storeOpts, doc.store_from || "", () => {}, ro),
@@ -78,6 +89,9 @@ async function editDoc(id, newType) {
     comment: el("input", { value: doc.comment || "", readonly: ro }),
     caId: doc.counteragent_id || null,
     ca: el("input", { placeholder: "поставщик: начните вводить", value: doc.counteragent_name || "", readonly: ro }),
+    // Реквизиты бумажной накладной поставщика — только у прихода (сервер их и принимает только там).
+    ext: el("input", { placeholder: "как в накладной", value: doc.ext_number || "", readonly: ro }),
+    extd: el("input", { type: "date", value: doc.ext_date || "", readonly: ro }),
   };
   const caRes = el("div", { class: "sres" });
   f.ca.addEventListener("input", debounce(async () => {
@@ -86,7 +100,8 @@ async function editDoc(id, newType) {
     for (const c of (s.rows || []).slice(0, 10)) caRes.append(el("button", { class: "sitem", onclick: () => { f.caId = c.id; f.ca.value = c.name; caRes.innerHTML = ""; } }, c.name));
   }, 300));
   const head = el("div", { class: "grid2" }, el("div", {}, el("label", {}, "Дата"), f.date));
-  if (type === "invoice_in") head.append(el("div", {}, el("label", {}, "Склад-получатель"), f.to), el("div", { class: "sbox" }, el("label", {}, "Поставщик"), f.ca, caRes));
+  if (type === "invoice_in") head.append(el("div", {}, el("label", {}, "Склад-получатель"), f.to), el("div", { class: "sbox" }, el("label", {}, "Поставщик"), f.ca, caRes),
+    el("div", {}, el("label", {}, "№ накладной поставщика"), f.ext), el("div", {}, el("label", {}, "Дата накладной"), f.extd));
   if (type === "transfer") head.append(el("div", {}, el("label", {}, "Откуда"), f.from), el("div", {}, el("label", {}, "Куда"), f.to));
   if (type === "writeoff") head.append(el("div", {}, el("label", {}, "Склад"), f.from), el("div", {}, el("label", {}, "Причина"), f.reason));
   if (type === "production") head.append(el("div", {}, el("label", {}, "Склад кухни (расход и выпуск)"), f.from));
@@ -97,24 +112,39 @@ async function editDoc(id, newType) {
   const lines = doc.lines.map((l) => ({ ...l }));
   const tbl = el("table"); const tot = el("div", { class: "tot" });
   const isInv = type === "inventory", isIn = type === "invoice_in";
+  // Ячейки сумм, которые пересчитываются при вводе; перерисовки таблицы не требуют.
+  let sumCells = [];
+  // Ввод в строке меняет только свою ячейку суммы и итог. Раньше здесь была полная
+  // перерисовка таблицы на каждый input: браузер пересоздавал поле, и при наборе «10.5»
+  // каретка прыгала в начало, а незавершённое число («10.») терялось. Восстановление
+  // фокуса ниже оставлено как страховка на перерисовки от добавления/удаления строк.
+  function refreshSums() {
+    let sum = 0;
+    for (const c of sumCells) {
+      if (c.live) {
+        const q = Number(isInv ? c.l.fact_qty : c.l.qty) || 0, p = Number(c.l.price) || 0;
+        c.td.textContent = fmt(q * p); sum += q * p;
+      } else sum += Number(c.l.sum || 0);
+    }
+    tot.innerHTML = ""; tot.append(el("span", {}, posted ? "Сумма документа" : (isIn ? "Сумма" : "Строк")), el("span", {}, posted || isIn ? fmt(posted ? doc.total_sum : sum) + " ₸" : String(lines.length)));
+  }
   function drawLines() {
     const ae = document.activeElement; const keep = ae && ae.dataset && ae.dataset.li != null ? { li: ae.dataset.li, key: ae.dataset.key } : null;
-    tbl.innerHTML = "";
+    tbl.innerHTML = ""; sumCells = [];
     const cols = ["Позиция", "Ед.", isInv ? "Факт" : "Кол-во"]; if (isInv && posted) cols.push("Расчёт", "Разница"); if (isIn) cols.push("Цена", "Сумма"); if (posted && !isIn && !isInv) cols.push("Себест.", "Сумма"); if (isInv && posted) cols.push("Сумма"); cols.push("");
     tbl.append(el("tr", {}, ...cols.map((h, i) => el("th", { class: i >= 2 ? "num" : "" }, h))));
-    let sum = 0;
     lines.forEach((l, idx) => {
       const q = Number(isInv ? l.fact_qty : l.qty) || 0, p = Number(l.price) || 0;
-      const inp = (key) => el("input", { type: "number", step: "0.001", value: l[key] ?? "", readonly: ro, "data-li": String(idx), "data-key": key, style: "text-align:right;padding:6px", oninput: (e) => { l[key] = e.target.value; drawLines(); } });
+      const inp = (key) => el("input", { type: "number", step: "0.001", value: l[key] ?? "", readonly: ro, "data-li": String(idx), "data-key": key, style: "text-align:right;padding:6px", oninput: (e) => { l[key] = e.target.value; refreshSums(); } });
       const tds = [el("td", {}, l.name, isInv && !posted && l.current_qty != null ? el("i", { class: "dim", style: "display:block;font-style:normal;font-size:11px" }, "расчёт: " + fmt(l.current_qty)) : null), el("td", {}, l.unit_id || ""), el("td", { class: "num" }, inp(isInv ? "fact_qty" : "qty"))];
       if (isInv && posted) tds.push(el("td", { class: "num" }, fmt(l.calc_qty)), el("td", { class: "num" }, fmt(q - Number(l.calc_qty || 0))));
-      if (isIn) { tds.push(el("td", { class: "num" }, inp("price")), el("td", { class: "num" }, fmt(q * p))); sum += q * p; }
-      if (posted && !isIn && !isInv) { tds.push(el("td", { class: "num" }, fmt(l.price)), el("td", { class: "num" }, fmt(l.sum))); sum += Number(l.sum || 0); }
-      if (isInv && posted) { tds.push(el("td", { class: "num" }, fmt(l.sum))); sum += Number(l.sum || 0); }
+      if (isIn) { const sc = el("td", { class: "num" }, fmt(q * p)); tds.push(el("td", { class: "num" }, inp("price")), sc); sumCells.push({ l, td: sc, live: true }); }
+      if (posted && !isIn && !isInv) { tds.push(el("td", { class: "num" }, fmt(l.price)), el("td", { class: "num" }, fmt(l.sum))); sumCells.push({ l, live: false }); }
+      if (isInv && posted) { tds.push(el("td", { class: "num" }, fmt(l.sum))); sumCells.push({ l, live: false }); }
       tds.push(el("td", {}, ro ? null : el("button", { class: "x", onclick: () => { lines.splice(idx, 1); drawLines(); } }, "×")));
       tbl.append(el("tr", {}, ...tds));
     });
-    tot.innerHTML = ""; tot.append(el("span", {}, posted ? "Сумма документа" : (isIn ? "Сумма" : "Строк")), el("span", {}, posted || isIn ? fmt(posted ? doc.total_sum : sum) + " ₸" : String(lines.length)));
+    refreshSums();
     if (keep) { const n = tbl.querySelector(`input[data-li="${keep.li}"][data-key="${keep.key}"]`); if (n) n.focus(); }
   }
   drawLines();
@@ -153,6 +183,7 @@ async function editDoc(id, newType) {
   const err = el("div", { class: "err" }); const actions = el("div", { class: "actions" });
   const payload = () => ({ id: doc.id, doc_type: type, doc_date: f.date.value, store_from: f.from.value || null, store_to: f.to.value || null,
     counteragent_id: f.caId, reason: f.reason.value || null, comment: f.comment.value,
+    ext_number: f.ext.value.trim() || null, ext_date: f.extd.value || null,
     lines: lines.map((l) => ({ item_code: l.item_code, qty: l.qty === "" ? null : l.qty, fact_qty: l.fact_qty === "" ? null : l.fact_qty, price: l.price === "" ? null : l.price })) });
   async function save() { const r = await api("doc_save", payload()); if (!r.ok) { err.textContent = r.message; return null; } doc.id = r.id; doc.number = r.number; return r.id; }
   async function post() {
@@ -189,7 +220,7 @@ async function loadBalances() {
     el("td", { class: "num" + (Number(x.qty) < 0 ? " bad" : "") }, fmt(x.qty)), el("td", { class: "num" }, fmt(x.avg_cost)), el("td", { class: "num" }, fmt(x.sum))));
   if (!r.rows.length) t.append(el("tr", {}, el("td", { colspan: 6, class: "dim" }, "Остатков нет — проведите первую инвентаризацию или приход")));
   host.append(el("div", { class: "tools" },
-      sel({ "": "все склады", ...Object.fromEntries(stores.map((s) => [s.id, s.name])) }, bal.store_id, (v) => { bal.store_id = v; bal.page = 1; loadBalances(); }),
+      sel({ "": "все склады", ...opts(stores) }, bal.store_id, (v) => { bal.store_id = v; bal.page = 1; loadBalances(); }),
       el("input", { placeholder: "Поиск позиции", value: bal.q, oninput: debounce((e) => { bal.q = e.target.value; bal.page = 1; loadBalances(); }, 300) }),
       el("label", { style: "margin:0" }, el("input", { type: "checkbox", checked: bal.nonzero, onchange: (e) => { bal.nonzero = e.target.checked; loadBalances(); } }), " только с остатком"),
       el("span", { class: "dim" }, `итого ${fmt(r.total_sum)} ₸`),
@@ -208,6 +239,7 @@ async function loadBalances() {
 }
 async function showMoves(x) {
   const r = await api("stock_moves", { store_id: x.store_id, item_code: x.item_code, page: 1 });
+  if (!r.ok) { toast(r.message, "bad"); return; }
   const m = modal(`${x.name} · ${x.store_name}`);
   const t = el("table"); t.append(el("tr", {}, ...["Дата", "Документ", "Кол-во", "Себест.", "Сумма"].map((h, i) => el("th", { class: i >= 2 ? "num" : "" }, h))));
   for (const mv of (r.rows || [])) t.append(el("tr", { class: "row", onclick: () => { m.close(); editDoc(mv.document_id); } }, el("td", {}, mv.move_date), el("td", {}, `${TYPES[mv.doc_type] || mv.doc_type} ${mv.number}`),

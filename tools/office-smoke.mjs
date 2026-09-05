@@ -583,6 +583,67 @@ SECTIONS.stock = async (ctx) => {
   check("остатки: без export csv не отдаётся", r.ok && (r.csv === undefined || r.csv === null), Object.keys(r));
   r = await call("office_stock_balances", { token: t, store_id: A, only_nonzero: false });
   check("остатки: only_nonzero=false показывает и нули", r.ok && r.rows.length >= 2, { n: r.rows.length });
+
+  // 10в. Проведённый документ не проводится второй раз и не правится (C1: обе ветки под локом).
+  r = await call("office_doc_post", { token: t, id: prod });
+  check("повторное проведение — validation", r.ok === false && r.error === "validation" && /уже проведён/.test(r.message || ""), r);
+  r = await call("office_doc_save", { token: t, id: prod, doc_type: "production", doc_date: "2026-09-03", store_from: A, lines: [{ item_code: testo, qty: 5 }] });
+  check("правка проведённого — validation", r.ok === false && r.error === "validation" && /отмените проведение/.test(r.message || ""), r);
+
+  // 10г. Дубль позиции в строках: отказ до первой записи, остаток не тронут.
+  const dupBefore = await bal(A, muka);
+  r = await call("office_doc_save", { token: t, doc_type: "writeoff", doc_date: "2026-09-05", store_from: A, reason: "other", lines: [{ item_code: muka, qty: 1 }, { item_code: muka, qty: 2 }] });
+  const dupDoc = r.id;
+  r = await call("office_doc_post", { token: t, id: dupDoc });
+  check("дубль позиции в строках — validation", r.ok === false && r.error === "validation" && /повторяется/.test(r.message || ""), r);
+  const dupAfter = await bal(A, muka);
+  check("после отказа по дублю остаток не изменился", near(dupAfter.qty, dupBefore.qty) && near(dupAfter.avg, dupBefore.avg), { dupBefore, dupAfter });
+  await call("office_doc_delete", { token: t, id: dupDoc });
+
+  // 10д. Взвешивание при перемещении: на Б 5 по 150, на А средняя 200 → Б 8 по 168.75.
+  r = await call("office_doc_save", { token: t, doc_type: "transfer", doc_date: "2026-09-05", store_from: A, store_to: B, lines: [{ item_code: muka, qty: 3 }] });
+  const tr2 = r.id;
+  r = await call("office_doc_post", { token: t, id: tr2 });
+  check("перемещение 3 кг по 200 проведено", r.ok && near(r.total_sum, 600), r);
+  b = await bal(B, muka); check("Б: 8 по 168.75 = (5×150 + 3×200) / 8", near(b.qty, 8) && near(b.avg, 168.75), b);
+  // 10е. Отмена перемещения пересобирает обе пары, а не только склад-источник.
+  r = await call("office_doc_unpost", { token: t, id: tr2 });
+  check("перемещение отменено", r.ok, r);
+  b = await bal(A, muka); check("отмена перемещения: А снова 2 по 200", near(b.qty, 2) && near(b.avg, 200), b);
+  b = await bal(B, muka); check("отмена перемещения: Б снова 5 по 150", near(b.qty, 5) && near(b.avg, 150), b);
+  await call("office_doc_delete", { token: t, id: tr2 });
+
+  // 10ж. Излишек инвентаризации: факт больше расчёта → движение со знаком плюс и сумма > 0.
+  r = await call("office_doc_save", { token: t, doc_type: "inventory", doc_date: "2026-09-05", store_from: A, lines: [{ item_code: muka, fact_qty: 3 }] });
+  const inv2 = r.id;
+  r = await call("office_doc_post", { token: t, id: inv2 });
+  check("инвентаризация: излишек +1 по 200, сумма > 0", r.ok && r.total_sum > 0 && near(r.total_sum, 200), r);
+  b = await bal(A, muka); check("мука А после излишка: 3", near(b.qty, 3), b);
+  r = await call("office_stock_moves", { token: t, store_id: A, item_code: muka, date_from: "2026-09-05", date_to: "2026-09-05" });
+  check("излишек дал движение +1", r.ok && (r.rows || []).some((x) => x.doc_type === "inventory" && Number(x.qty) === 1), { n: r.total });
+
+  // 10з. Накладная поставщика (0018): № и дата принимаются приходом и возвращаются карточкой и журналом.
+  r = await call("office_doc_save", { token: t, doc_type: "invoice_in", doc_date: "2026-09-05", store_to: A, counteragent_id: SUP,
+    ext_number: "А-1", ext_date: "2026-09-04", lines: [{ item_code: muka, qty: 1, price: 100 }] });
+  const extDoc = r.id;
+  check("приход с № накладной сохранён", r.ok && extDoc, r);
+  r = await call("office_doc_get", { token: t, id: extDoc });
+  check("doc_get отдаёт № и дату накладной поставщика",
+    r.ok && r.doc.ext_number === "А-1" && r.doc.ext_date === "2026-09-04", { n: r.doc && r.doc.ext_number, d: r.doc && r.doc.ext_date });
+  r = await call("office_docs_list", { token: t, store_id: A, doc_type: "invoice_in" });
+  check("журнал отдаёт № накладной", r.ok && (r.rows || []).some((x) => x.ext_number === "А-1"), { n: r.total });
+  await call("office_doc_delete", { token: t, id: extDoc });
+
+  // 10и. Кладовщик проводит приход — приёмка его работа (спецификация 3.5).
+  r = await call("office_user_save", { token: t, login: "zz_test_sklad_s", name: "ZZ_TEST_Кладовщик склада", role: "storekeeper", pin: "4321" });
+  check("кладовщик заведён", r.ok && r.id, r);
+  const sk = await call("office_login", { login: "zz_test_sklad_s", pin: "4321" });
+  await call("office_change_pin", { token: sk.token, pin: "4321" });
+  r = await call("office_doc_save", { token: sk.token, doc_type: "invoice_in", doc_date: "2026-09-05", store_to: A, counteragent_id: SUP, lines: [{ item_code: muka, qty: 2, price: 210 }] });
+  check("кладовщик создаёт приход", r.ok && r.id, r);
+  r = await call("office_doc_post", { token: sk.token, id: r.id });
+  check("кладовщик проводит приход", r.ok && near(r.total_sum, 420), r);
+
   // 11. права по типам
   r = await call("office_user_save", { token: t, login: "zz_test_tech_s", name: "ZZ_TEST_Технолог", role: "technologist", pin: "4321" });
   let l = await call("office_login", { login: "zz_test_tech_s", pin: "4321" }); await call("office_change_pin", { token: l.token, pin: "4321" });
