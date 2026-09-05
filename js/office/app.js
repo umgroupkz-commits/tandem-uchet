@@ -4,6 +4,7 @@ import { toast } from "./ui.js?v=2";
 const SECTIONS = [
   { id: "nomenclature", title: "Номенклатура" },
   { id: "charts", title: "Техкарты" },
+  { id: "stock", title: "Склад" },
   { id: "stores", title: "Склады" },
   { id: "counteragents", title: "Контрагенты" },
   { id: "users", title: "Пользователи" },
