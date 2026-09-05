@@ -71,6 +71,12 @@ async function editChart(code, chartId) {
       ...r.versions.map((v) => el("option", { value: v.id, selected: ch && v.id === ch.id }, `с ${v.date_from}${v.date_to ? " по " + v.date_to : " — действует"}${v.source === "iiko" ? " · iiko" : ""}`)));
     m.root.append(el("div", { class: "tools" }, el("span", { class: "dim" }, "Версия:"), vs));
   }
+  // Закрытая версия правится «задним числом»: расчёты за её период поедут. Для изменений
+  // с новой даты есть «Новая версия» — говорим об этом прямо над формой.
+  if (ch && ch.date_to) {
+    m.root.append(el("div", { class: "dim" },
+      `Вы правите версию, закрытую датой ${ch.date_to}; для изменений с новой даты используйте «Новая версия».`));
+  }
   const f = {
     date_from: el("input", { type: "date", value: ch ? ch.date_from : new Date().toISOString().slice(0, 10), readonly: ro }),
     date_to: el("input", { type: "date", value: ch && ch.date_to ? ch.date_to : "", readonly: ro }),

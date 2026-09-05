@@ -2,8 +2,10 @@
 
 Дата: 5 сентября 2026. Статус: утверждено к реализации.
 Родительская спецификация: `2026-09-04-uchet-core-design.md` (архитектура, разделы 3.1а, 3.4, 3.5).
-Отложенное из подпроекта 1, что закрывается здесь: `items.unit_id not null`; старый скрипт
-`iiko-sync-items.mjs` и RPC `tandem_sync_items` выводятся из употребления (перенос — единственный путь).
+Отложенное из подпроекта 1: `items.unit_id not null` — **закрыто** (миграция 0010). Старая пара
+по картам — `tandem.item_chart` и RPC `tandem_sync_charts` — **удалена** вместе со скриптом
+`tools/iiko-sync-charts.mjs` (миграция 0014); её заменил перенос. А вот `tandem_sync_items`
+и `tools/iiko-sync-items.mjs` **остались как есть** — решение по ним перенесено в подпроект 3.
 
 ## 1. Цель
 
@@ -50,7 +52,9 @@ charts        id uuid PK default gen_random_uuid(),
               updated_by uuid null -> users, updated_at timestamptz default now(),
               exclude using gist (item_code with =,
                 daterange(date_from, coalesce(date_to, 'infinity'::date), '[]') with &&)
-              -- требует btree_gist (стандартное расширение Postgres)
+              -- требует btree_gist (стандартное расширение Postgres). Установлено в схему
+              -- public, а не extensions: осознанно — на чистом Postgres расширения ставятся
+              -- туда же, и переезд с Supabase не потребует правки этого ограничения.
 
 chart_lines   id uuid PK default gen_random_uuid(),
               chart_id uuid -> charts on delete cascade,
@@ -97,7 +101,8 @@ partial numeric, missing text[])`:
 
 ## 5. RPC (через `tandem_office`, раздел `charts`)
 
-- `charts_list {q?, group_id?, only_missing?, page?}` → строки: код, имя, тип, группа, есть ли
+- `charts_list {q?, group_id?, only?, page?}` (`only` — `'no_chart'` либо `'no_cost'`; имя
+  `only_missing` из черновика не прижилось: фильтров два, а не один) → строки: код, имя, тип, группа, есть ли
   действующая карта, выход, себестоимость, цена, фудкост %, флаг порога, есть ли ингредиенты
   без цены; по 200.
 - `chart_get {code, date?}` → `{item, chart:{id, date_from, date_to, output_amount, technology,
@@ -217,4 +222,10 @@ partial numeric, missing text[])`:
 8. Предупреждение «нет цены» в редакторе карты выводится текстом (список кодов/названий),
    без ссылок на карточки номенклатуры — отложено.
 9. `raw_usage` в `tandem_api` (экран точки, расход сырья) берёт действующую на сегодня карту,
-   а не карту на дату периода отчёта — отложено.
+   а не карту на дату периода отчёта — отложено до подпроекта 4 (записано в
+   `2026-09-05-uchet-core-deferred.md`).
+10. `chart_get` по `id` версии считает всю карточку на дату начала этой версии: и цены строк,
+   и итог. Расчёт «строки на сегодня, итог на дату версии» был ошибкой первой реализации.
+11. Сохранение карты из бэк-офиса ставит `source = 'office'` даже правке карты из iiko;
+   `iiko_id` при этом сохраняется, и повторный перенос узнаёт карту по нему, но не трогает —
+   считает пропущенной с пометкой «правлена в офисе».

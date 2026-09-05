@@ -134,6 +134,24 @@ SECTIONS.migrate = async () => {
   // Что записался именно cost_source='iiko_invoice', а не 'document' (иначе следующий перенос
   // сам себя заблокировал бы), видно только в базе — проверено SQL, см. task-4-report.md.
 
+  // I1: карту, правленную в бэк-офисе, перенос обязан пропускать с пометкой «правлена в офисе».
+  // Автоматизировать здесь нельзя: карту с source='iiko' заводит только этот раздел (код
+  // собственника, без токена), а сделать её офисной может только office_chart_save — ему нужен
+  // токен бэк-офиса, которого в разделе migrate нет, и разделы независимы. Обе стороны проверены
+  // вручную одноразовым скриптом (перенос → правка офисом → повторный перенос) — см.
+  // .superpowers/sdd/2026-09-05-uchet-charts/fix-wave-report.md. Автоматизируемая половина —
+  // «сохранение из офиса ставит source=office» — стоит в разделе charts.
+
+  // I2: экран точки («расход сырья») читает те же charts/chart_lines. tandem_charts пускает
+  // по коду собственника, поэтому проверка живёт здесь, а не в разделе с токеном.
+  r = await call("charts", { pin, point_id: "eneshka" });
+  const keys = Object.keys(r.charts || {});
+  const first = keys.length ? r.charts[keys[0]] : [];
+  check("экран точки: расход сырья по картам",
+    r.ok && keys.length > 100 && Array.isArray(first) && first.length > 0
+      && typeof first[0].n === "string" && Number(first[0].a) > 0,
+    { n: keys.length, first: first[0] });
+
   r = await call("migrate", { pin: "wrong", kind: "groups", rows: [] });
   check("чужой код — отказ", r.ok === false, r);
 };
@@ -392,6 +410,9 @@ SECTIONS.charts = async (ctx) => {
   const pirChart = r.id;
   r = await call("office_chart_get", { token: t, code: pir });
   check("себестоимость пирожка 8.8889", r.ok && Number(r.cost) === 8.8889 && r.chart.lines.length === 1 && Number(r.chart.lines[0].ing_cost) === 111.1111, { cost: r.cost, line: r.chart && r.chart.lines[0] });
+  // I1: всё, что сохранено из бэк-офиса, помечено source='office' — на карте из iiko эта
+  // пометка и есть отсечка от повторного переноса (см. комментарий в разделе migrate).
+  check("карта из офиса помечена source=office", r.ok && r.chart && r.chart.source === "office", r.chart);
   check("потери в строке посчитаны", r.ok && Number(r.chart.lines[0].hot_loss_pct) === 12.5 && Number(r.chart.lines[0].cold_loss_pct) === 0, r.chart && r.chart.lines[0]);
   r = await call("office_chart_get", { token: t, code: pir, id: testoChart });
   check("chart_get с чужим id — not_found", r.ok === false && r.error === "not_found", r);
@@ -435,6 +456,13 @@ SECTIONS.charts = async (ctx) => {
   r = await call("office_chart_get", { token: t, code: pir, date: "2026-07-01" });
   check("две версии: расчёт на разные даты различается", c1 !== null && r.cost !== null && Number(c1) < Number(r.cost) && r.versions.length === 2, { c1, c2: r.cost, versions: r.versions });
   check("старая версия закрыта датой", r.versions.some((v) => v.date_to === "2026-05-31"), r.versions);
+  // I3: версию, запрошенную по id, считаем целиком на её дату начала. Пока строки брали цену
+  // на сегодня, а итог — на дату версии, эти числа расходились и карточка сама себе противоречила.
+  r = await call("office_chart_get", { token: t, code: pir, id: v2 });
+  check("chart_get по id: итог = сумма строк / выход",
+    r.ok && r.cost !== null
+      && Math.abs(Number(r.cost) - r.chart.lines.reduce((s, l) => s + Number(l.line_cost || 0), 0) / Number(r.chart.output_amount)) < 0.001,
+    { cost: r.cost, lines: r.chart && r.chart.lines });
   r = await call("office_charts_list", { token: t, q: "ZZ_TEST_пирожок" });
   check("список: пирожок с картой и себестоимостью", r.ok && r.total === 1 && r.rows[0].chart_id && r.rows[0].cost !== null && r.rows[0].foodcost_pct !== null && r.rows[0].missing_count === 0, r.rows && r.rows[0]);
   r = await call("office_charts_list", { token: t, q: "ZZ_TEST_", only: "no_chart" });
