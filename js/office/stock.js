@@ -1,11 +1,11 @@
-import { api, can, session } from "./api.js?v=2";
+import { api, session } from "./api.js?v=2";
 import { el, fmt, toast, debounce, modal, confirmDlg } from "./ui.js?v=2";
 
 const TYPES = { invoice_in: "Приход", transfer: "Перемещение", writeoff: "Списание", production: "Производство", inventory: "Инвентаризация" };
 const REASONS = { spoilage: "порча", tasting: "проработка", staff_meals: "питание персонала", other: "прочее" };
 const perms = () => (session() && session().permissions) || [];
 const canDoc = (type) => perms().includes("doc:" + type + ":edit");
-let root, stores = [], state = { tab: "docs", doc_type: "", store_id: "", status: "", q: "", page: 1 };
+let root, stores = [], state = { tab: "docs", doc_type: "", store_id: "", status: "", q: "", date_from: "", date_to: "", page: 1 };
 let table, pager;
 
 export async function mount(r) {
@@ -30,6 +30,9 @@ function drawShell() {
       sel({ "": "все типы", ...TYPES }, state.doc_type, (v) => { state.doc_type = v; state.page = 1; loadDocs(); }),
       sel({ "": "все склады", ...Object.fromEntries(stores.map((s) => [s.id, s.name])) }, state.store_id, (v) => { state.store_id = v; state.page = 1; loadDocs(); }),
       sel({ "": "все", draft: "черновики", posted: "проведённые" }, state.status, (v) => { state.status = v; state.page = 1; loadDocs(); }),
+      el("input", { type: "date", title: "с", value: state.date_from, onchange: (e) => { state.date_from = e.target.value; state.page = 1; loadDocs(); } }),
+      el("span", { class: "dim" }, "—"),
+      el("input", { type: "date", title: "по", value: state.date_to, onchange: (e) => { state.date_to = e.target.value; state.page = 1; loadDocs(); } }),
       newBtn),
     el("div", { class: "card", style: "padding:0;overflow:auto" }, table), pager);
 }
@@ -40,7 +43,7 @@ function sel(opts, value, onchange, disabled = false) {
 }
 
 async function loadDocs() {
-  const r = await api("docs_list", { doc_type: state.doc_type || null, store_id: state.store_id || null, status: state.status || null, q: state.q, page: state.page });
+  const r = await api("docs_list", { doc_type: state.doc_type || null, store_id: state.store_id || null, status: state.status || null, q: state.q, date_from: state.date_from || null, date_to: state.date_to || null, page: state.page });
   if (!r.ok) { toast(r.message, "bad"); return; }
   table.innerHTML = "";
   table.append(el("tr", {}, ...["Номер", "Тип", "Дата", "Склады / поставщик", "Сумма", "Статус"].map((h, i) => el("th", { class: i === 4 ? "num" : "" }, h))));
@@ -131,8 +134,13 @@ async function editDoc(id, newType) {
     const tools = el("div", { class: "sbox", style: "margin-top:10px" }, search, res);
     if (isInv) tools.prepend(el("button", { class: "ghost small", style: "margin-bottom:8px", onclick: async () => {
       const st = f.from.value; if (!st) { toast("Сначала выберите склад", "bad"); return; }
-      const b = await api("stock_balances", { store_id: st, only_nonzero: true, page: 1 });
-      for (const x of (b.rows || [])) if (!lines.some((l) => l.item_code === x.item_code)) lines.push({ item_code: x.item_code, name: x.name, unit_id: x.unit_id, fact_qty: "", current_qty: x.qty });
+      let page = 1, pages = 1;
+      do {
+        const b = await api("stock_balances", { store_id: st, only_nonzero: true, page });
+        if (!b.ok) { toast(b.message, "bad"); return; }
+        for (const x of (b.rows || [])) if (!lines.some((l) => l.item_code === x.item_code)) lines.push({ item_code: x.item_code, name: x.name, unit_id: x.unit_id, fact_qty: "", current_qty: x.qty });
+        pages = b.pages || 1; page++;
+      } while (page <= pages);
       drawLines();
     } }, "Заполнить позициями с остатком"));
     m.root.append(tools);
@@ -158,7 +166,13 @@ async function editDoc(id, newType) {
       el("button", { class: "ghost", onclick: cm.close }, "Отмена")));
   }
   if (!ro) actions.append(el("button", { class: "ghost", onclick: async () => { if (await save()) { toast("Черновик сохранён"); m.close(); loadDocs(); } } }, "Сохранить черновик"), el("button", { onclick: post }, "Провести"));
-  if (posted && canDoc(type)) actions.append(el("button", { class: "ghost", onclick: async () => { if (!confirmDlg("Отменить проведение?")) return; const r = await api("doc_unpost", { id: doc.id }); if (!r.ok) { err.textContent = r.message; return; } toast("Проведение отменено"); m.close(); loadDocs(); } }, "Отменить проведение"));
+  if (posted && canDoc(type)) actions.append(el("button", { class: "ghost", onclick: async () => {
+    if (!confirmDlg("Отменить проведение?")) return;
+    const r = await api("doc_unpost", { id: doc.id }); if (!r.ok) { err.textContent = r.message; return; }
+    const hasWarn = r.warnings && r.warnings.length;
+    toast("Проведение отменено" + (hasWarn ? " — в минусе: " + r.warnings.map((w) => `${w.name} (${w.store_name}) ${fmt(w.balance_after)}`).join("; ") : ""), hasWarn ? "bad" : "ok");
+    m.close(); loadDocs();
+  } }, "Отменить проведение"));
   if (doc.id && !posted && canDoc(type)) actions.append(el("button", { class: "ghost", onclick: async () => { if (!confirmDlg("Удалить черновик?")) return; const r = await api("doc_delete", { id: doc.id }); if (!r.ok) { err.textContent = r.message; return; } toast("Удалено"); m.close(); loadDocs(); } }, "Удалить"));
   actions.append(el("button", { class: "ghost", onclick: m.close }, ro ? "Закрыть" : "Отмена"));
   m.root.append(err, actions);
