@@ -89,10 +89,50 @@ SECTIONS.migrate = async () => {
     { iiko_id: "88888888-8888-4888-8888-888888888803", code: "ZZ_TEST_2", date_from: "2026-03-01", date_to: null, output_amount: 1,
       lines: [{ ingredient_iiko_id: "99999999-9999-4999-8999-999999999999", brutto: 1, netto: 1, output: 1, sort: 0 }] } ] });
   check("карта без единой известной строки пропущена", r.ok && r.skipped === 1 && r.inserted === 0, r);
+
+  // Fix round 1: версии приходят не по порядку, повторный прогон ничего не меняет,
+  // а совпадение даты начала не затирает уже записанную карту.
+  // Отдельная позиция ZZ_TEST_3: даты на ZZ_TEST_2 уже заняты CH1/CH2 и пересеклись бы.
+  const I3 = "44444444-4444-4444-8444-444444444403";
+  const CH4 = "88888888-8888-4888-8888-888888888811", CH5 = "88888888-8888-4888-8888-888888888812";
+  const CH6 = "88888888-8888-4888-8888-888888888821", CH7 = "88888888-8888-4888-8888-888888888822";
+  await call("migrate", { pin, kind: "items", rows: [
+    { id: I3, code: "ZZ_TEST_3", name: "ZZ_TEST_блюдо_миграция", artikul: "", group_id: G, unit: "кг", type: "dish", deleted: false, price: null }] });
+  const pack = [
+    { iiko_id: CH4, code: "ZZ_TEST_3", date_from: "2026-05-01", date_to: null, output_amount: 1,
+      lines: [{ ingredient_iiko_id: I, brutto: 1, netto: 1, output: 1, sort: 0 }] },
+    { iiko_id: CH5, code: "ZZ_TEST_3", date_from: "2026-01-01", date_to: "2026-12-31", output_amount: 1,
+      lines: [{ ingredient_iiko_id: I, brutto: 1, netto: 1, output: 1, sort: 0 }] },
+  ];
+  r = await call("migrate", { pin, kind: "charts", rows: pack });
+  check("карты: поздняя версия пришла раньше ранней — вставлены обе", r.ok && r.inserted === 2 && r.skipped === 0, r);
+  // Что ранняя версия при этом укоротилась до 2026-04-30, тест не видит: вид charts дат не
+  // возвращает, а office_chart_get требует токен бэк-офиса, которого в разделе migrate нет
+  // (он идёт без auth). Даты проверены вручную через SQL, результат — в task-4-report.md.
+  r = await call("migrate", { pin, kind: "charts", rows: pack });
+  check("карты: повтор пачки только обновляет", r.ok && r.updated === 2 && r.inserted === 0, r);
+  r = await call("migrate", { pin, kind: "charts", rows: [
+    { iiko_id: CH6, code: "ZZ_TEST_3", date_from: "2027-01-01", date_to: null, output_amount: 1,
+      lines: [{ ingredient_iiko_id: I, brutto: 1, netto: 1, output: 1, sort: 0 }] } ] });
+  check("карты: следующая версия вставлена", r.ok && r.inserted === 1, r);
+  r = await call("migrate", { pin, kind: "charts", rows: [
+    { iiko_id: CH7, code: "ZZ_TEST_3", date_from: "2027-01-01", date_to: null, output_amount: 1,
+      lines: [{ ingredient_iiko_id: I, brutto: 1, netto: 1, output: 1, sort: 0 }] } ] });
+  check("карты: дубль даты начала не удаляет уже записанную", r.ok && r.skipped === 1 && r.inserted === 0
+        && Array.isArray(r.errors) && r.errors.length === 1, r);
+  // Тот же путь для карты офиса (source='office') проверен вручную: подменой source у CH6
+  // через SQL и повторной подачей CH7 — карта офиса осталась на месте. См. task-4-report.md.
+
   r = await call("migrate", { pin, kind: "costs", rows: [{ iiko_id: I, price: 77.5, date: "2026-07-15", source: "iiko_invoice" }] });
   check("цены: обновлена 1", r.ok && r.updated === 1, r);
   r = await call("migrate", { pin, kind: "costs", rows: [{ iiko_id: I, price: 1, date: "2026-07-16", source: "iiko_invoice" }] });
   check("цены: повтор из накладной обновляет", r.ok && r.updated === 1, r);
+  r = await call("migrate", { pin, kind: "costs", rows: [{ iiko_id: I, price: 0, date: "2026-07-17", source: "iiko_invoice" }] });
+  check("цены: неположительная цена отброшена", r.ok && r.updated === 0, r);
+  r = await call("migrate", { pin, kind: "costs", rows: [{ iiko_id: I, price: 2, date: "2026-07-18", source: "document" }] });
+  check("цены: чужой source во входе не мешает обновлению", r.ok && r.updated === 1, r);
+  // Что записался именно cost_source='iiko_invoice', а не 'document' (иначе следующий перенос
+  // сам себя заблокировал бы), видно только в базе — проверено SQL, см. task-4-report.md.
 
   r = await call("migrate", { pin: "wrong", kind: "groups", rows: [] });
   check("чужой код — отказ", r.ok === false, r);

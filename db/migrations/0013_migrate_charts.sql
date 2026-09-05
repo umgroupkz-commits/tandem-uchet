@@ -116,10 +116,14 @@ begin
   elsif p_kind = 'charts' then
     -- по одной карте: строки состава сопоставляются по items.iiko_id, неизвестные ингредиенты
     -- пропускаются и называются в ответе; пересекающиеся версии того же блюда закрываются.
+    -- Правило при совпадении date_from — «побеждает первая записанная», а не пришедшая позже:
+    -- перенос ничего не удаляет, новая версия уходит в skipped и называется в errors. Так
+    -- повторный прогон той же выгрузки идемпотентен, а карту, заведённую в офисе руками
+    -- (source <> 'iiko'), перенос из iiko не затирает никогда.
     declare
       v_row jsonb; v_cid uuid; v_code text; v_from date; v_to date; v_out numeric; v_lines jsonb;
       v_bad int; v_skip_lines int := 0; v_unknown text[] := '{}'; v_errors text[] := '{}';
-      v_exists uuid; v_c record;
+      v_exists uuid; v_c record; v_conf record;
     begin
       for v_row in select * from jsonb_array_elements(coalesce(p_rows, '[]'::jsonb)) loop
         v_cid  := nullif(v_row->>'iiko_id','')::uuid;
@@ -127,7 +131,10 @@ begin
         v_from := coalesce(nullif(v_row->>'date_from','')::date, date '2020-01-01');
         v_to   := nullif(v_row->>'date_to','')::date;
         v_out  := coalesce(nullif(v_row->>'output_amount','')::numeric, 1);
-        if v_cid is null or v_code is null or not exists (select 1 from tandem.items where code = v_code) then
+        -- карты бывают только у блюд и полуфабрикатов; на сырьё и услуги их не вешаем
+        if v_cid is null or v_code is null
+           or not exists (select 1 from tandem.items
+                           where code = v_code and item_type in ('dish','prepared')) then
           v_skip := v_skip + 1; continue;
         end if;
         if v_out <= 0 then v_out := 1; end if;
@@ -143,21 +150,45 @@ begin
           from jsonb_array_elements(coalesce(v_row->'lines','[]'::jsonb)) l
           left join tandem.items i on i.iiko_id = nullif(l->>'ingredient_iiko_id','')::uuid;
         v_skip_lines := v_skip_lines + v_bad;
-        select v_unknown || coalesce(array_agg(distinct l->>'ingredient_iiko_id'), '{}'::text[]) into v_unknown
-          from jsonb_array_elements(coalesce(v_row->'lines','[]'::jsonb)) l
-          left join tandem.items i on i.iiko_id = nullif(l->>'ingredient_iiko_id','')::uuid
-          where i.code is null;
+        if v_bad > 0 then
+          -- список неизвестных: без пустых значений, сразу без повторов и не длиннее 20
+          select coalesce(array_agg(distinct u), '{}'::text[]) into v_unknown
+            from unnest(v_unknown || (
+              select coalesce(array_agg(distinct l->>'ingredient_iiko_id'), '{}'::text[])
+                from jsonb_array_elements(coalesce(v_row->'lines','[]'::jsonb)) l
+                left join tandem.items i on i.iiko_id = nullif(l->>'ingredient_iiko_id','')::uuid
+                where i.code is null and coalesce(l->>'ingredient_iiko_id','') <> '')) u;
+          if coalesce(array_length(v_unknown, 1), 0) > 20 then v_unknown := v_unknown[1:20]; end if;
+        end if;
 
-        -- строки, где ингредиент — само блюдо, отбрасываем: рекурсия в себя бессмысленна
-        select coalesce(jsonb_agg(x), '[]'::jsonb) into v_lines
-          from jsonb_array_elements(v_lines) x where x->>'code' is distinct from v_code;
+        -- строки, где ингредиент — само блюдо, отбрасываем: рекурсия в себя бессмысленна;
+        -- они такие же пропущенные строки, как и с неизвестным ингредиентом
+        select coalesce(jsonb_agg(x) filter (where x->>'code' is distinct from v_code), '[]'::jsonb),
+               count(*) filter (where x->>'code' is not distinct from v_code)
+          into v_lines, v_bad
+          from jsonb_array_elements(v_lines) x;
+        v_skip_lines := v_skip_lines + v_bad;
         if jsonb_array_length(v_lines) = 0 then v_skip := v_skip + 1; continue; end if;
+
+        select id into v_exists from tandem.charts where iiko_id = v_cid;
+        -- чужая версия ровно с той же датой начала: не трогаем её и не пишем свою
+        select id, source, iiko_id into v_conf from tandem.charts
+          where item_code = v_code and date_from = v_from and (v_exists is null or id <> v_exists)
+          limit 1;
+        if v_conf.id is not null then
+          v_skip := v_skip + 1;
+          if coalesce(array_length(v_errors, 1), 0) < 20 then
+            v_errors := v_errors || (v_cid::text || case when v_conf.source is distinct from 'iiko'
+              then ': совпадает с картой офиса'
+              else ': дубль даты начала с ' || coalesce(v_conf.iiko_id::text, '?') end);
+          end if;
+          continue;
+        end if;
 
         -- ниже всё пишущее: одна кривая карта не должна ронять всю пачку
         begin
-          select id into v_exists from tandem.charts where iiko_id = v_cid;
           -- пересечения с другими версиями того же блюда: ранние закрываем днём раньше нашего
-          -- начала, из-за поздних укорачиваем себя, при совпадении начала побеждает пришедшая позже
+          -- начала, из-за поздних укорачиваем себя; равное начало отсеяно выше
           for v_c in select id, date_from, date_to from tandem.charts
                      where item_code = v_code and (v_exists is null or id <> v_exists)
                        and daterange(date_from, date_to, '[]') && daterange(v_from, v_to, '[]') loop
@@ -165,11 +196,12 @@ begin
               update tandem.charts set date_to = v_from - 1, updated_at = now() where id = v_c.id;
             elsif v_c.date_from > v_from then
               v_to := least(coalesce(v_to, v_c.date_from - 1), v_c.date_from - 1);
-            else
-              delete from tandem.charts where id = v_c.id;
             end if;
+            -- равных начал здесь не бывает; если бы вдруг были, запись упрётся
+            -- в charts_no_overlap и карта уйдёт в errors ниже — данные не пострадают
           end loop;
 
+          -- страховка: сюда не попасть, пока равные начала отсеиваются до блока
           if v_to is not null and v_to < v_from then
             v_skip := v_skip + 1;
           else
@@ -196,24 +228,26 @@ begin
         end;
       end loop;
 
-      select coalesce(array_agg(distinct u), '{}'::text[]) into v_unknown from unnest(v_unknown) u;
       return jsonb_build_object('ok', true, 'inserted', v_ins, 'updated', v_upd, 'skipped', v_skip,
-        'skipped_lines', v_skip_lines, 'unknown', to_jsonb(v_unknown[1:20]), 'errors', to_jsonb(v_errors));
+        'skipped_lines', v_skip_lines, 'unknown', to_jsonb(v_unknown), 'errors', to_jsonb(v_errors));
     end;
 
   elsif p_kind = 'costs' then
-    -- цена закупа из iiko; проставленную вручную (cost_source = 'manual') не перебиваем
+    -- цена закупа из iiko. Перенос ставит только 'iiko_invoice': какой бы source ни пришёл
+    -- во входе, чужой меткой он не притворяется. И не перебивает цену, поставленную руками
+    -- ('manual') или посчитанную по документу склада ('document') — там источник надёжнее.
     with inc as (
       select distinct on (id) (x->>'iiko_id')::uuid id, (x->>'price')::numeric price,
-             nullif(x->>'date','')::date d,
-             case when x->>'source' in ('iiko_invoice','document') then x->>'source' else 'iiko_invoice' end src
+             nullif(x->>'date','')::date d
       from jsonb_array_elements(p_rows) x
-      where coalesce(x->>'iiko_id','') <> '' and coalesce(x->>'price','') <> ''
+      where coalesce(x->>'iiko_id','') <> '' and coalesce(nullif(x->>'price','')::numeric, 0) > 0
       order by id, nullif(x->>'date','')::date desc nulls last
     ),
     upd as (
-      update tandem.items i set cost_price = inc.price, cost_date = coalesce(inc.d, current_date), cost_source = inc.src
-      from inc where i.iiko_id = inc.id and (i.cost_source is null or i.cost_source <> 'manual')
+      update tandem.items i set cost_price = inc.price, cost_date = coalesce(inc.d, current_date),
+             cost_source = 'iiko_invoice'
+      from inc where i.iiko_id = inc.id
+                and (i.cost_source is null or i.cost_source not in ('manual','document'))
       returning 1)
     select count(*) into v_upd from upd;
     return jsonb_build_object('ok', true, 'updated', v_upd, 'skipped', v_total - v_upd);
@@ -226,6 +260,10 @@ begin
 exception
   when unique_violation then
     return jsonb_build_object('ok', false, 'error', 'validation', 'message', 'Дубли ключей в пачке: ' || sqlerrm);
+  when others then
+    -- иначе любая непредусмотренная ошибка уходит наружу как 500 прокси и вызывающий
+    -- (скрипт переноса) видит невнятный ответ вместо причины
+    return jsonb_build_object('ok', false, 'error', 'internal', 'message', sqlerrm);
 end $$;
 
 revoke all on function public.tandem_migrate(text,text,jsonb) from public;
