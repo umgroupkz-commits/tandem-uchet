@@ -68,9 +68,6 @@ Deno.serve(async (req: Request) => {
     if (action === "sync_prices") {
       return await proxy("tandem_sync_prices", { p_pin: pin, p_data: payload.data ?? [] });
     }
-    if (action === "sync_charts") {
-      return await proxy("tandem_sync_charts", { p_pin: pin, p_data: payload.data ?? [] });
-    }
     if (action === "recalc_ranks") {
       return await proxy("tandem_recalc_ranks", { p_pin: pin, p_days: payload.days ?? 30 });
     }
