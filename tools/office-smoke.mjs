@@ -313,13 +313,22 @@ SECTIONS.users = async (ctx) => {
   // --- матрица ролей: каждая роль видит ровно то, что записано в role_permissions ---
   // Ожидания взяты из спецификации 3.5 и обязаны совпасть с содержимым таблицы.
   // Раздел charts добавлен миграцией 0010 (техкарты): технолог правит, бухгалтер только смотрит.
+  // Миграция 0015 (склад) добавила раздел stock всем ролям и права по типам документов
+  // doc:<тип>: бухгалтеру только приход, технологу только производство.
   const MATRIX = {
     zz_test_owner: { role: "owner", name: "ZZ_TEST_Собственник",
-      perms: ["charts:edit", "charts:view", "counteragents:edit", "counteragents:view", "nomenclature:edit", "nomenclature:view", "stores:edit", "stores:view"] },
+      perms: ["charts:edit", "charts:view", "counteragents:edit", "counteragents:view",
+        "doc:inventory:edit", "doc:inventory:view", "doc:invoice_in:edit", "doc:invoice_in:view",
+        "doc:production:edit", "doc:production:view", "doc:transfer:edit", "doc:transfer:view",
+        "doc:writeoff:edit", "doc:writeoff:view",
+        "nomenclature:edit", "nomenclature:view", "stock:edit", "stock:view", "stores:edit", "stores:view"] },
     zz_test_buh: { role: "accountant", name: "ZZ_TEST_Бухгалтер",
-      perms: ["charts:view", "counteragents:edit", "counteragents:view", "nomenclature:view", "stores:view"] },
+      perms: ["charts:view", "counteragents:edit", "counteragents:view",
+        "doc:invoice_in:edit", "doc:invoice_in:view", "nomenclature:view", "stock:edit", "stock:view", "stores:view"] },
     zz_test_tech: { role: "technologist", name: "ZZ_TEST_Технолог",
-      perms: ["charts:edit", "charts:view", "counteragents:view", "nomenclature:edit", "nomenclature:view", "stores:view"] },
+      perms: ["charts:edit", "charts:view", "counteragents:view",
+        "doc:production:edit", "doc:production:view", "nomenclature:edit", "nomenclature:view",
+        "stock:edit", "stock:view", "stores:view"] },
   };
   const same = (a, b) => Array.isArray(a) && a.length === b.length && a.slice().sort().join("|") === b.slice().sort().join("|");
   const ids = {};
@@ -484,6 +493,104 @@ SECTIONS.charts = async (ctx) => {
   check("кладовщик видит список карт", r.ok, r);
   r = await call("office_chart_save", { token: l.token, code: pir, date_from: "2026-09-01", output_amount: 1, lines: [{ ingredient_code: testo, brutto: 0.1, netto: 0.1, output: 0.1 }] });
   check("кладовщик не правит карты — forbidden", r.ok === false && r.error === "forbidden", r);
+};
+
+SECTIONS.stock = async (ctx) => {
+  const t = ctx.token;
+  const near = (a, b, e = 0.01) => Math.abs(Number(a) - Number(b)) < e;
+  // справочники
+  let r = await call("office_store_save", { token: t, name: "ZZ_TEST_склад А" }); const A = r.id;
+  r = await call("office_store_save", { token: t, name: "ZZ_TEST_склад Б" }); const B = r.id;
+  r = await call("office_counteragent_save", { token: t, name: "ZZ_TEST_ИП", kind: "supplier" }); const SUP = r.id;
+  r = await call("office_item_save", { token: t, name: "ZZ_TEST_мука", item_type: "goods", unit_id: "кг" }); const muka = r.code;
+  r = await call("office_item_save", { token: t, name: "ZZ_TEST_тесто", item_type: "prepared", unit_id: "кг" }); const testo = r.code;
+  r = await call("office_chart_save", { token: t, code: testo, date_from: "2026-01-01", output_amount: 0.45, lines: [{ ingredient_code: muka, brutto: 0.5, netto: 0.5, output: 0.45 }] });
+  check("подготовка: склады, поставщик, позиции, карта", A && B && SUP && muka && testo && r.ok, r);
+  const bal = async (store, code) => { const b = await call("office_stock_balances", { token: t, store_id: store, q: code }); const row = (b.rows || []).find((x) => x.item_code === code); return row ? { qty: Number(row.qty), avg: Number(row.avg_cost) } : { qty: 0, avg: 0 }; };
+  // 1. приход 10×100
+  r = await call("office_doc_save", { token: t, doc_type: "invoice_in", doc_date: "2026-09-01", store_to: A, counteragent_id: SUP, lines: [{ item_code: muka, qty: 10, price: 100 }] });
+  check("приход: черновик с номером ПН", r.ok && /^ПН-\d{4}-\d{6}$/.test(r.number), r);
+  const inv1 = r.id, num1 = r.number;
+  r = await call("office_doc_post", { token: t, id: inv1 });
+  check("приход 1 проведён без предупреждений", r.ok && r.warnings.length === 0 && near(r.total_sum, 1000), r);
+  let b = await bal(A, muka); check("остаток А: 10 по 100", b.qty === 10 && near(b.avg, 100), b);
+  r = await call("office_item_get", { token: t, code: muka });
+  check("учётная цена муки из прихода", r.ok && near(r.item.cost_price, 100) && r.item.cost_source === "document", r.item);
+  // 2. приход 10×200
+  r = await call("office_doc_save", { token: t, doc_type: "invoice_in", doc_date: "2026-09-01", store_to: A, counteragent_id: SUP, lines: [{ item_code: muka, qty: 10, price: 200 }] });
+  check("номера растут на 1", r.ok && Number(r.number.slice(-6)) === Number(num1.slice(-6)) + 1, { num1, num2: r.number });
+  await call("office_doc_post", { token: t, id: r.id });
+  b = await bal(A, muka); check("остаток А: 20 по 150", b.qty === 20 && near(b.avg, 150), b);
+  // 3. перемещение 5 А→Б
+  r = await call("office_doc_save", { token: t, doc_type: "transfer", doc_date: "2026-09-02", store_from: A, store_to: B, lines: [{ item_code: muka, qty: 5 }] });
+  r = await call("office_doc_post", { token: t, id: r.id });
+  check("перемещение проведено", r.ok && near(r.total_sum, 750), r);
+  b = await bal(B, muka); check("остаток Б: 5 по 150", b.qty === 5 && near(b.avg, 150), b);
+  // 4. списание 2
+  r = await call("office_doc_save", { token: t, doc_type: "writeoff", doc_date: "2026-09-02", store_from: A, reason: "spoilage", lines: [{ item_code: muka, qty: 2 }] });
+  const wo = r.id; r = await call("office_doc_post", { token: t, id: wo });
+  check("списание по средней 150", r.ok && near(r.total_sum, 300), r);
+  b = await bal(A, muka); check("остаток А после списания: 13", b.qty === 13, b);
+  // 5. производство 0.9 теста
+  r = await call("office_doc_save", { token: t, doc_type: "production", doc_date: "2026-09-03", store_from: A, lines: [{ item_code: testo, qty: 0.9 }] });
+  const prod = r.id;
+  r = await call("office_doc_preview", { token: t, id: prod });
+  check("предпросмотр производства: расход 1 кг муки по 150", r.ok && r.consume.length === 1 && near(r.consume[0].qty, 1) && near(r.consume[0].price, 150), r.consume);
+  r = await call("office_doc_post", { token: t, id: prod });
+  check("производство проведено, сумма 150", r.ok && near(r.total_sum, 150), r);
+  r = await call("office_doc_get", { token: t, id: prod });
+  check("строки расхода сохранены, выпуск по 166.67", r.ok && r.doc.consume.length === 1 && near(r.doc.lines[0].price, 166.6667, 0.001), r.doc);
+  b = await bal(A, muka); check("мука А: 12", b.qty === 12, b);
+  b = await bal(A, testo); check("тесто А: 0.9 по 166.67", near(b.qty, 0.9) && near(b.avg, 166.6667, 0.001), b);
+  // 6. минус: предупреждение, проведение допускается, отмена возвращает
+  r = await call("office_doc_save", { token: t, doc_type: "writeoff", doc_date: "2026-09-03", store_from: A, reason: "other", lines: [{ item_code: muka, qty: 20 }] });
+  const wo20 = r.id;
+  r = await call("office_doc_preview", { token: t, id: wo20 });
+  check("предпросмотр: уйдёт в минус −8", r.ok && r.warnings.length === 1 && near(r.warnings[0].balance_after, -8), r.warnings);
+  r = await call("office_doc_post", { token: t, id: wo20 });
+  check("проведение в минус допущено с предупреждением", r.ok && r.warnings.length === 1, r);
+  r = await call("office_doc_unpost", { token: t, id: wo20 });
+  b = await bal(A, muka); check("отмена вернула остаток 12", r.ok && b.qty === 12, b);
+  await call("office_doc_delete", { token: t, id: wo20 });
+  // 7. инвентаризация: факт 11 при расчёте 12
+  r = await call("office_doc_save", { token: t, doc_type: "inventory", doc_date: "2026-09-04", store_from: A, lines: [{ item_code: muka, fact_qty: 11 }, { item_code: testo, fact_qty: 0.9 }] });
+  const inv = r.id;
+  r = await call("office_doc_get", { token: t, id: inv });
+  check("инвентаризация: подсказка расчётного остатка 12", r.ok && near(r.doc.lines.find((x) => x.item_code === muka).current_qty, 12), r.doc.lines);
+  r = await call("office_doc_post", { token: t, id: inv });
+  check("инвентаризация: недостача 1 × 150", r.ok && near(r.total_sum, -150), r);
+  b = await bal(A, muka); check("мука А после инвентаризации: 11", b.qty === 11, b);
+  // 8. запрет отмены раннего документа
+  r = await call("office_doc_unpost", { token: t, id: inv1 });
+  check("отмена прихода после инвентаризации — validation", r.ok === false && r.error === "validation" && /ИН-/.test(r.message), r);
+  // 9. отмена инвентаризации, затем прихода — средняя пересобирается
+  r = await call("office_doc_unpost", { token: t, id: inv }); check("инвентаризация отменена", r.ok, r);
+  r = await call("office_doc_unpost", { token: t, id: inv1 }); check("приход 1 отменён", r.ok, r);
+  b = await bal(A, muka); check("после отмены прихода 1: 2 по 200", b.qty === 2 && near(b.avg, 200), b);
+  // 10. движения и пересборка
+  r = await call("office_stock_moves", { token: t, store_id: A, item_code: muka });
+  check("движения по муке на А", r.ok && r.total >= 4 && r.rows.every((x) => x.number), { total: r.total });
+  r = await call("office_stock_rebuild", { token: t });
+  check("пересборка остатков: расхождений 0", r.ok && r.mismatches_before === 0, r);
+  r = await call("office_item_stock", { token: t, code: muka });
+  check("остатки в карточке: А и Б", r.ok && r.balances.length === 2 && r.moves.length > 0, r.balances);
+  // 11. права по типам
+  r = await call("office_user_save", { token: t, login: "zz_test_tech_s", name: "ZZ_TEST_Технолог", role: "technologist", pin: "4321" });
+  let l = await call("office_login", { login: "zz_test_tech_s", pin: "4321" }); await call("office_change_pin", { token: l.token, pin: "4321" });
+  r = await call("office_doc_save", { token: l.token, doc_type: "invoice_in", doc_date: "2026-09-05", store_to: A, counteragent_id: SUP, lines: [{ item_code: muka, qty: 1, price: 1 }] });
+  check("технолог не создаёт приход — forbidden", r.ok === false && r.error === "forbidden", r);
+  r = await call("office_doc_save", { token: l.token, doc_type: "production", doc_date: "2026-09-05", store_from: A, lines: [{ item_code: testo, qty: 0.1 }] });
+  check("технолог создаёт производство", r.ok, r);
+  r = await call("office_doc_post", { token: l.token, id: r.id });
+  check("технолог проводит производство", r.ok, r);
+  r = await call("office_user_save", { token: t, login: "zz_test_buh_s", name: "ZZ_TEST_Бухгалтер", role: "accountant", pin: "4321" });
+  l = await call("office_login", { login: "zz_test_buh_s", pin: "4321" }); await call("office_change_pin", { token: l.token, pin: "4321" });
+  r = await call("office_doc_save", { token: l.token, doc_type: "writeoff", doc_date: "2026-09-05", store_from: A, reason: "other", lines: [{ item_code: muka, qty: 1 }] });
+  check("бухгалтер не создаёт списание — forbidden", r.ok === false && r.error === "forbidden", r);
+  r = await call("office_docs_list", { token: t, store_id: A });
+  check("журнал: документы тестового склада", r.ok && r.total >= 6 && r.rows[0].number, { total: r.total });
+  r = await call("office_doc_delete", { token: t, id: prod });
+  check("удалить проведённый нельзя — validation", r.ok === false && r.error === "validation", r);
 };
 
 // --- разделы добавляются здесь ---
