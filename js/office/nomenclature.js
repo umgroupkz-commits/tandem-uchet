@@ -72,9 +72,9 @@ async function load() {
 }
 
 async function editItem(code) {
-  let item = { item_type: "dish", unit_id: "шт", group_id: state.group_id || "", active: true, for_sale: false }, points = [];
+  let item = { item_type: "dish", unit_id: "шт", group_id: state.group_id || "", active: true, for_sale: false }, points = [], r = null;
   if (code) {
-    const r = await api("item_get", { code });
+    r = await api("item_get", { code });
     if (!r.ok) { toast(r.message, "bad"); return; }
     item = r.item; points = r.points;
   }
@@ -95,7 +95,15 @@ async function editItem(code) {
     field("pack_unit", "Фасовка: единица", el("input", { value: item.pack_unit || "", readonly: ro })),
     field("pack_price", "Фасовка: цена", el("input", { type: "number", step: "0.01", value: item.pack_price ?? "", readonly: ro })),
     field("note", "Заметка", el("input", { value: item.note || "", readonly: ro })),
+    item.item_type === "goods" || !code
+      ? field("cost_price", "Учётная цена сырья (за " + (item.unit_id || "ед.") + ")", el("input", { type: "number", step: "0.01", value: item.cost_price ?? "", readonly: ro }))
+      : null,
   ));
+  if (f.cost_price && item.cost_price != null) {
+    const srcLabel = { manual: "вручную", iiko_invoice: "накладная iiko", document: "документ" }[item.cost_source] || item.cost_source || "";
+    const dateStr = item.cost_date ? new Date(item.cost_date).toLocaleDateString("ru-RU") : "";
+    m.root.append(el("div", { class: "dim" }, `источник: ${srcLabel}${dateStr ? ", " + dateStr : ""}`));
+  }
   f.active = el("input", { type: "checkbox", checked: item.active, disabled: ro });
   f.for_sale = el("input", { type: "checkbox", checked: item.for_sale, disabled: ro });
   m.root.append(el("div", { class: "actions" }, el("label", {}, f.active, " активна"), el("label", {}, f.for_sale, " продаётся на точках")));
@@ -111,6 +119,11 @@ async function editItem(code) {
     m.root.append(el("h2", { style: "margin-top:16px" }, "Цены по точкам"), pt);
     f._prices = priceInputs;
   }
+  if (code && (item.item_type === "dish" || item.item_type === "prepared")) {
+    const costText = r.cost != null ? `${fmt(r.cost)} ₸ за ${item.unit_id}` : (r.missing && r.missing.length ? `не посчитана — нет цены у: ${r.missing.slice(0, 5).join(", ")}${r.missing.length > 5 ? "…" : ""}` : "не посчитана");
+    m.root.append(el("div", { class: "tot" }, el("span", {}, "Себестоимость на сегодня"), el("span", {}, costText)),
+      el("div", { style: "margin-top:8px" }, el("a", { class: "link", href: "#charts/" + encodeURIComponent(code), onclick: (e) => { e.preventDefault(); m.close(); location.hash = "#charts/" + encodeURIComponent(code); location.reload(); } }, "Открыть техкарту →")));
+  }
   const err = el("div", { class: "err" });
   m.root.append(err, el("div", { class: "actions" },
     ro ? null : el("button", { onclick: save }, "Сохранить"),
@@ -118,7 +131,8 @@ async function editItem(code) {
   async function save() {
     const p = { code: code || undefined, name: f.name.value, artikul: f.artikul.value, item_type: f.item_type.value, unit_id: f.unit_id.value,
       group_id: f.group_id.value || null, price: f.price.value, pack_factor: f.pack_factor.value, pack_unit: f.pack_unit.value,
-      pack_price: f.pack_price.value, note: f.note.value, active: f.active.checked, for_sale: f.for_sale.checked };
+      pack_price: f.pack_price.value, note: f.note.value, cost_price: f.cost_price ? f.cost_price.value : undefined,
+      active: f.active.checked, for_sale: f.for_sale.checked };
     const r = await api("item_save", p);
     if (!r.ok) { err.textContent = r.message; return; }
     if (f._prices) {
