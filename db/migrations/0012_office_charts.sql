@@ -55,7 +55,7 @@ begin
                                then round(k.cost / p.price * 100, 1) end,
              'over_limit', case when k.cost is not null and p.price > 0
                              then k.cost / p.price * 100 > v_limit else false end,
-             'missing_count', coalesce(array_length(k.missing, 1), 0)) order by p.name), '[]'::jsonb)
+             'missing_count', coalesce((select count(*) from unnest(k.missing) m where m <> p.code), 0)) order by p.name), '[]'::jsonb)
       into v_total, v_rows
       from page p
       left join tandem.charts c on c.id = p.chart_id
@@ -68,7 +68,12 @@ begin
   if action = 'chart_get' then
     select item_type into v_type from tandem.items where code = v_code;
     if v_type is null then return tandem.err('not_found', 'Позиция не найдена'); end if;
-    v_chart := coalesce(v_id, tandem.active_chart(v_code, v_date));
+    if v_id is not null then
+      select id into v_chart from tandem.charts where id = v_id and item_code = v_code;
+      if v_chart is null then return tandem.err('not_found', 'Версия карты не найдена у этой позиции'); end if;
+    else
+      v_chart := tandem.active_chart(v_code, v_date);
+    end if;
     select jsonb_build_object('code', i.code, 'name', i.name, 'item_type', i.item_type,
              'unit_id', i.unit_id, 'price', i.price)
       into v_item from tandem.items i where i.code = v_code;
@@ -137,6 +142,9 @@ begin
       if coalesce((v_line->>'brutto')::numeric, -1) < 0 or coalesce((v_line->>'netto')::numeric, -1) < 0
          or coalesce((v_line->>'output')::numeric, -1) < 0 then
         return tandem.err('validation', 'Количества в строке ' || v_ing || ' должны быть числами не меньше нуля');
+      end if;
+      if (v_line->>'netto')::numeric > (v_line->>'brutto')::numeric then
+        return tandem.err('validation', 'Нетто больше брутто в строке ' || v_ing);
       end if;
     end loop;
     -- пересечение дат с другой картой этого блюда

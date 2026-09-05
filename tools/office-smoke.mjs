@@ -322,9 +322,12 @@ SECTIONS.charts = async (ctx) => {
   r = await call("office_chart_save", { token: t, code: pir, date_from: "2026-01-01", output_amount: 1,
     lines: [{ ingredient_code: testo, brutto: 0.08, netto: 0.08, output: 0.07 }] });
   check("карта пирожка сохранена", r.ok && r.id, r);
+  const pirChart = r.id;
   r = await call("office_chart_get", { token: t, code: pir });
   check("себестоимость пирожка 8.8889", r.ok && Number(r.cost) === 8.8889 && r.chart.lines.length === 1 && Number(r.chart.lines[0].ing_cost) === 111.1111, { cost: r.cost, line: r.chart && r.chart.lines[0] });
   check("потери в строке посчитаны", r.ok && Number(r.chart.lines[0].hot_loss_pct) === 12.5 && Number(r.chart.lines[0].cold_loss_pct) === 0, r.chart && r.chart.lines[0]);
+  r = await call("office_chart_get", { token: t, code: pir, id: testoChart });
+  check("chart_get с чужим id — not_found", r.ok === false && r.error === "not_found", r);
   r = await call("office_item_cost_get", { token: t, code: testo });
   check("item_cost_get теста 111.1111", r.ok && Number(r.cost) === 111.1111, r);
   // ингредиент без цены → cost null, missing
@@ -344,6 +347,10 @@ SECTIONS.charts = async (ctx) => {
   check("карта у товара — validation", r.ok === false && r.error === "validation", r);
   r = await call("office_chart_save", { token: t, code: pir, date_from: "2026-01-01", output_amount: 1, lines: [] });
   check("карта без строк — validation", r.ok === false && r.error === "validation", r);
+  // с id своей же карты — иначе перекрытие дат с самой собой скрыло бы проверку строки
+  r = await call("office_chart_save", { token: t, id: pirChart, code: pir, date_from: "2026-01-01", output_amount: 1,
+    lines: [{ ingredient_code: testo, brutto: 0.05, netto: 0.08, output: 0.07 }] });
+  check("нетто больше брутто — validation", r.ok === false && r.error === "validation", r);
   // пересечение дат: вторая карта пирожка с 2026-03-01 при открытой первой
   r = await call("office_chart_save", { token: t, code: pir, date_from: "2026-03-01", output_amount: 1,
     lines: [{ ingredient_code: testo, brutto: 0.1, netto: 0.1, output: 0.09 }] });
@@ -362,9 +369,11 @@ SECTIONS.charts = async (ctx) => {
   check("две версии: расчёт на разные даты различается", c1 !== null && r.cost !== null && Number(c1) < Number(r.cost) && r.versions.length === 2, { c1, c2: r.cost, versions: r.versions });
   check("старая версия закрыта датой", r.versions.some((v) => v.date_to === "2026-05-31"), r.versions);
   r = await call("office_charts_list", { token: t, q: "ZZ_TEST_пирожок" });
-  check("список: пирожок с картой и себестоимостью", r.ok && r.total === 1 && r.rows[0].chart_id && r.rows[0].cost !== null && r.rows[0].foodcost_pct !== null, r.rows && r.rows[0]);
+  check("список: пирожок с картой и себестоимостью", r.ok && r.total === 1 && r.rows[0].chart_id && r.rows[0].cost !== null && r.rows[0].foodcost_pct !== null && r.rows[0].missing_count === 0, r.rows && r.rows[0]);
   r = await call("office_charts_list", { token: t, q: "ZZ_TEST_", only: "no_chart" });
   check("список: фильтр без карты пуст для тестовых (у всех блюд карты)", r.ok && r.rows.every((x) => !x.chart_id), r.rows);
+  r = await call("office_charts_list", { token: t, only: "no_chart", page: 1 });
+  check("фильтр без карты возвращает позиции без карты", r.ok && r.total > 0 && r.rows.every((x) => !x.chart_id && x.missing_count === 0), { total: r.total, first: r.rows[0] });
   r = await call("office_foodcost_report", { token: t });
   const row = (r.rows || []).find((x) => x.code === pir);
   check("отчёт: пирожок с фудкостом и CSV", r.ok && row && row.foodcost_pct !== null && typeof r.csv === "string" && r.csv.includes("ZZ_TEST_пирожок"), row);
