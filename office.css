@@ -1,6 +1,7 @@
 :root{--ink:#1B2430;--ink2:#4A5568;--muted:#8A94A6;--line:#E2E7EF;--bg:#F5F7FB;--card:#fff;
       --accent:#1F3864;--accent2:#3E6EA8;--ok:#0B6B4F;--okbg:#E3F3EC;--bad:#B4453C;--badbg:#FBEAE8;--in:#FFFBF0}
 *{box-sizing:border-box}
+[hidden]{display:none!important}
 body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,"Segoe UI",Roboto,Arial,sans-serif}
 h1{font-size:19px;margin:0 0 4px;color:var(--accent)}
 h2{font-size:12px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);margin:0 0 10px;font-weight:700}

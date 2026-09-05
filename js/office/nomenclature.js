@@ -124,6 +124,16 @@ async function editItem(code) {
     m.root.append(el("div", { class: "tot" }, el("span", {}, "Себестоимость на сегодня"), el("span", {}, costText)),
       el("div", { style: "margin-top:8px" }, el("a", { class: "link", href: "#charts/" + encodeURIComponent(code), onclick: (e) => { e.preventDefault(); m.close(); location.hash = "#charts/" + encodeURIComponent(code); location.reload(); } }, "Открыть техкарту →")));
   }
+  if (code) {
+    const st = await api("item_stock", { code });
+    if (st.ok && (st.balances.length || st.moves.length)) {
+      const bt = el("table"); bt.append(el("tr", {}, el("th", {}, "Склад"), el("th", { class: "num" }, "Остаток"), el("th", { class: "num" }, "Средняя")));
+      for (const b of st.balances) bt.append(el("tr", {}, el("td", {}, b.store_name), el("td", { class: "num" + (Number(b.qty) < 0 ? " bad" : "") }, fmt(b.qty)), el("td", { class: "num" }, fmt(b.avg_cost))));
+      const mt = el("table"); mt.append(el("tr", {}, el("th", {}, "Дата"), el("th", {}, "Документ"), el("th", {}, "Склад"), el("th", { class: "num" }, "Кол-во")));
+      for (const mv of st.moves.slice(0, 10)) mt.append(el("tr", {}, el("td", {}, mv.move_date), el("td", {}, mv.number), el("td", { class: "dim" }, mv.store_name), el("td", { class: "num" + (Number(mv.qty) < 0 ? " bad" : "") }, fmt(mv.qty))));
+      m.root.append(el("h2", { style: "margin-top:16px" }, "Остатки по складам"), bt, el("h2", { style: "margin-top:12px" }, "Последние движения"), mt);
+    }
+  }
   const err = el("div", { class: "err" });
   m.root.append(err, el("div", { class: "actions" },
     ro ? null : el("button", { onclick: save }, "Сохранить"),
