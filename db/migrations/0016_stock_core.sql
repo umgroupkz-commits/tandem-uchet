@@ -12,10 +12,11 @@ begin
   return v_pref || '-' || v_year || '-' || lpad(v_no::text, 6, '0');
 end $$;
 
--- Себестоимость для расхода: средняя склада, иначе учётная цена позиции, иначе 0.
+-- Себестоимость для расхода: средняя склада (независимо от знака остатка), иначе учётная цена позиции, иначе 0.
+-- После ухода в минус списания продолжают идти по последней средней склада, а не по глобальной учётной цене.
 create or replace function tandem.store_avg(p_store uuid, p_item text)
 returns numeric language sql stable as $$
-  select coalesce((select avg_cost from tandem.stock_balances where store_id = p_store and item_code = p_item and qty > 0),
+  select coalesce((select nullif(avg_cost, 0) from tandem.stock_balances where store_id = p_store and item_code = p_item),
                   (select cost_price from tandem.items where code = p_item), 0)
 $$;
 
@@ -130,7 +131,7 @@ returns jsonb language plpgsql as $$
 declare
   d record; l record; c record;
   v_cost numeric; v_sum numeric := 0; v_line_sum numeric; v_calc numeric; v_diff numeric;
-  v_chart uuid; v_missing text[] := '{}'; v_warn jsonb; v_lines int; v_bad text;
+  v_chart uuid; v_missing text[] := '{}'; v_warn jsonb; v_lines int; v_bad text; v_qty numeric;
 begin
   select * into d from tandem.documents where id = p_doc for update;
   if d.id is null then return tandem.err('not_found', 'Документ не найден'); end if;
@@ -147,6 +148,9 @@ begin
   if exists (select 1 from tandem.document_lines dl join tandem.items i on i.code = dl.item_code
              where dl.document_id = p_doc and dl.line_kind = 'item' and not i.active) then
     return tandem.err('validation', 'В документе есть выключенные позиции'); end if;
+  if exists (select 1 from tandem.document_lines where document_id = p_doc and line_kind = 'item'
+             group by item_code having count(*) > 1) then
+    return tandem.err('validation', 'Позиция повторяется в строках документа — объедините строки'); end if;
 
   -- Вся построчная проверка — до первой записи: иначе ошибка на второй строке
   -- оставляет движения первой (функция возвращает значение, а не откатывает транзакцию).
@@ -168,6 +172,7 @@ begin
   end if;
 
   if d.doc_type = 'invoice_in' then
+    -- ВНИМАНИЕ: ниже уже идут записи; любая новая проверка должна стоять выше, в блоке предпроверок, иначе return err оставит частично проведённый документ
     for l in select * from tandem.document_lines where document_id = p_doc and line_kind = 'item' order by sort_order loop
       perform tandem.apply_move(p_doc, l.id, d.store_to, l.item_code, l.qty, l.price, d.doc_date);
       v_line_sum := round(l.qty * l.price, 2);
@@ -177,16 +182,24 @@ begin
     end loop;
 
   elsif d.doc_type = 'transfer' then
+    -- ВНИМАНИЕ: ниже уже идут записи; любая новая проверка должна стоять выше, в блоке предпроверок, иначе return err оставит частично проведённый документ
     for l in select * from tandem.document_lines where document_id = p_doc and line_kind = 'item' order by sort_order loop
       v_cost := tandem.store_avg(d.store_from, l.item_code);
-      perform tandem.apply_move(p_doc, l.id, d.store_from, l.item_code, -l.qty, v_cost, d.doc_date);
-      perform tandem.apply_move(p_doc, l.id, d.store_to,   l.item_code,  l.qty, v_cost, d.doc_date);
+      -- Склады блокируются по возрастанию store_id: встречные перемещения не встают во взаимную блокировку.
+      if d.store_from < d.store_to then
+        perform tandem.apply_move(p_doc, l.id, d.store_from, l.item_code, -l.qty, v_cost, d.doc_date);
+        perform tandem.apply_move(p_doc, l.id, d.store_to,   l.item_code,  l.qty, v_cost, d.doc_date);
+      else
+        perform tandem.apply_move(p_doc, l.id, d.store_to,   l.item_code,  l.qty, v_cost, d.doc_date);
+        perform tandem.apply_move(p_doc, l.id, d.store_from, l.item_code, -l.qty, v_cost, d.doc_date);
+      end if;
       v_line_sum := round(l.qty * v_cost, 2);
       update tandem.document_lines set price = v_cost, sum = v_line_sum where id = l.id;
       v_sum := v_sum + v_line_sum;
     end loop;
 
   elsif d.doc_type = 'writeoff' then
+    -- ВНИМАНИЕ: ниже уже идут записи; любая новая проверка должна стоять выше, в блоке предпроверок, иначе return err оставит частично проведённый документ
     for l in select * from tandem.document_lines where document_id = p_doc and line_kind = 'item' order by sort_order loop
       v_cost := tandem.store_avg(d.store_from, l.item_code);
       perform tandem.apply_move(p_doc, l.id, d.store_from, l.item_code, -l.qty, v_cost, d.doc_date);
@@ -204,16 +217,19 @@ begin
     if cardinality(v_missing) > 0 then
       return tandem.err('validation', 'Нет действующей техкарты на дату документа: ' || array_to_string(v_missing, ', '));
     end if;
+    -- ВНИМАНИЕ: ниже уже идут записи; любая новая проверка должна стоять выше, в блоке предпроверок, иначе return err оставит частично проведённый документ
     delete from tandem.document_lines where document_id = p_doc and line_kind = 'consume';
     for l in select * from tandem.document_lines where document_id = p_doc and line_kind = 'item' order by sort_order loop
       v_line_sum := 0;
       for c in select item_code, qty from tandem.doc_consume_plan(p_doc) p where p.line_id = l.id loop
+        -- Округляем расход один раз: и в строку, и в движение, и в сумму идёт одно и то же число.
+        v_qty := round(c.qty, 4);
         v_cost := tandem.store_avg(d.store_from, c.item_code);
         insert into tandem.document_lines (document_id, line_kind, item_code, qty, unit_id, price, sum, note, sort_order)
-          select p_doc, 'consume', c.item_code, round(c.qty, 4), i.unit_id, v_cost, round(c.qty * v_cost, 2), l.item_code, 1000 + l.sort_order
+          select p_doc, 'consume', c.item_code, v_qty, i.unit_id, v_cost, round(v_qty * v_cost, 2), l.item_code, 1000 + l.sort_order
           from tandem.items i where i.code = c.item_code;
-        perform tandem.apply_move(p_doc, l.id, d.store_from, c.item_code, -round(c.qty, 4), v_cost, d.doc_date);
-        v_line_sum := v_line_sum + round(c.qty * v_cost, 2);
+        perform tandem.apply_move(p_doc, l.id, d.store_from, c.item_code, -v_qty, v_cost, d.doc_date);
+        v_line_sum := v_line_sum + round(v_qty * v_cost, 2);
       end loop;
       v_cost := case when l.qty > 0 then round(v_line_sum / l.qty, 4) else 0 end;
       perform tandem.apply_move(p_doc, l.id, d.store_from, l.item_code, l.qty, v_cost, d.doc_date);
@@ -222,6 +238,7 @@ begin
     end loop;
 
   elsif d.doc_type = 'inventory' then
+    -- ВНИМАНИЕ: ниже уже идут записи; любая новая проверка должна стоять выше, в блоке предпроверок, иначе return err оставит частично проведённый документ
     for l in select * from tandem.document_lines where document_id = p_doc and line_kind = 'item' order by sort_order loop
       select coalesce(qty, 0) into v_calc from tandem.stock_balances where store_id = d.store_from and item_code = l.item_code;
       v_calc := coalesce(v_calc, 0);
@@ -252,7 +269,7 @@ end $$;
 -- Отмена проведения.
 create or replace function tandem.doc_unpost(p_doc uuid, p_user tandem.users)
 returns jsonb language plpgsql as $$
-declare d record; v_inv text; v_pairs text[]; p text;
+declare d record; v_inv text; v_pairs text[]; p text; v_warn jsonb;
 begin
   select * into d from tandem.documents where id = p_doc for update;
   if d.id is null then return tandem.err('not_found', 'Документ не найден'); end if;
@@ -278,10 +295,22 @@ begin
     where document_id = p_doc;
   update tandem.documents set status = 'draft', posted_by = null, posted_at = null, total_sum = null,
          updated_by = p_user.id, updated_at = now() where id = p_doc;
-  return jsonb_build_object('ok', true);
+  -- Пересборка могла увести пары в минус (например, отменён ранний приход) — формат тот же, что у doc_post.
+  select coalesce(jsonb_agg(jsonb_build_object('item_code', b.item_code, 'name', i.name, 'store_id', b.store_id,
+           'store_name', s.name, 'balance_after', b.qty) order by i.name), '[]'::jsonb)
+    into v_warn
+    from unnest(coalesce(v_pairs, '{}'::text[])) x(pair)
+    join tandem.stock_balances b on b.store_id = split_part(x.pair, '|', 1)::uuid and b.item_code = split_part(x.pair, '|', 2)
+    join tandem.items i on i.code = b.item_code
+    join tandem.stores s on s.id = b.store_id
+    where b.qty < 0;
+  return jsonb_build_object('ok', true, 'warnings', v_warn);
 end $$;
 
 revoke all on function tandem.next_doc_number(text,date), tandem.store_avg(uuid,text),
   tandem.apply_move(uuid,uuid,uuid,text,numeric,numeric,date), tandem.rebuild_balance(uuid,text),
   tandem.rebuild_balances(), tandem.doc_consume_plan(uuid), tandem.doc_preview(uuid),
   tandem.doc_post(uuid,tandem.users), tandem.doc_unpost(uuid,tandem.users) from public;
+
+-- Под пересборку остатка пары (rebuild_balance) и выборку движений склада.
+create index if not exists stock_moves_replay_idx on tandem.stock_moves (store_id, item_code, posted_at, id);
