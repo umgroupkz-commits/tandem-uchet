@@ -139,8 +139,10 @@ partial numeric, missing text[])`:
 4. Цены: `incoming_invoice/list` за `2026-01-01 … сегодня` по каждой из четырёх организаций,
    для каждой накладной `incoming_invoice/get` → строки `{product, price, date}`; последняя по
    дате цена на товар → `migrate {kind: 'costs', rows: [{iiko_id, price, date, source: 'iiko_invoice'}]}`;
-   для товаров без накладной — `estimatedPurchasePrice > 0` из `product/list` → источник
-   `iiko_estimate`. RPC не перезаписывает `cost_source in ('manual','document')`.
+   оценочная закупочная цена из карточки iiko (`estimatedPurchasePrice`) у Тандема не
+   заполнена ни у одного товара (проверено по выгрузке 3 726 позиций) — запасного источника
+   нет, товары без накладной остаются без цены до ручного ввода. RPC не перезаписывает
+   `cost_source in ('manual','document')`.
 5. Отчёт скрипта: карт получено / создано / обновлено / пропущено; строк / пропущено (имена
    первых 20 неизвестных ингредиентов); цен из накладных / оценочных / без цены.
 
