@@ -1,5 +1,5 @@
-import { api, can } from "./api.js?v=1";
-import { el, fmt, toast, debounce, modal, confirmDlg } from "./ui.js?v=1";
+import { api, can } from "./api.js?v=2";
+import { el, fmt, toast, debounce, modal, confirmDlg } from "./ui.js?v=2";
 
 const TYPES = { dish: "блюдо", prepared: "полуфабрикат" };
 let root, table, pager, groups = [];

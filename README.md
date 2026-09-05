@@ -31,4 +31,8 @@ API — edge-функция Supabase `uchet` (`https://qeehxcnnuzuwskznhdyg.supa
 `items.source='office'`, и такая строка при переносе пропускается). А вот названия
 групп, складов и контрагентов, изменённые в офисе, перенос перезапишет.
 
+Техкарты: раздел `office.html` → Техкарты; перенос из iiko — `node tools/iiko-migrate-charts.mjs`
+(около часа, в фоне, кэш в `data/iiko/charts`); себестоимость считает `tandem.item_cost`,
+отчёт — `tandem.menu_foodcost`; порог фудкоста — `settings.foodcost_alert`.
+
 Спецификация и план — `docs/superpowers/`.
