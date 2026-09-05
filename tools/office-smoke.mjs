@@ -1,5 +1,5 @@
 // Дымовой тест RPC бэк-офиса.
-// Запуск: node tools/office-smoke.mjs <auth|nomenclature|stores|counteragents|users|migrate|reimport|all>
+// Запуск: node tools/office-smoke.mjs <auth|nomenclature|stores|counteragents|users|charts|migrate|reimport|all>
 // Переменные окружения: TANDEM_ADMIN_LOGIN (по умолчанию admin), TANDEM_ADMIN_PIN,
 //   TANDEM_OWNER_PIN — код собственника; без него не идут разделы migrate/reimport и уборка.
 // Создаёт сущности с префиксом ZZ_TEST_ (пользователи — zz_test_). В конце прогона раннер
@@ -130,6 +130,9 @@ SECTIONS.nomenclature = async (ctx) => {
   r = await call("office_item_get", { token: t, code });
   const ene = (r.points || []).find((p) => p.point_id === "eneshka");
   check("карточка: имя, цена точки", r.ok && r.item.name === "ZZ_TEST_мука в/с" && ene && Number(ene.price) === 400, r);
+  r = await call("office_item_save", { token: t, code, cost_price: 55 });
+  r = await call("office_item_get", { token: t, code });
+  check("учётная цена товара в карточке", r.ok && Number(r.item.cost_price) === 55 && r.item.cost_source === "manual" && r.item.cost_date, r.item);
   r = await call("office_item_prices_save", { token: t, code, prices: [{ point_id: "eneshka", price: null }] });
   r = await call("office_item_get", { token: t, code });
   check("цена точки: снята", r.ok && (r.points.find((p) => p.point_id === "eneshka").price === null), r.points);
@@ -224,13 +227,14 @@ SECTIONS.users = async (ctx) => {
 
   // --- матрица ролей: каждая роль видит ровно то, что записано в role_permissions ---
   // Ожидания взяты из спецификации 3.5 и обязаны совпасть с содержимым таблицы.
+  // Раздел charts добавлен миграцией 0010 (техкарты): технолог правит, бухгалтер только смотрит.
   const MATRIX = {
     zz_test_owner: { role: "owner", name: "ZZ_TEST_Собственник",
-      perms: ["counteragents:edit", "counteragents:view", "nomenclature:edit", "nomenclature:view", "stores:edit", "stores:view"] },
+      perms: ["charts:edit", "charts:view", "counteragents:edit", "counteragents:view", "nomenclature:edit", "nomenclature:view", "stores:edit", "stores:view"] },
     zz_test_buh: { role: "accountant", name: "ZZ_TEST_Бухгалтер",
-      perms: ["counteragents:edit", "counteragents:view", "nomenclature:view", "stores:view"] },
+      perms: ["charts:view", "counteragents:edit", "counteragents:view", "nomenclature:view", "stores:view"] },
     zz_test_tech: { role: "technologist", name: "ZZ_TEST_Технолог",
-      perms: ["counteragents:view", "nomenclature:edit", "nomenclature:view", "stores:view"] },
+      perms: ["charts:edit", "charts:view", "counteragents:view", "nomenclature:edit", "nomenclature:view", "stores:view"] },
   };
   const same = (a, b) => Array.isArray(a) && a.length === b.length && a.slice().sort().join("|") === b.slice().sort().join("|");
   const ids = {};
@@ -300,6 +304,82 @@ SECTIONS.reimport = async (ctx) => {
   r = await call("office_items_search", { token: t, q: "ZZ_TEST_переимпорт" });
   check("переимпорт: имя из бэк-офиса уцелело",
     r.ok && r.total === 1 && r.rows[0].name === "ZZ_TEST_переимпорт правлено" && r.rows[0].group_id === gid, r.rows);
+};
+
+SECTIONS.charts = async (ctx) => {
+  const t = ctx.token;
+  const mk = async (p) => { const r = await call("office_item_save", { token: t, ...p }); check("создана " + p.name, r.ok && r.code, r); return r.code; };
+  const muka = await mk({ name: "ZZ_TEST_мука", item_type: "goods", unit_id: "кг", cost_price: 100 });
+  const sol  = await mk({ name: "ZZ_TEST_соль", item_type: "goods", unit_id: "кг" });
+  const testo = await mk({ name: "ZZ_TEST_тесто", item_type: "prepared", unit_id: "кг" });
+  const pir  = await mk({ name: "ZZ_TEST_пирожок", item_type: "dish", unit_id: "шт", price: 50, for_sale: true });
+  let r = await call("office_item_get", { token: t, code: muka });
+  check("учётная цена сохранена, источник manual", r.ok && Number(r.item.cost_price) === 100 && r.item.cost_source === "manual", r.item);
+  r = await call("office_chart_save", { token: t, code: testo, date_from: "2026-01-01", output_amount: 0.45,
+    lines: [{ ingredient_code: muka, brutto: 0.5, netto: 0.5, output: 0.45 }] });
+  check("карта теста сохранена", r.ok && r.id, r);
+  const testoChart = r.id;
+  r = await call("office_chart_save", { token: t, code: pir, date_from: "2026-01-01", output_amount: 1,
+    lines: [{ ingredient_code: testo, brutto: 0.08, netto: 0.08, output: 0.07 }] });
+  check("карта пирожка сохранена", r.ok && r.id, r);
+  r = await call("office_chart_get", { token: t, code: pir });
+  check("себестоимость пирожка 8.8889", r.ok && Number(r.cost) === 8.8889 && r.chart.lines.length === 1 && Number(r.chart.lines[0].ing_cost) === 111.1111, { cost: r.cost, line: r.chart && r.chart.lines[0] });
+  check("потери в строке посчитаны", r.ok && Number(r.chart.lines[0].hot_loss_pct) === 12.5 && Number(r.chart.lines[0].cold_loss_pct) === 0, r.chart && r.chart.lines[0]);
+  r = await call("office_item_cost_get", { token: t, code: testo });
+  check("item_cost_get теста 111.1111", r.ok && Number(r.cost) === 111.1111, r);
+  // ингредиент без цены → cost null, missing
+  r = await call("office_chart_save", { token: t, id: testoChart, code: testo, date_from: "2026-01-01", output_amount: 0.45,
+    lines: [{ ingredient_code: muka, brutto: 0.5, netto: 0.5, output: 0.45 }, { ingredient_code: sol, brutto: 0.01, netto: 0.01, output: 0.01 }] });
+  check("карта теста дополнена солью", r.ok, r);
+  r = await call("office_chart_get", { token: t, code: pir });
+  check("без цены соли себестоимость null, missing содержит соль", r.ok && r.cost === null && r.missing.includes(sol) && r.partial !== null, { cost: r.cost, missing: r.missing });
+  // цикл: в тесто добавить пирожок
+  r = await call("office_chart_save", { token: t, id: testoChart, code: testo, date_from: "2026-01-01", output_amount: 0.45,
+    lines: [{ ingredient_code: muka, brutto: 0.5, netto: 0.5, output: 0.45 }, { ingredient_code: pir, brutto: 1, netto: 1, output: 1 }] });
+  check("цикл отклонён — validation", r.ok === false && r.error === "validation", r);
+  r = await call("office_chart_save", { token: t, code: testo, date_from: "2026-01-01", output_amount: 0.45,
+    lines: [{ ingredient_code: testo, brutto: 1, netto: 1, output: 1 }] });
+  check("блюдо само в себе — validation", r.ok === false && r.error === "validation", r);
+  r = await call("office_chart_save", { token: t, code: muka, date_from: "2026-01-01", output_amount: 1, lines: [{ ingredient_code: sol, brutto: 1, netto: 1, output: 1 }] });
+  check("карта у товара — validation", r.ok === false && r.error === "validation", r);
+  r = await call("office_chart_save", { token: t, code: pir, date_from: "2026-01-01", output_amount: 1, lines: [] });
+  check("карта без строк — validation", r.ok === false && r.error === "validation", r);
+  // пересечение дат: вторая карта пирожка с 2026-03-01 при открытой первой
+  r = await call("office_chart_save", { token: t, code: pir, date_from: "2026-03-01", output_amount: 1,
+    lines: [{ ingredient_code: testo, brutto: 0.1, netto: 0.1, output: 0.09 }] });
+  check("пересечение дат — validation", r.ok === false && r.error === "validation", r);
+  // новая версия с даты
+  r = await call("office_chart_new_version", { token: t, code: pir, date_from: "2026-06-01" });
+  check("новая версия создана", r.ok && r.id, r);
+  const v2 = r.id;
+  r = await call("office_chart_save", { token: t, id: v2, code: pir, date_from: "2026-06-01", output_amount: 1,
+    lines: [{ ingredient_code: testo, brutto: 0.1, netto: 0.1, output: 0.09 }] });
+  check("версия 2 изменена", r.ok, r);
+  await call("office_item_save", { token: t, code: sol, cost_price: 20 });
+  r = await call("office_chart_get", { token: t, code: pir, date: "2026-02-01" });
+  const c1 = r.cost;
+  r = await call("office_chart_get", { token: t, code: pir, date: "2026-07-01" });
+  check("две версии: расчёт на разные даты различается", c1 !== null && r.cost !== null && Number(c1) < Number(r.cost) && r.versions.length === 2, { c1, c2: r.cost, versions: r.versions });
+  check("старая версия закрыта датой", r.versions.some((v) => v.date_to === "2026-05-31"), r.versions);
+  r = await call("office_charts_list", { token: t, q: "ZZ_TEST_пирожок" });
+  check("список: пирожок с картой и себестоимостью", r.ok && r.total === 1 && r.rows[0].chart_id && r.rows[0].cost !== null && r.rows[0].foodcost_pct !== null, r.rows && r.rows[0]);
+  r = await call("office_charts_list", { token: t, q: "ZZ_TEST_", only: "no_chart" });
+  check("список: фильтр без карты пуст для тестовых (у всех блюд карты)", r.ok && r.rows.every((x) => !x.chart_id), r.rows);
+  r = await call("office_foodcost_report", { token: t });
+  const row = (r.rows || []).find((x) => x.code === pir);
+  check("отчёт: пирожок с фудкостом и CSV", r.ok && row && row.foodcost_pct !== null && typeof r.csv === "string" && r.csv.includes("ZZ_TEST_пирожок"), row);
+  r = await call("office_chart_delete", { token: t, id: testoChart });
+  check("удаление карты офиса без версий после — ok", r.ok, r);
+  r = await call("office_chart_get", { token: t, code: testo });
+  check("после удаления карты у теста нет", r.ok && r.chart === null, r);
+  // права кладовщика
+  r = await call("office_user_save", { token: t, login: "zz_test_sklad_ch", name: "ZZ_TEST_Кладовщик", role: "storekeeper", pin: "4321" });
+  let l = await call("office_login", { login: "zz_test_sklad_ch", pin: "4321" });
+  await call("office_change_pin", { token: l.token, pin: "4321" });
+  r = await call("office_charts_list", { token: l.token });
+  check("кладовщик видит список карт", r.ok, r);
+  r = await call("office_chart_save", { token: l.token, code: pir, date_from: "2026-09-01", output_amount: 1, lines: [{ ingredient_code: testo, brutto: 0.1, netto: 0.1, output: 0.1 }] });
+  check("кладовщик не правит карты — forbidden", r.ok === false && r.error === "forbidden", r);
 };
 
 // --- разделы добавляются здесь ---
