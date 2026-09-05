@@ -69,7 +69,9 @@ begin
     select item_type into v_type from tandem.items where code = v_code;
     if v_type is null then return tandem.err('not_found', 'Позиция не найдена'); end if;
     if v_id is not null then
-      select id into v_chart from tandem.charts where id = v_id and item_code = v_code;
+      -- I3: запросили конкретную версию — дальше всё считается на её дату начала. Иначе строки
+      -- брали цену ингредиента на сегодня, а итог — на дату версии, и они расходились.
+      select id, date_from into v_chart, v_date from tandem.charts where id = v_id and item_code = v_code;
       if v_chart is null then return tandem.err('not_found', 'Версия карты не найдена у этой позиции'); end if;
     else
       v_chart := tandem.active_chart(v_code, v_date);
@@ -97,13 +99,8 @@ begin
       from tandem.chart_lines cl join tandem.items i on i.code = cl.ingredient_code
       left join lateral tandem.item_cost(cl.ingredient_code, v_date) k on true
       where cl.chart_id = v_chart;
-    -- запросили конкретную версию — считаем на её дату начала; иначе на запрошенную дату
-    if v_id is null then
-      select * into v_cost from tandem.item_cost(v_code, v_date);
-    else
-      select * into v_cost from tandem.item_cost(v_code,
-        coalesce((select date_from from tandem.charts where id = v_chart), v_date));
-    end if;
+    -- одна дата на всю карточку: v_date выше подменён датой версии, если её спросили по id
+    select * into v_cost from tandem.item_cost(v_code, v_date);
     return jsonb_build_object('ok', true, 'item', v_item,
       'chart', (select jsonb_build_object('id', c.id, 'date_from', c.date_from, 'date_to', c.date_to,
                   'output_amount', c.output_amount, 'technology', c.technology, 'note', c.note,
@@ -157,8 +154,14 @@ begin
         values (v_code, v_from, v_to, v_out, payload->>'technology', payload->>'note', 'office', v_user.id, v_user.id)
         returning id into v_id;
     else
+      -- I1: правка карты из iiko делает её офисной — перенос её больше не трогает. iiko_id
+      -- сохраняется: по нему повторный перенос узнаёт карту и пропускает как «правлена в офисе».
+      -- M4: technology и note меняются только когда ключ пришёл в payload — иначе точечное
+      -- сохранение (фронт передаёт не всю карточку) молча стирало бы описание и примечание.
       update tandem.charts set date_from = v_from, date_to = v_to, output_amount = v_out,
-        technology = payload->>'technology', note = payload->>'note',
+        technology = case when payload ? 'technology' then payload->>'technology' else technology end,
+        note = case when payload ? 'note' then payload->>'note' else note end,
+        source = 'office',
         updated_by = v_user.id, updated_at = now()
         where id = v_id and item_code = v_code;
       if not found then return tandem.err('not_found', 'Карта не найдена'); end if;

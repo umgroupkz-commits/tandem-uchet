@@ -98,6 +98,10 @@ language sql stable as $$
     select w.root, w.node, w.factor, i.item_type, i.cost_price
     from walk w join tandem.items i on i.code = w.node
     where i.item_type in ('goods','service') or tandem.active_chart(w.node, p_date) is null
+       -- M6: обход обрывается на глубине 10 (walk выше), и без этого условия узел на границе
+       -- просто исчезал бы из расчёта, а блюдо получало бы «полную» себестоимость по обрубку.
+       -- Такой узел — лист без цены: complete становится false, а его код попадает в missing.
+       or w.depth >= 10
   ),
   agg as (
     select root,

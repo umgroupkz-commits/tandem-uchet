@@ -123,7 +123,7 @@ begin
     declare
       v_row jsonb; v_cid uuid; v_code text; v_from date; v_to date; v_out numeric; v_lines jsonb;
       v_bad int; v_skip_lines int := 0; v_unknown text[] := '{}'; v_errors text[] := '{}';
-      v_exists uuid; v_c record; v_conf record;
+      v_exists uuid; v_exists_src text; v_c record; v_conf record;
     begin
       for v_row in select * from jsonb_array_elements(coalesce(p_rows, '[]'::jsonb)) loop
         v_cid  := nullif(v_row->>'iiko_id','')::uuid;
@@ -170,7 +170,16 @@ begin
         v_skip_lines := v_skip_lines + v_bad;
         if jsonb_array_length(v_lines) = 0 then v_skip := v_skip + 1; continue; end if;
 
-        select id into v_exists from tandem.charts where iiko_id = v_cid;
+        -- I1: карту, правленную в бэк-офисе, перенос не переписывает. iiko_id у неё остался,
+        -- но source стал 'office' — по нему и узнаём: пропускаем и называем в errors.
+        select id, source into v_exists, v_exists_src from tandem.charts where iiko_id = v_cid;
+        if v_exists is not null and v_exists_src is distinct from 'iiko' then
+          v_skip := v_skip + 1;
+          if coalesce(array_length(v_errors, 1), 0) < 20 then
+            v_errors := v_errors || (v_cid::text || ': правлена в офисе');
+          end if;
+          continue;
+        end if;
         -- чужая версия ровно с той же датой начала: не трогаем её и не пишем свою
         select id, source, iiko_id into v_conf from tandem.charts
           where item_code = v_code and date_from = v_from and (v_exists is null or id <> v_exists)
