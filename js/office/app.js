@@ -42,7 +42,9 @@ async function open(id) {
     main.innerHTML = "";
     await mod.mount(main);
     if (id === "charts" && location.hash.startsWith("#charts/") && mod.openChart) {
-      mod.openChart(decodeURIComponent(location.hash.slice(8)));
+      let hashCode = null;
+      try { hashCode = decodeURIComponent(location.hash.slice(8)); } catch { hashCode = null; }
+      if (hashCode) mod.openChart(hashCode);
       history.replaceState(null, "", location.pathname);
     }
   } catch (e) {

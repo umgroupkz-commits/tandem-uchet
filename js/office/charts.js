@@ -89,16 +89,19 @@ async function editChart(code, chartId) {
   const warn = el("div", { class: "err" });
   function num(v) { return v === "" || v == null ? 0 : Number(v); }
   function drawLines() {
+    const ae = document.activeElement;
+    const keep = ae && ae.dataset && ae.dataset.li != null ? { li: ae.dataset.li, key: ae.dataset.key } : null;
     tbl.innerHTML = "";
     tbl.append(el("tr", {}, ...["Ингредиент", "Ед.", "Брутто", "Нетто", "Выход", "Потери хол./гор.", "Цена", "Сумма", ""].map((h, i) => el("th", { class: i >= 2 ? "num" : "" }, h))));
     let sum = 0, complete = true;
     const missing = [];
-    for (const l of lines) {
+    for (const [idx, l] of lines.entries()) {
       const cold = num(l.brutto) > 0 ? (num(l.brutto) - num(l.netto)) / num(l.brutto) * 100 : 0;
       const hot = num(l.netto) > 0 ? (num(l.netto) - num(l.output)) / num(l.netto) * 100 : 0;
       const lineCost = l.ing_cost != null ? num(l.brutto) * Number(l.ing_cost) : null;
       if (lineCost == null) { complete = false; missing.push(l.name); } else sum += lineCost;
       const inp = (key) => el("input", { type: "number", step: "0.001", value: l[key] ?? "", readonly: ro, style: "text-align:right;padding:6px",
+        "data-li": String(idx), "data-key": key,
         oninput: (e) => {
           const v = e.target.value; const prev = l[key]; l[key] = v;
           // автоподстановка вниз по цепочке, если поля ещё не правились вручную
@@ -113,6 +116,10 @@ async function editChart(code, chartId) {
         el("td", { class: "num" }, l.ing_cost != null ? fmt(l.ing_cost) : el("span", { class: "tag bad" }, "нет")),
         el("td", { class: "num" }, lineCost != null ? fmt(lineCost) : ""),
         el("td", {}, ro ? null : el("button", { class: "x", onclick: () => { lines.splice(lines.indexOf(l), 1); drawLines(); } }, "×"))));
+    }
+    if (keep) {
+      const n = tbl.querySelector(`input[data-li="${keep.li}"][data-key="${keep.key}"]`);
+      if (n) n.focus();
     }
     const out = num(f.output.value) || 0;
     const perUnit = complete && out > 0 ? sum / out : null;
@@ -204,7 +211,7 @@ async function loadReport() {
   const th = (key, title, cls) => el("th", { class: (cls || "") + " row", onclick: () => { fc.sort = key; loadReport(); } }, title + (fc.sort === key ? " ▼" : ""));
   t.append(el("tr", {}, el("th", {}, "Позиция"), el("th", {}, "Группа"), th("cost", "Себестоимость", "num"), th("price", "Цена", "num"), th("markup_pct", "Наценка %", "num"), th("foodcost_pct", "Фудкост %", "num"), el("th", {}, "Нет цены у")));
   for (const x of rows) {
-    t.append(el("tr", { class: "row" + (x.over_limit ? "" : ""), onclick: () => editChart(x.code) },
+    t.append(el("tr", { class: "row", onclick: () => editChart(x.code) },
       el("td", {}, x.name), el("td", { class: "dim" }, x.group_name || ""), el("td", { class: "num" }, fmt(x.cost)), el("td", { class: "num" }, fmt(x.price)),
       el("td", { class: "num" }, x.markup_pct != null ? fmt(x.markup_pct) : ""),
       el("td", { class: "num" }, x.foodcost_pct != null ? el("span", { class: "tag " + (x.over_limit ? "bad" : "ok") }, fmt(x.foodcost_pct)) : ""),
