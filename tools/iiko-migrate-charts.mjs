@@ -4,7 +4,7 @@
 // Ответы кэшируются в data/iiko/charts/<productId>.json, повторный запуск берёт кэш
 // и не ходит в iiko за уже полученным, поэтому обрыв на 429 не теряет сделанного.
 // Переменные окружения: IIKO_API_KEY, IIKO_APP_ID, IIKO_CLIENT_SECRET, TANDEM_OWNER_PIN.
-// Запуск: node tools/iiko-migrate-charts.mjs [--dry] [--limit N] [--skip-costs] [--only-costs]
+// Запуск: node tools/iiko-migrate-charts.mjs [--dry] [--limit=N] [--skip-costs] [--only-costs]
 // Прогресс пишется в data/iiko/charts.log — запускайте в фоне и смотрите лог.
 import fs from "node:fs";
 const IIKO = "https://api-ru.iiko.services";
@@ -108,8 +108,11 @@ async function charts() {
     if ((fetched + cached) % 100 === 0) log(`  ${fetched + cached}/${list.length} (из iiko ${fetched}, из кэша ${cached}), карт ${rows.length}, пауза ${pause} мс, 429 ${throttled}`);
   }
   log(`получено карт: ${rows.length}; блюд без карты в iiko: ${empty}`);
-  if (failed.length) log(`  iiko не отдал карты по ${failed.length} блюдам: ` + failed.slice(0, 20).join(", "));
-  if (DRY) return;
+  if (failed.length) {
+    log(`  iiko не отдал карты по ${failed.length} блюдам:`);
+    for (const f of failed) log(`    ${f}`);
+  }
+  if (DRY) return failed.length;
   let ins = 0, upd = 0, skip = 0, skipL = 0, unknown = new Set(), errors = [];
   // сортируем по блюду и дате начала — так закрытие версий внутри RPC идёт в естественном порядке
   rows.sort((a, b) => a.code.localeCompare(b.code) || String(a.date_from).localeCompare(String(b.date_from)));
@@ -123,6 +126,7 @@ async function charts() {
   if (unknown.size) log("  примеры неизвестных: " + [...unknown].slice(0, 20).join(", "));
   log(`  отказов при записи (errors): ${errors.length}`);
   if (errors.length) log("  первые: " + errors.slice(0, 10).join(" | "));
+  return failed.length;
 }
 
 // Предприятия для накладных — только те, что открыты этому api-логину: дерево
@@ -183,7 +187,9 @@ async function costs() {
   log(`цены: обновлено ${upd}, пропущено ${skip} (не найдены по iiko_id или помечены manual)`);
 }
 
-if (!PIN && !DRY) throw new Error("TANDEM_OWNER_PIN не задан");
-if (!ONLY_COSTS) await charts();
+if (!PIN) throw new Error("TANDEM_OWNER_PIN не задан");
+let failedCount = 0;
+if (!ONLY_COSTS) failedCount = await charts();
 if (!SKIP_COSTS) await costs();
 log("готово");
+if (failedCount > 0) process.exitCode = 2;

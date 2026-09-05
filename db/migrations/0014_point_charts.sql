@@ -280,3 +280,14 @@ $function$;
 
 drop function if exists public.tandem_sync_charts(text, jsonb);
 drop table if exists tandem.item_chart;
+
+revoke all on function public.tandem_charts(text,text) from public;
+revoke all on function public.tandem_api(text,jsonb) from public;
+do $$ begin
+  if exists (select 1 from pg_roles where rolname = 'service_role') then
+    revoke all on function public.tandem_charts(text,text) from anon, authenticated;
+    revoke all on function public.tandem_api(text,jsonb) from anon, authenticated;
+    grant execute on function public.tandem_charts(text,text) to service_role;
+    grant execute on function public.tandem_api(text,jsonb) to service_role;
+  end if;
+end $$;
