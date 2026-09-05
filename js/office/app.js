@@ -3,6 +3,7 @@ import { toast } from "./ui.js?v=1";
 
 const SECTIONS = [
   { id: "nomenclature", title: "Номенклатура" },
+  { id: "charts", title: "Техкарты" },
   { id: "stores", title: "Склады" },
   { id: "counteragents", title: "Контрагенты" },
   { id: "users", title: "Пользователи" },
@@ -40,6 +41,10 @@ async function open(id) {
     const mod = await import(`./${id}.js?v=${BUILD}`);
     main.innerHTML = "";
     await mod.mount(main);
+    if (id === "charts" && location.hash.startsWith("#charts/") && mod.openChart) {
+      mod.openChart(decodeURIComponent(location.hash.slice(8)));
+      history.replaceState(null, "", location.pathname);
+    }
   } catch (e) {
     main.innerHTML = "";
     main.append(Object.assign(document.createElement("div"), { className: "err", textContent: "Раздел не открылся: " + e.message }));
@@ -65,6 +70,7 @@ function start() {
   let first = null;
   try { first = localStorage.getItem("tandem_office_section"); } catch {}
   if (!allowed.some((x) => x.id === first)) first = allowed[0] && allowed[0].id;
+  if (location.hash.startsWith("#charts/") && allowed.some((x) => x.id === "charts")) first = "charts";
   if (first) open(first); else $("main").textContent = "У вашей роли нет разделов.";
 }
 

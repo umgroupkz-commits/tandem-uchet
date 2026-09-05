@@ -50,3 +50,10 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
 .toast.bad{background:var(--bad)}
 .overlay{position:fixed;inset:0;background:rgba(27,36,48,.35);display:flex;align-items:flex-start;justify-content:center;padding:40px 16px;z-index:8;overflow:auto}
 .overlay .card{width:100%;max-width:640px}
+.sbox{position:relative}.sres{margin-top:6px;max-height:260px;overflow-y:auto;border:1px solid var(--line);border-radius:8px;background:#fff}
+.sres:empty{display:none}.sitem{display:block;width:100%;text-align:left;background:#fff;border:none;border-bottom:1px solid var(--line);border-radius:0;padding:9px 12px;color:var(--ink);font-weight:500}
+.sitem:last-child{border-bottom:none}
+.tot{display:flex;justify-content:space-between;align-items:baseline;padding:10px 14px;background:#EEF2F8;border-radius:8px;margin-top:10px}
+.tot span:last-child{font-weight:700;color:var(--accent);font-variant-numeric:tabular-nums}
+button.x{width:30px;padding:4px;background:#fff;color:var(--bad);border-color:var(--line);font-size:16px;line-height:1;font-weight:400}
+textarea{width:100%;min-height:70px;padding:9px 11px;border:1px solid var(--line);border-radius:8px;font:inherit;background:var(--in);color:var(--ink)}
