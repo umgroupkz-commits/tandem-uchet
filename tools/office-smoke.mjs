@@ -225,6 +225,28 @@ SECTIONS.nomenclature = async (ctx) => {
   check("карточка: not_found", r.ok === false && r.error === "not_found", r);
   r = await call("office_item_save", { token: t, name: "x", item_type: "фигня", unit_id: "кг" });
   check("тип не из списка — validation", r.ok === false && r.error === "validation", r);
+
+  // Сопоставление пачки ключей — им пользуется загрузка факта инвентаризации из файла iiko.
+  // Тестовую позицию из выборки исключаем: её код тоже числовой, а в сортировке по имени
+  // латинское «ZZ_TEST_мука в/с» встаёт впереди кириллической «Муки», и «реальной» позицией
+  // оказалась бы она сама — проверка артикула выродилась бы в повтор проверки по коду.
+  r = await call("office_items_search", { token: t, q: "мука", active: true, page: 1 });
+  const real = (r.rows || []).find((x) => /^\d+$/.test(x.code) && !/^ZZ_TEST/.test(x.name) && x.artikul);
+  check("нашлась перенесённая позиция с артикулом", !!real, { n: r.rows && r.rows.length });
+  const realGet = await call("office_item_get", { token: t, code: real.code });
+  r = await call("office_items_lookup_list", { token: t, keys: [
+    { code }, { code: real.code }, { name: "ZZ_TEST_мука в/с" },
+    { code: realGet.item.artikul }, { code: "нет-такого", name: "нет такого названия" }] });
+  check("lookup: по коду, коду iiko, названию и артикулу; неизвестный отсутствует", r.ok && r.rows.length === 4
+    && r.rows.find((x) => x.i === 0 && x.item_code === code && x.matched_by === "code")
+    && r.rows.find((x) => x.i === 1 && x.item_code === real.code)
+    && r.rows.find((x) => x.i === 2 && x.item_code === code && x.matched_by === "name")
+    && r.rows.find((x) => x.i === 3 && x.item_code === real.code && x.matched_by === "artikul")
+    && !r.rows.find((x) => x.i === 4), r.rows);
+  r = await call("office_items_lookup_list", { token: t, keys: "не массив" });
+  check("lookup: не массив — validation", r.ok === false && r.error === "validation", r);
+  r = await call("office_items_lookup_list", { token: t, keys: [] });
+  check("lookup: пустой массив — пустой ответ", r.ok && Array.isArray(r.rows) && r.rows.length === 0, r);
 };
 
 SECTIONS.stores = async (ctx) => {

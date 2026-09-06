@@ -148,7 +148,87 @@ async function editDoc(id, newType) {
     if (keep) { const n = tbl.querySelector(`input[data-li="${keep.li}"][data-key="${keep.key}"]`); if (n) n.focus(); }
   }
   drawLines();
-  m.root.append(el("h2", { style: "margin-top:14px" }, isInv ? "Позиции и факт" : (type === "production" ? "Выпуск" : "Строки")), tbl, tot);
+  // Итог загрузки из файла живёт под таблицей: сводка и список ненайденных строк.
+  const warn = el("div", { hidden: true });
+  m.root.append(el("h2", { style: "margin-top:14px" }, isInv ? "Позиции и факт" : (type === "production" ? "Выпуск" : "Строки")), tbl, tot, warn);
+
+  async function fillFromBalances() {
+    const st = f.from.value; if (!st) { toast("Сначала выберите склад", "bad"); return; }
+    let page = 1, pages = 1;
+    do {
+      const b = await api("stock_balances", { store_id: st, only_nonzero: true, page });
+      if (!b.ok) { toast(b.message, "bad"); return; }
+      for (const x of (b.rows || [])) if (!lines.some((l) => l.item_code === x.item_code)) lines.push({ item_code: x.item_code, name: x.name, unit_id: x.unit_id, fact_qty: "", current_qty: x.qty });
+      pages = b.pages || 1; page++;
+    } while (page <= pages);
+    drawLines();
+  }
+
+  // Загрузка факта из файла остатков iiko. Разбор вынесен в parseStockFile — форма только
+  // спрашивает склад (если файл сводный по колонке склада), зовёт сопоставление и правит
+  // строки. Документ не сохраняется и не проводится: человек смотрит итог и решает сам.
+  async function importFact(file) {
+    err.textContent = ""; warn.hidden = true; warn.innerHTML = "";
+    let p;
+    try { p = await parseStockFile(await file.arrayBuffer()); }
+    catch (e) { err.textContent = "Не получилось разобрать файл: " + (e && e.message ? e.message : e); return; }
+    if (!p.ok) { err.textContent = p.error; return; }
+    let rows = p.rows;
+    if (p.has_store_col && p.stores.length > 1) {
+      const pick = await pickStore(p.stores);
+      if (!pick) return;
+      rows = rows.filter((x) => x.store === pick);
+    }
+    if (!rows.length) { err.textContent = "В файле нет строк с ненулевым количеством"; return; }
+    // Ключи уходят пачками: сервер принимает до 2000 за вызов.
+    const found = new Map();
+    for (let from = 0; from < rows.length; from += 1000) {
+      const chunk = rows.slice(from, from + 1000);
+      const r = await api("items_lookup_list", { keys: chunk.map((x) => ({ code: x.code || null, name: x.name || null })) });
+      if (!r.ok) { err.textContent = r.message; return; }
+      for (const x of (r.rows || [])) found.set(from + x.i, x);
+    }
+    // Одна позиция может прийти файлом несколькими строками (разные группы отчёта) — складываем.
+    const got = new Map(), miss = [];
+    rows.forEach((row, i) => {
+      const it = found.get(i);
+      if (!it) { miss.push(row); return; }
+      const prev = got.get(it.item_code);
+      if (prev) prev.qty += row.qty; else got.set(it.item_code, { it, qty: row.qty });
+    });
+    for (const [itemCode, v] of got) {
+      const val = String(Math.round(v.qty * 1000) / 1000);
+      const line = lines.find((l) => l.item_code === itemCode);
+      if (line) line.fact_qty = val;
+      else lines.push({ item_code: itemCode, name: v.it.name, unit_id: v.it.unit_id, qty: "", fact_qty: val, price: "" });
+    }
+    drawLines();
+    warn.className = "warnbox"; warn.hidden = false; warn.innerHTML = "";
+    warn.append(el("div", {}, `Загружено ${got.size}, не найдено ${miss.length}`
+      + (p.zeros ? `, пропущено нулевых ${p.zeros}` : "") + (p.blanks ? `, пропущено без количества ${p.blanks}` : "")));
+    for (const w of p.warnings) warn.append(el("div", { class: "dim" }, w));
+    if (miss.length) {
+      const mt = el("table");
+      mt.append(el("tr", {}, ...["Не найдено в номенклатуре", "Код", "Кол-во"].map((h, i) => el("th", { class: i === 2 ? "num" : "" }, h))));
+      for (const w of miss) mt.append(el("tr", {}, el("td", {}, w.name), el("td", {}, w.code), el("td", { class: "num" }, fmt(w.qty))));
+      warn.append(mt);
+    }
+    warn.append(el("div", { class: "actions" }, el("button", { class: "ghost small", onclick: () => { warn.hidden = true; } }, "Скрыть")));
+  }
+  // Выбор склада, когда в листе есть колонка склада и складов в ней несколько.
+  function pickStore(list) {
+    return new Promise((resolve) => {
+      const mine = (stores.find((s) => s.id === f.from.value) || {}).name || "";
+      const cur = list.find((n) => n.toLowerCase() === mine.toLowerCase()) || list[0];
+      const s = sel(Object.fromEntries(list.map((n) => [n, n])), cur, () => {});
+      const cm = modal("Какой склад брать из файла");
+      cm.root.append(el("div", { class: "dim" }, "В файле несколько складов — возьмём строки одного"), s,
+        el("div", { class: "actions" },
+          el("button", { onclick: () => { cm.close(); resolve(s.value); } }, "Загрузить"),
+          el("button", { class: "ghost", onclick: () => { cm.close(); resolve(null); } }, "Отмена")));
+    });
+  }
+
   if (!ro) {
     const search = el("input", { placeholder: "Добавить позицию: название или код" }); const res = el("div", { class: "sres" });
     search.addEventListener("input", debounce(async () => {
@@ -162,17 +242,16 @@ async function editDoc(id, newType) {
       }
     }, 300));
     const tools = el("div", { class: "sbox", style: "margin-top:10px" }, search, res);
-    if (isInv) tools.prepend(el("button", { class: "ghost small", style: "margin-bottom:8px", onclick: async () => {
-      const st = f.from.value; if (!st) { toast("Сначала выберите склад", "bad"); return; }
-      let page = 1, pages = 1;
-      do {
-        const b = await api("stock_balances", { store_id: st, only_nonzero: true, page });
-        if (!b.ok) { toast(b.message, "bad"); return; }
-        for (const x of (b.rows || [])) if (!lines.some((l) => l.item_code === x.item_code)) lines.push({ item_code: x.item_code, name: x.name, unit_id: x.unit_id, fact_qty: "", current_qty: x.qty });
-        pages = b.pages || 1; page++;
-      } while (page <= pages);
-      drawLines();
-    } }, "Заполнить позициями с остатком"));
+    if (isInv) {
+      // Файл выбирается скрытым input'ом: своя кнопка рядом с «заполнить с остатком» читается
+      // лучше, чем системный «Обзор…», и остаётся на месте после каждой загрузки.
+      const file = el("input", { type: "file", accept: ".xlsx,.xls", style: "display:none",
+        onchange: (e) => { const x = e.target.files[0]; e.target.value = ""; if (x) importFact(x); } });
+      tools.prepend(el("div", { style: "margin-bottom:8px;display:flex;gap:8px;flex-wrap:wrap" },
+        el("button", { class: "ghost small", onclick: fillFromBalances }, "Заполнить позициями с остатком"),
+        el("button", { class: "ghost small", onclick: () => file.click() }, "Загрузить факт из файла"),
+        file));
+    }
     m.root.append(tools);
   }
   if (doc.consume && doc.consume.length) {
@@ -245,4 +324,104 @@ async function showMoves(x) {
   for (const mv of (r.rows || [])) t.append(el("tr", { class: "row", onclick: () => { m.close(); editDoc(mv.document_id); } }, el("td", {}, mv.move_date), el("td", {}, `${TYPES[mv.doc_type] || mv.doc_type} ${mv.number}`),
     el("td", { class: "num" + (Number(mv.qty) < 0 ? " bad" : "") }, fmt(mv.qty)), el("td", { class: "num" }, fmt(mv.unit_cost)), el("td", { class: "num" }, fmt(mv.sum))));
   m.root.append(t, el("div", { class: "actions" }, el("button", { class: "ghost", onclick: m.close }, "Закрыть")));
+}
+
+// ---------- разбор файла остатков ----------
+// SheetJS тянем один раз и только когда файл действительно выбрали: библиотека тяжёлая,
+// а в бэк-офис заходят не ради инвентаризации.
+let xlsxLoading = null;
+export function loadXlsx() {
+  if (window.XLSX) return Promise.resolve();
+  if (!xlsxLoading) xlsxLoading = new Promise((resolve, reject) => {
+    const sc = document.createElement("script");
+    sc.src = "vendor/xlsx.full.min.js";
+    sc.onload = () => resolve();
+    sc.onerror = () => { xlsxLoading = null; reject(new Error("Не удалось загрузить обработчик Excel")); };
+    document.head.append(sc);
+  });
+  return xlsxLoading;
+}
+
+const txt = (v) => String(v === null || v === undefined ? "" : v).replace(/\s+/g, " ").trim();
+// Количество: числом из ячейки как есть, строкой — с запятой вместо точки и без пробелов
+// разрядов (iiko и Excel пишут неразрывные). Всё, что не число, — не количество.
+function num(v) {
+  if (typeof v === "number") return Number.isFinite(v) ? v : null;
+  const s = txt(v).replace(/\s/g, "").replace(",", ".");
+  return /^-?\d+(\.\d+)?$/.test(s) ? Number(s) : null;
+}
+const findCol = (row, re) => row.findIndex((c) => re.test(txt(c)));
+
+// Разбор листа остатков → { ok, mode, stores, has_store_col, rows:[{code,name,qty,store}],
+// warnings, zeros, blanks } либо { ok:false, error }. Вынесен из формы намеренно: так его
+// можно проверить отдельно, без модалки и без выбора файла руками.
+export async function parseStockFile(buf) {
+  await loadXlsx();
+  const wb = window.XLSX.read(new Uint8Array(buf), { type: "array" });
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  if (!ws) return { ok: false, error: "В файле нет ни одного листа" };
+  const g = window.XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" });
+  const warnings = [];
+
+  // Отчёт iiko узнаётся по строке колонок с «Код» и «Наименование»: в нём колонок «Кол-во»
+  // много (приход, продажи, списания…), и нужную выбирает не имя колонки, а группа над ней.
+  let hdr = g.findIndex((r) => findCol(r, /^код$/i) >= 0 && findCol(r, /наимен/i) >= 0);
+  let qtyCol = -1, nameCol = -1, codeCol = -1, storeCol = -1, mode = "plain";
+  if (hdr >= 0) {
+    mode = "iiko";
+    nameCol = findCol(g[hdr], /наимен/i);
+    codeCol = findCol(g[hdr], /^код$/i);
+    const grp = hdr > 0 ? g[hdr - 1] : [];
+    let gi = findCol(grp, /остатки на конец/i);
+    if (gi < 0) {
+      gi = findCol(grp, /остат/i);
+      if (gi >= 0) warnings.push("Группы «Остатки на конец» в файле нет — взял ближайшую группу остатков: " + txt(grp[gi]));
+    }
+    if (gi >= 0) for (let c = gi; c < g[hdr].length; c++) {
+      const h = txt(g[hdr][c]);
+      if (/^кол/i.test(h) && !/сумм/i.test(h)) { qtyCol = c; break; }
+    }
+    if (qtyCol < 0) { mode = "plain"; hdr = -1; }
+  }
+  if (hdr < 0) {
+    // Универсальный лист: название + количество, код и склад — если есть.
+    hdr = g.findIndex((r) => findCol(r, /наимен|номенклат|товар|позиц/i) >= 0 && findCol(r, /кол|остат/i) >= 0);
+    if (hdr < 0) return { ok: false, error: "Не нашёл строку заголовка с названием и количеством" };
+    nameCol = findCol(g[hdr], /наимен|номенклат|товар|позиц/i);
+    codeCol = findCol(g[hdr], /^код|артикул/i);
+    qtyCol = g[hdr].findIndex((c) => /кол|остат/i.test(txt(c)) && !/сумм/i.test(txt(c)));
+    storeCol = findCol(g[hdr], /склад/i);
+    if (qtyCol < 0) return { ok: false, error: "Не нашёл строку заголовка с названием и количеством" };
+  }
+
+  const rows = []; let zeros = 0, blanks = 0;
+  for (let i = hdr + 1; i < g.length; i++) {
+    const r = g[i];
+    const name = nameCol >= 0 ? txt(r[nameCol]) : "";
+    const code = codeCol >= 0 ? txt(r[codeCol]) : "";
+    if (!name && !code) continue;                 // итоговая строка отчёта и разделители
+    const q = num(r[qtyCol]);
+    if (q === null) { blanks++; continue; }
+    if (q === 0) { zeros++; continue; }
+    rows.push({ code, name, qty: q, store: storeCol >= 0 ? txt(r[storeCol]) : "" });
+  }
+
+  // Склады: в отчёте iiko — из строки шапки «Склад: …», в универсальном листе — из колонки.
+  let stores = [];
+  if (mode === "iiko") {
+    for (let i = 0; i < hdr; i++) {
+      const c = (g[i] || []).map(txt).find((x) => /^склад\s*:/i.test(x));
+      if (c) { stores = c.replace(/^склад\s*:/i, "").split(",").map((x) => x.trim()).filter(Boolean); break; }
+    }
+    // Сводный отчёт складывает остатки всех складов в одну строку — разложить их обратно
+    // нечем, поэтому такой файл не грузим вовсе, а не грузим «как-нибудь».
+    if (stores.length > 1) {
+      const n = stores.length, t = n % 10, h = n % 100;
+      const word = t === 1 && h !== 11 ? "склад" : t >= 2 && t <= 4 && (h < 12 || h > 14) ? "склада" : "складов";
+      return { ok: false, error: `В файле ${n} ${word}, остатки сводные — выгрузите отчёт по одному складу` };
+    }
+  } else if (storeCol >= 0) {
+    stores = [...new Set(rows.map((x) => x.store).filter(Boolean))];
+  }
+  return { ok: true, mode, stores, has_store_col: mode !== "iiko" && storeCol >= 0, rows, warnings, zeros, blanks };
 }
