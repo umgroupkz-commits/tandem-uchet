@@ -1,5 +1,5 @@
-import { api, session } from "./api.js?v=3";
-import { el, fmt, toast, debounce, modal, confirmDlg } from "./ui.js?v=3";
+import { api, session } from "./api.js?v=4";
+import { el, fmt, toast, debounce, modal, confirmDlg } from "./ui.js?v=4";
 
 const TYPES = { invoice_in: "Приход", transfer: "Перемещение", writeoff: "Списание", production: "Производство", inventory: "Инвентаризация" };
 const REASONS = { spoilage: "порча", tasting: "проработка", staff_meals: "питание персонала", other: "прочее" };

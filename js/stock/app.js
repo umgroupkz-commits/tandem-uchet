@@ -1,5 +1,5 @@
-import { api, session, setSession } from "../office/api.js?v=3";
-import { el, toast } from "../office/ui.js?v=3";
+import { api, session, setSession } from "../office/api.js?v=4";
+import { el, toast } from "../office/ui.js?v=4";
 import { ask, clearDraftsAll } from "./common.js?v=2";
 
 const $ = (id) => document.getElementById(id);
