@@ -1,5 +1,6 @@
 import { api, session, setSession } from "../office/api.js?v=3";
 import { el, toast } from "../office/ui.js?v=3";
+import { ask, clearDraftsAll } from "./common.js?v=2";
 
 const $ = (id) => document.getElementById(id);
 const SCENARIOS = [
@@ -11,9 +12,13 @@ const ctx = { store: null, stores: [], home, result };
 function show(id) { for (const s of ["login", "pinchange", "shell"]) $(s).hidden = s !== id; }
 const perms = () => (session() && session().permissions) || [];
 
+// login/me/logout ходят мимо ask(): у входа своя обработка отказа (текст под полем,
+// сессия ещё не заведена), а выход обязан очистить телефон даже при недоступном сервере.
 async function doLogin() {
   $("lerr").textContent = "";
-  const r = await api("login", { login: $("llogin").value, pin: $("lpin").value });
+  let r;
+  try { r = await api("login", { login: $("llogin").value, pin: $("lpin").value }); }
+  catch (e) { $("lerr").textContent = "Нет связи с сервером"; return; }
   if (!r.ok) { $("lerr").textContent = r.message || "Не пустило"; return; }
   setSession({ token: r.token, user: r.user, permissions: r.permissions, must_change_pin: r.must_change_pin });
   try { localStorage.setItem("tandem_stock_login", $("llogin").value.trim()); } catch {}
@@ -22,9 +27,16 @@ async function doLogin() {
 async function doChangePin() {
   $("nerr").textContent = "";
   if ($("npin").value !== $("npin2").value) { $("nerr").textContent = "PIN не совпадают"; return; }
-  const r = await api("change_pin", { pin: $("npin").value });
-  if (!r.ok) { $("nerr").textContent = r.message; return; }
-  setSession({ ...session(), must_change_pin: false }); start();
+  try {
+    await ask("change_pin", { pin: $("npin").value });
+    setSession({ ...session(), must_change_pin: false }); start();
+  } catch (e) { $("nerr").textContent = e.message; }
+}
+// Выход всегда доводится до конца: сервер мог не ответить, но телефон обязан забыть
+// и сессию, и чужие черновики.
+async function doLogout() {
+  try { await api("logout", {}); } catch {}
+  finally { setSession(null); clearDraftsAll(); location.reload(); }
 }
 
 async function start() {
@@ -34,9 +46,16 @@ async function start() {
   show("shell");
   $("uname").textContent = s.user.name;
   if (!ctx.stores.length) {
-    const r = await api("stores_list", {});
-    if (!r.ok) { toast(r.message, "bad"); return; }
-    ctx.stores = (r.stores || []).filter((x) => x.active);
+    try {
+      const r = await ask("stores_list", {});
+      ctx.stores = (r.stores || []).filter((x) => x.active);
+    } catch (e) {
+      const main = $("main"); main.innerHTML = "";
+      main.append(el("div", { class: "card" }, el("div", { class: "err" }, "Список складов не загрузился: " + e.message),
+        el("div", { class: "dim", style: "margin-top:6px" }, "Проверьте связь и попробуйте ещё раз.")),
+        el("div", { class: "bar" }, el("button", { class: "ghost", onclick: doLogout }, "Выйти"), el("button", { onclick: start }, "Повторить")));
+      return;
+    }
   }
   let saved = null; try { saved = localStorage.getItem("tandem_stock_store"); } catch {}
   ctx.store = ctx.stores.find((x) => x.id === saved) || null;
@@ -60,13 +79,15 @@ function home() {
   const allowed = SCENARIOS.filter((x) => perms().includes(x.perm));
   for (const x of allowed) menu.append(el("button", { type: "button", onclick: () => openScenario(x.id) }, x.title, el("span", {}, x.hint)));
   if (!allowed.length) menu.append(el("div", { class: "err" }, "У вашей роли нет складских операций"));
-  main.append(menu, el("button", { class: "link", onclick: async () => { await api("logout", {}); setSession(null); location.reload(); } }, "Выйти"));
+  main.append(menu,
+    el("div", {}, el("a", { class: "link", href: "index.html" }, "← отчёт точки")),
+    el("div", {}, el("button", { class: "link", onclick: doLogout }, "Выйти")));
 }
 
 async function openScenario(id) {
   const main = $("main"); main.innerHTML = '<div class="dim">Загрузка…</div>';
   try {
-    const mod = await import(`./${id}.js?v=1`);
+    const mod = await import(`./${id}.js?v=2`);
     main.innerHTML = ""; await mod.mount(main, ctx);
   } catch (e) { main.innerHTML = ""; main.append(el("div", { class: "err" }, "Сценарий не открылся: " + e.message)); }
 }
