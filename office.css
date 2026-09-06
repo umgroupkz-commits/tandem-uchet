@@ -12,7 +12,7 @@ input,select,textarea{width:100%;padding:9px 11px;border:1px solid var(--line);b
 input:focus,select:focus,textarea:focus{outline:2px solid var(--accent2);outline-offset:-1px;background:#fff}
 button{font:inherit;font-weight:600;padding:9px 14px;border-radius:8px;border:1px solid var(--accent);background:var(--accent);color:#fff;cursor:pointer}
 button.ghost{background:#fff;color:var(--accent)}
-button.link{background:none;border:none;color:var(--accent2);padding:4px 6px;font-weight:500}
+button.link,a.link{background:none;border:none;color:var(--accent2);padding:4px 6px;font-weight:500;text-decoration:none}
 button:disabled{opacity:.5}
 .err{color:var(--bad);font-size:13px;margin-top:8px;min-height:18px}
 .login{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:16px}
