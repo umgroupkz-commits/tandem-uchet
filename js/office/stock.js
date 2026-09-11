@@ -164,22 +164,27 @@ async function editDoc(id, newType) {
     drawLines();
   }
 
-  // Загрузка факта из файла остатков iiko. Разбор вынесен в parseStockFile — форма только
-  // спрашивает склад (если файл сводный по колонке склада), зовёт сопоставление и правит
-  // строки. Документ не сохраняется и не проводится: человек смотрит итог и решает сам.
+  // Загрузка факта из файла остатков iiko. Разбор вынесен в parseStockFile — форма выбирает
+  // лист (оборотка iiko приходит книгой: лист на фильтр складов), подтверждает сводный лист,
+  // зовёт сопоставление и правит строки. Документ не сохраняется и не проводится: человек
+  // смотрит итог и решает сам.
   async function importFact(file) {
     err.textContent = ""; warn.hidden = true; warn.innerHTML = "";
+    const store = stores.find((s) => s.id === f.from.value);
+    if (!store) { err.textContent = "Сначала выберите склад — файл грузится на него"; return; }
     let p;
     try { p = await parseStockFile(await file.arrayBuffer()); }
     catch (e) { err.textContent = "Не получилось разобрать файл: " + (e && e.message ? e.message : e); return; }
     if (!p.ok) { err.textContent = p.error; return; }
-    let rows = p.rows;
-    if (p.has_store_col && p.stores.length > 1) {
-      const pick = await pickStore(p.stores);
+    const sh = await pickSheet(p.sheets, store);
+    if (!sh) return;
+    let rows = sh.rows;
+    if (sh.has_store_col && sh.stores.length > 1) {
+      const pick = await pickStore(sh.stores);
       if (!pick) return;
       rows = rows.filter((x) => x.store === pick);
     }
-    if (!rows.length) { err.textContent = "В файле нет строк с ненулевым количеством"; return; }
+    if (!rows.length) { err.textContent = "В листе нет строк с количеством"; return; }
     // Ключи уходят пачками: сервер принимает до 2000 за вызов.
     const found = new Map();
     for (let from = 0; from < rows.length; from += 1000) {
@@ -192,7 +197,7 @@ async function editDoc(id, newType) {
     const got = new Map(), miss = [];
     rows.forEach((row, i) => {
       const it = found.get(i);
-      if (!it) { miss.push(row); return; }
+      if (!it) { if (row.qty > 0) miss.push(row); return; }   // ненайденный ноль грузить некуда и незачем
       const prev = got.get(it.item_code);
       if (prev) prev.qty += row.qty; else got.set(it.item_code, { it, qty: row.qty });
     });
@@ -204,25 +209,67 @@ async function editDoc(id, newType) {
     }
     drawLines();
     warn.className = "warnbox"; warn.hidden = false; warn.innerHTML = "";
-    warn.append(el("div", {}, `Загружено ${got.size}, не найдено ${miss.length}`
-      + (p.zeros ? `, пропущено нулевых ${p.zeros}` : "") + (p.blanks ? `, пропущено без количества ${p.blanks}` : "")));
-    for (const w of p.warnings) warn.append(el("div", { class: "dim" }, w));
+    warn.append(el("div", {}, `Лист «${sh.sheet}»: загружено ${got.size}, не найдено ${miss.length}`
+      + (sh.zeros ? `, нулевых ${sh.zeros}` : "") + (sh.blanks ? `, пропущено без количества ${sh.blanks}` : "")));
+    for (const w of sh.warnings) warn.append(el("div", { class: "dim" }, w));
+    if (sh.combined) warn.append(el("div", {}, `Лист сводный (${sh.stores.join(", ")}) — всё загружено на склад «${store.name}»`));
+    if (sh.negatives.length) warn.append(el("details", {},
+      el("summary", {}, `В iiko минус у ${sh.negatives.length} поз. — факт поставлен 0`),
+      el("div", { class: "dim" }, sh.negatives.map((x) => `${x.name} (${fmt(x.qty)})`).join("; "))));
     if (miss.length) {
       const mt = el("table");
       mt.append(el("tr", {}, ...["Не найдено в номенклатуре", "Код", "Кол-во"].map((h, i) => el("th", { class: i === 2 ? "num" : "" }, h))));
       for (const w of miss) mt.append(el("tr", {}, el("td", {}, w.name), el("td", {}, w.code), el("td", { class: "num" }, fmt(w.qty))));
       warn.append(mt);
     }
-    warn.append(el("div", { class: "actions" }, el("button", { class: "ghost small", onclick: () => { warn.hidden = true; } }, "Скрыть")));
+    // Строки, которых нет в файле, но есть в документе (например, после «заполнить позициями
+    // с остатком»), остаются без факта — провести такой документ сервер не даст. Раз файл —
+    // полный остаток склада по iiko, их честно обнулить; но решает человек, одной кнопкой.
+    const empty = lines.filter((l) => l.fact_qty === "" || l.fact_qty == null);
+    const acts = el("div", { class: "actions" });
+    if (empty.length) {
+      warn.append(el("div", {}, `Без факта ${empty.length} поз.: их нет в файле`));
+      acts.append(el("button", { class: "small", onclick: (e) => { for (const l of empty) l.fact_qty = "0"; drawLines(); e.target.remove(); } }, "Поставить им 0"));
+    }
+    acts.append(el("button", { class: "ghost small", onclick: () => { warn.hidden = true; } }, "Скрыть"));
+    warn.append(acts);
   }
-  // Выбор склада, когда в листе есть колонка склада и складов в ней несколько.
+  // Какой лист книги брать. Спрашиваем, когда листов несколько, когда лист сводный или когда
+  // склад в листе не тот, что в документе; лист с тем же складом предлагается первым.
+  function pickSheet(sheets, store) {
+    const mine = sheets.find((s) => s.stores.length === 1 && sameStore(s.stores[0], store.name))
+      || sheets.find((s) => s.stores.some((n) => sameStore(n, store.name))) || sheets[0];
+    const clean = (s) => !s.combined && (!s.stores.length || s.stores.some((n) => sameStore(n, store.name)));
+    if (sheets.length === 1 && clean(mine)) return Promise.resolve(mine);
+    return new Promise((resolve) => {
+      const label = (x) => `${x.sheet} — ${x.stores.length ? x.stores.join(", ") : "склад не указан"} (${x.rows.length} строк)`;
+      const s = sel(Object.fromEntries(sheets.map((x, i) => [String(i), label(x)])), String(sheets.indexOf(mine)), () => note());
+      const info = el("div", {});
+      const cm = modal("Какой лист загрузить");
+      function note() {
+        const x = sheets[Number(s.value)]; info.innerHTML = "";
+        if (x.combined) info.append(el("div", { class: "warnbox" },
+          `В листе ${x.stores.length} скл.: ${x.stores.join(", ")}. Остатки по ним сложены в одну строку, `
+          + `разложить обратно нельзя. Всё ляжет на «${store.name}»; хозтовары и посуду потом можно переместить. `
+          + "Точнее — выгрузить из iiko отчёт по одному складу."));
+        else if (x.stores.length && !x.stores.some((n) => sameStore(n, store.name)))
+          info.append(el("div", { class: "warnbox" }, `Склад в листе — «${x.stores[0]}», а в документе — «${store.name}». Проверьте, тот ли это склад.`));
+      }
+      note();
+      cm.root.append(el("label", {}, "Лист файла"), s, info,
+        el("div", { class: "actions" },
+          el("button", { onclick: () => { cm.close(); resolve(sheets[Number(s.value)]); } }, `Загрузить на склад «${store.name}»`),
+          el("button", { class: "ghost", onclick: () => { cm.close(); resolve(null); } }, "Отмена")));
+    });
+  }
+  // Выбор склада, когда в простом листе есть колонка склада и складов в ней несколько.
   function pickStore(list) {
     return new Promise((resolve) => {
       const mine = (stores.find((s) => s.id === f.from.value) || {}).name || "";
-      const cur = list.find((n) => n.toLowerCase() === mine.toLowerCase()) || list[0];
+      const cur = list.find((n) => sameStore(n, mine)) || list[0];
       const s = sel(Object.fromEntries(list.map((n) => [n, n])), cur, () => {});
       const cm = modal("Какой склад брать из файла");
-      cm.root.append(el("div", { class: "dim" }, "В файле несколько складов — возьмём строки одного"), s,
+      cm.root.append(el("div", { class: "dim" }, "В листе несколько складов — возьмём строки одного"), s,
         el("div", { class: "actions" },
           el("button", { onclick: () => { cm.close(); resolve(s.value); } }, "Загрузить"),
           el("button", { class: "ghost", onclick: () => { cm.close(); resolve(null); } }, "Отмена")));
@@ -352,17 +399,27 @@ function num(v) {
 }
 const findCol = (row, re) => row.findIndex((c) => re.test(txt(c)));
 
-// Разбор листа остатков → { ok, mode, stores, has_store_col, rows:[{code,name,qty,store}],
-// warnings, zeros, blanks } либо { ok:false, error }. Вынесен из формы намеренно: так его
-// можно проверить отдельно, без модалки и без выбора файла руками.
+// Разбор книги остатков → { ok:true, sheets:[лист] } либо { ok:false, error }.
+// Лист: { sheet, mode, stores, combined, has_store_col, rows:[{code,name,qty,store,neg}],
+// warnings, zeros, negatives:[{code,name,qty}], blanks }. Iiko отдаёт оборотку книгой, где
+// каждый лист — отдельный фильтр по складам, поэтому разбираются все листы, а какой брать,
+// решает форма. Вынесен из формы намеренно: так его можно проверить отдельно, без модалки.
 export async function parseStockFile(buf) {
   await loadXlsx();
   const wb = window.XLSX.read(new Uint8Array(buf), { type: "array" });
-  const ws = wb.Sheets[wb.SheetNames[0]];
-  if (!ws) return { ok: false, error: "В файле нет ни одного листа" };
-  const g = window.XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" });
-  const warnings = [];
+  if (!wb.SheetNames.length) return { ok: false, error: "В файле нет ни одного листа" };
+  const sheets = [], errors = [];
+  for (const name of wb.SheetNames) {
+    const g = window.XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, defval: "" });
+    const r = parseSheet(g);
+    if (r.ok) sheets.push({ sheet: name, ...r }); else errors.push(r.error);
+  }
+  if (!sheets.length) return { ok: false, error: errors[0] || "Не нашёл строку заголовка с названием и количеством" };
+  return { ok: true, sheets };
+}
 
+function parseSheet(g) {
+  const warnings = [];
   // Отчёт iiko узнаётся по строке колонок с «Код» и «Наименование»: в нём колонок «Кол-во»
   // много (приход, продажи, списания…), и нужную выбирает не имя колонки, а группа над ней.
   let hdr = g.findIndex((r) => findCol(r, /^код$/i) >= 0 && findCol(r, /наимен/i) >= 0);
@@ -394,7 +451,11 @@ export async function parseStockFile(buf) {
     if (qtyCol < 0) return { ok: false, error: "Не нашёл строку заголовка с названием и количеством" };
   }
 
-  const rows = []; let zeros = 0, blanks = 0;
+  // Нулевой и отрицательный остаток — тоже факт: ноль. Строка остаётся в документе, чтобы
+  // повторная загрузка (тест, потом день запуска) обнуляла то, что iiko считает пустым,
+  // а не оставляла прошлое количество. Минус физически невозможен — это недоучёт в iiko;
+  // сервер минус в факте и не примет, поэтому ставим 0 и показываем такие строки списком.
+  const rows = [], negatives = []; let zeros = 0, blanks = 0;
   for (let i = hdr + 1; i < g.length; i++) {
     const r = g[i];
     const name = nameCol >= 0 ? txt(r[nameCol]) : "";
@@ -402,26 +463,28 @@ export async function parseStockFile(buf) {
     if (!name && !code) continue;                 // итоговая строка отчёта и разделители
     const q = num(r[qtyCol]);
     if (q === null) { blanks++; continue; }
-    if (q === 0) { zeros++; continue; }
-    rows.push({ code, name, qty: q, store: storeCol >= 0 ? txt(r[storeCol]) : "" });
+    if (q === 0) zeros++;
+    if (q < 0) negatives.push({ code, name, qty: q });
+    rows.push({ code, name, qty: Math.max(q, 0), neg: q < 0, store: storeCol >= 0 ? txt(r[storeCol]) : "" });
   }
 
   // Склады: в отчёте iiko — из строки шапки «Склад: …», в универсальном листе — из колонки.
+  // Лист iiko с несколькими складами — сводный: остатки в строке сложены, и разложить их
+  // обратно нечем. Такой лист не отвергается, а помечается: грузить его целиком на один
+  // склад форма разрешает только после явного подтверждения.
   let stores = [];
   if (mode === "iiko") {
     for (let i = 0; i < hdr; i++) {
       const c = (g[i] || []).map(txt).find((x) => /^склад\s*:/i.test(x));
       if (c) { stores = c.replace(/^склад\s*:/i, "").split(",").map((x) => x.trim()).filter(Boolean); break; }
     }
-    // Сводный отчёт складывает остатки всех складов в одну строку — разложить их обратно
-    // нечем, поэтому такой файл не грузим вовсе, а не грузим «как-нибудь».
-    if (stores.length > 1) {
-      const n = stores.length, t = n % 10, h = n % 100;
-      const word = t === 1 && h !== 11 ? "склад" : t >= 2 && t <= 4 && (h < 12 || h > 14) ? "склада" : "складов";
-      return { ok: false, error: `В файле ${n} ${word}, остатки сводные — выгрузите отчёт по одному складу` };
-    }
   } else if (storeCol >= 0) {
     stores = [...new Set(rows.map((x) => x.store).filter(Boolean))];
   }
-  return { ok: true, mode, stores, has_store_col: mode !== "iiko" && storeCol >= 0, rows, warnings, zeros, blanks };
+  return { ok: true, mode, stores, combined: mode === "iiko" && stores.length > 1,
+    has_store_col: mode !== "iiko" && storeCol >= 0, rows, warnings, zeros, negatives, blanks };
 }
+
+// Склады в названиях сравниваются без регистра и лишних пробелов: в справочнике есть
+// «Магазин  кухни» с двойным пробелом, а iiko в шапке отчёта пишет как придётся.
+export const sameStore = (a, b) => txt(a).toLowerCase() === txt(b).toLowerCase();
