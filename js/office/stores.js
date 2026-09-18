@@ -1,5 +1,5 @@
-import { api, can } from "./api.js?v=7";
-import { el, toast, modal } from "./ui.js?v=7";
+import { api, can } from "./api.js?v=8";
+import { el, toast, modal } from "./ui.js?v=8";
 
 let root, data;
 export async function mount(r) { root = r; await load(); }
@@ -30,6 +30,7 @@ function edit(s) {
   const def = el("input", { type: "checkbox", checked: s ? s.is_default : false, disabled: ro });
   const active = el("input", { type: "checkbox", checked: s ? s.active : true, disabled: ro });
   const err = el("div", { class: "err" });
+  if (!ro) setTimeout(() => name.focus(), 0);
   m.root.append(el("label", {}, "Название"), name, el("label", {}, "Точка"), point,
     el("div", { class: "actions" }, el("label", {}, def, " склад точки по умолчанию"), el("label", {}, active, " активен")), err,
     el("div", { class: "actions" },

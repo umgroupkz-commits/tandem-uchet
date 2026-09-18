@@ -888,9 +888,65 @@ SECTIONS.sales = async (ctx) => {
   await call("office_user_save", { token: t, id: sklId, login: "zz_test_sales_sk", name: "ZZ_TEST_Кладовщик продаж", role: "storekeeper", store_ids: [S] });
   r = await call("office_doc_sales_list", { token: skl.token, date_from: "2020-03-01", date_to: "2020-03-06", point_id: "zz_test" });
   check("продажи: кладовщик своего склада видит отчёты точки", r.ok && r.rows.length === 5, r.rows && r.rows.length);
+  // 13. Отчёт «Продажи и себестоимость»: только проведённые продажи. День 1 — 5 блинов по 500
+  // (мука 5×0,2 по 100) и 2 батончика по 150 (по 50), день 3 — батончик, день 6 — 2 оладьи по 300
+  // (мука 2×0,1 по 100). День 4 не проведён (инвентаризация) и в отчёт не входит.
+  r = await call("office_doc_sales_report", { token: t, date_from: "2020-03-01", date_to: "2020-03-06", point_id: "zz_test" });
+  const mp = (r.points || []).find((x) => x.point_id === "zz_test") || {};
+  const mb = (r.items || []).find((x) => x.item_code === blin) || {}, mo = (r.items || []).find((x) => x.item_code === olad) || {};
+  check("продажи и себестоимость: по точке выручка 3550, себестоимость 270, фудкост 7,6 %",
+    r.ok && near(mp.revenue, 3550) && near(mp.cost, 270) && near(mp.margin, 3280) && near(mp.foodcost_pct, 7.61, 0.01) && mp.docs === 3, mp);
+  check("продажи и себестоимость: по позициям — блины 5 шт на 2500 с себестоимостью 100, оладьи 600/20",
+    near(mb.qty, 5) && near(mb.revenue, 2500) && near(mb.cost, 100) && near(mo.revenue, 600) && near(mo.cost, 20), { mb, mo });
+  r = await call("office_doc_sales_report", { token: skl.token, date_from: "2020-03-01", date_to: "2020-03-06" });
+  check("продажи и себестоимость: кладовщик своего склада видит свою точку", r.ok && (r.points || []).some((x) => x.point_id === "zz_test"), r);
 };
 
 // --- разделы добавляются здесь ---
+
+// Отложенные замечания подпроекта 1 (миграция 0026): поиск без «жокеров», часть БИН и телефон,
+// очистка цены, цикл групп, обрыв сессий при смене роли.
+SECTIONS.polish = async (ctx) => {
+  const t = ctx.token;
+  let r = await call("office_counteragent_save", { token: t, name: "ZZ_TEST_ИП Поиск", kind: "supplier", bin: "990101123456", phone: "+7 (701) 555-12-34" });
+  check("поиск: контрагент заведён", r.ok, r);
+  r = await call("office_counteragents_list", { token: t, q: "0101123" });
+  check("поиск: контрагент по части БИН", r.ok && r.rows.some((x) => x.name === "ZZ_TEST_ИП Поиск"), r.total);
+  r = await call("office_counteragents_list", { token: t, q: "87015551234" });
+  check("поиск: контрагент по телефону в другом написании", r.ok && r.rows.some((x) => x.name === "ZZ_TEST_ИП Поиск"), r.total);
+  r = await call("office_counteragents_list", { token: t, q: "%" });
+  check("поиск: «%» ищется буквально, а не как «всё»", r.ok && r.total === 0, r.total);
+  r = await call("office_items_search", { token: t, q: "мука%", page: 1 });
+  check("поиск: «мука%» в номенклатуре — буквально, ничего не находит", r.ok && r.total === 0, r.total);
+
+  r = await call("office_item_save", { token: t, name: "ZZ_TEST_цена", item_type: "goods", unit_id: "шт", price: 100 });
+  const code = r.code;
+  r = await call("office_item_save", { token: t, code, name: "ZZ_TEST_цена", price: "" });
+  r = await call("office_item_get", { token: t, code });
+  check("позиция: пустая цена очищает цену по умолчанию", r.ok && r.item.price === null, r.item && r.item.price);
+  r = await call("office_item_save", { token: t, code, note: "без цены в запросе" });
+  r = await call("office_item_save", { token: t, code, price: 250 });
+  r = await call("office_item_save", { token: t, code, note: "правка без цены" });
+  r = await call("office_item_get", { token: t, code });
+  check("позиция: правка без ключа цены цену не трогает", r.ok && Number(r.item.price) === 250, r.item && r.item.price);
+
+  r = await call("office_group_save", { token: t, name: "ZZ_TEST_группа А" }); const gA = r.id;
+  r = await call("office_group_save", { token: t, name: "ZZ_TEST_группа Б", parent_id: gA }); const gB = r.id;
+  r = await call("office_group_save", { token: t, id: gA, name: "ZZ_TEST_группа А", parent_id: gB });
+  check("группы: родителем нельзя сделать свою подгруппу", r.ok === false && r.error === "validation", r);
+  r = await call("office_group_save", { token: t, id: gA, name: "ZZ_TEST_группа А", parent_id: gA });
+  check("группы: группа не может быть родителем самой себе", r.ok === false && r.error === "validation", r);
+
+  r = await call("office_user_save", { token: t, login: "zz_test_role", name: "ZZ_TEST_Роль", role: "storekeeper", pin: "4321" });
+  const uid = r.id;
+  const u = await call("office_login", { login: "zz_test_role", pin: "4321" });
+  await call("office_change_pin", { token: u.token, pin: "4321" });
+  r = await call("office_me", { token: u.token });
+  check("сессии: пользователь в системе", r.ok, r);
+  await call("office_user_save", { token: t, id: uid, login: "zz_test_role", name: "ZZ_TEST_Роль", role: "accountant" });
+  r = await call("office_me", { token: u.token });
+  check("сессии: смена роли выкидывает пользователя — войти заново с новыми правами", r.ok === false && r.error === "unauthorized", r);
+};
 
 // migrate и reimport требуют TANDEM_OWNER_PIN и в "all" входят только при его наличии;
 // любой раздел кроме auth/migrate сначала прогоняет auth — ему нужен токен.
