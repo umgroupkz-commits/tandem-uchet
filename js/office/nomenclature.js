@@ -1,5 +1,5 @@
-import { api, can } from "./api.js?v=6";
-import { el, fmt, toast, debounce, modal } from "./ui.js?v=6";
+import { api, can } from "./api.js?v=7";
+import { el, fmt, toast, debounce, modal } from "./ui.js?v=7";
 
 const TYPES = { goods: "товар", dish: "блюдо", prepared: "полуфабрикат", service: "услуга" };
 let groups = [], state = { q: "", group_id: "", item_type: "", active: "true", page: 1 };

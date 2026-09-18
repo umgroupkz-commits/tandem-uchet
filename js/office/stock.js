@@ -1,11 +1,14 @@
-import { api, session } from "./api.js?v=6";
-import { el, fmt, toast, debounce, modal, confirmDlg } from "./ui.js?v=6";
+import { api, session } from "./api.js?v=7";
+import { el, fmt, toast, debounce, modal, confirmDlg } from "./ui.js?v=7";
 
-const TYPES = { invoice_in: "Приход", transfer: "Перемещение", writeoff: "Списание", production: "Производство", inventory: "Инвентаризация" };
+const TYPES = { invoice_in: "Приход", transfer: "Перемещение", writeoff: "Списание", production: "Производство", inventory: "Инвентаризация", sale: "Продажа" };
+// Продажу заводит отчёт точки, а не человек: в «+ Новый документ» её нет.
+const MANUAL = Object.keys(TYPES).filter((k) => k !== "sale");
 const REASONS = { spoilage: "порча", tasting: "проработка", staff_meals: "питание персонала", other: "прочее" };
 const perms = () => (session() && session().permissions) || [];
 const canDoc = (type) => perms().includes("doc:" + type + ":edit");
-const canAnyDoc = () => Object.keys(TYPES).some(canDoc);
+const canAnyDoc = () => MANUAL.some(canDoc);
+const canSales = () => perms().includes("doc:sale:view");
 let root, stores = [], state = { tab: "docs", doc_type: "", store_id: "", status: "", q: "", date_from: "", date_to: "", page: 1 };
 let table, pager;
 // Список складов держим полным: выключенный склад должен читаться в карточке старого
@@ -30,14 +33,16 @@ function drawShell() {
   root.innerHTML = "";
   root.append(el("div", { class: "tabs" },
     el("button", { class: state.tab === "docs" ? "" : "ghost", onclick: () => { state.tab = "docs"; drawShell(); loadDocs(); } }, "Документы"),
-    el("button", { class: state.tab === "bal" ? "" : "ghost", onclick: () => { state.tab = "bal"; drawShell(); loadBalances(); } }, "Остатки")));
+    el("button", { class: state.tab === "bal" ? "" : "ghost", onclick: () => { state.tab = "bal"; drawShell(); loadBalances(); } }, "Остатки"),
+    canSales() ? el("button", { class: state.tab === "sales" ? "" : "ghost", onclick: () => { state.tab = "sales"; drawShell(); loadSales(); } }, "Продажи") : null));
   if (state.tab === "bal") { root.append(el("div", { id: "bal-root" })); return; }
+  if (state.tab === "sales") { root.append(el("div", { id: "sales-root" })); return; }
   // Роли без единого doc:*:edit (пока таких нет, но право снимается настройкой) видят
   // журнал и остатки, но пустого выпадающего списка «+ Новый документ…» им не показываем.
   const newBtn = canAnyDoc()
     ? el("select", { onchange: (e) => { if (e.target.value) { editDoc(null, e.target.value); e.target.value = ""; } } },
         el("option", { value: "" }, "+ Новый документ…"),
-        ...Object.entries(TYPES).filter(([k]) => canDoc(k)).map(([k, v]) => el("option", { value: k }, v)))
+        ...MANUAL.filter(canDoc).map((k) => el("option", { value: k }, TYPES[k])))
     : null;
   table = el("table"); pager = el("div", { class: "pager" });
   root.append(el("div", { class: "tools" },
@@ -64,7 +69,8 @@ async function loadDocs() {
   table.append(el("tr", {}, ...["Номер", "Тип", "Дата", "Склады / поставщик", "Сумма", "Статус"].map((h, i) => el("th", { class: i === 4 ? "num" : "" }, h))));
   for (const d of r.rows) {
     const who = d.doc_type === "invoice_in" ? `${d.counteragent_name || ""} → ${d.store_to_name || ""}`
-      : d.doc_type === "transfer" ? `${d.store_from_name || ""} → ${d.store_to_name || ""}` : (d.store_from_name || "");
+      : d.doc_type === "transfer" ? `${d.store_from_name || ""} → ${d.store_to_name || ""}`
+      : d.doc_type === "sale" ? `${d.store_from_name || ""} · ${d.comment || ""}` : (d.store_from_name || "");
     table.append(el("tr", { class: "row", onclick: () => editDoc(d.id) },
       el("td", {}, d.number), el("td", {}, TYPES[d.doc_type] || d.doc_type), el("td", {}, d.doc_date), el("td", {}, who),
       el("td", { class: "num" }, d.total_sum != null ? fmt(d.total_sum) : ""),
@@ -82,7 +88,8 @@ async function editDoc(id, newType) {
   let doc = { doc_type: newType, doc_date: new Date().toISOString().slice(0, 10), status: "draft", lines: [], consume: [] };
   if (id) { const r = await api("doc_get", { id }); if (!r.ok) { toast(r.message, "bad"); return; } doc = r.doc; }
   const type = doc.doc_type, posted = doc.status === "posted";
-  const ro = posted || !canDoc(type);
+  const isSale = type === "sale";
+  const ro = posted || !canDoc(type) || isSale;
   const m = modal(`${TYPES[type]} ${doc.number || ""}`); m.root.style.maxWidth = "960px";
   // В новом документе выбирать можно только действующие склады; в уже заведённом
   // список полный, иначе выключенный позже склад пропал бы из карточки вместе с именем.
@@ -115,8 +122,12 @@ async function editDoc(id, newType) {
   if (type === "writeoff") head.append(el("div", {}, el("label", {}, "Склад"), f.from), el("div", {}, el("label", {}, "Причина"), f.reason));
   if (type === "production") head.append(el("div", {}, el("label", {}, "Склад кухни (расход и выпуск)"), f.from));
   if (type === "inventory") head.append(el("div", {}, el("label", {}, "Склад"), f.from));
-  head.append(el("div", {}, el("label", {}, "Комментарий"), f.comment));
+  if (isSale) head.append(el("div", {}, el("label", {}, "Склад точки"), f.from));
+  head.append(el("div", {}, el("label", {}, isSale ? "Источник" : "Комментарий"), f.comment));
   m.root.append(head);
+  if (isSale) m.root.append(el("div", { class: "dim", style: "margin-top:6px" },
+    "Документ ведёт отчёт точки: он меняется, когда точка правит отчёт. Руками его не правят: если отчёт правили, во вкладке «Продажи» есть «Провести продажи за период»."));
+  if (doc.sync_note) m.root.append(el("div", { class: "warnbox", style: "margin-top:8px" }, doc.sync_note));
   // строки
   const lines = doc.lines.map((l) => ({ ...l }));
   const tbl = el("table"); const tot = el("div", { class: "tot" });
@@ -135,12 +146,12 @@ async function editDoc(id, newType) {
         c.td.textContent = fmt(q * p); sum += q * p;
       } else sum += Number(c.l.sum || 0);
     }
-    tot.innerHTML = ""; tot.append(el("span", {}, posted ? "Сумма документа" : (isIn ? "Сумма" : "Строк")), el("span", {}, posted || isIn ? fmt(posted ? doc.total_sum : sum) + " ₸" : String(lines.length)));
+    tot.innerHTML = ""; tot.append(el("span", {}, posted ? (isSale ? "Себестоимость проданного" : "Сумма документа") : (isIn ? "Сумма" : "Строк")), el("span", {}, posted || isIn ? fmt(posted ? doc.total_sum : sum) + " ₸" : String(lines.length)));
   }
   function drawLines() {
     const ae = document.activeElement; const keep = ae && ae.dataset && ae.dataset.li != null ? { li: ae.dataset.li, key: ae.dataset.key } : null;
     tbl.innerHTML = ""; sumCells = [];
-    const cols = ["Позиция", "Ед.", isInv ? "Факт" : "Кол-во"]; if (isInv && posted) cols.push("Расчёт", "Разница"); if (isIn) cols.push("Цена", "Сумма"); if (posted && !isIn && !isInv) cols.push("Себест.", "Сумма"); if (isInv && posted) cols.push("Сумма"); cols.push("");
+    const cols = ["Позиция", "Ед.", isInv ? "Факт" : "Кол-во"]; if (isInv && posted) cols.push("Расчёт", "Разница"); if (isIn) cols.push("Цена", "Сумма"); if (posted && !isIn && !isInv) cols.push(isSale ? "Цена продажи" : "Себест.", isSale ? "Выручка" : "Сумма"); if (isInv && posted) cols.push("Сумма"); cols.push("");
     tbl.append(el("tr", {}, ...cols.map((h, i) => el("th", { class: i >= 2 ? "num" : "" }, h))));
     lines.forEach((l, idx) => {
       const q = Number(isInv ? l.fact_qty : l.qty) || 0, p = Number(l.price) || 0;
@@ -159,7 +170,7 @@ async function editDoc(id, newType) {
   drawLines();
   // Итог загрузки из файла живёт под таблицей: сводка и список ненайденных строк.
   const warn = el("div", { hidden: true });
-  m.root.append(el("h2", { style: "margin-top:14px" }, isInv ? "Позиции и факт" : (type === "production" ? "Выпуск" : "Строки")), tbl, tot, warn);
+  m.root.append(el("h2", { style: "margin-top:14px" }, isInv ? "Позиции и факт" : (type === "production" ? "Выпуск" : isSale ? "Продано по отчёту" : "Строки")), tbl, tot, warn);
 
   async function fillFromBalances() {
     const st = f.from.value; if (!st) { toast("Сначала выберите склад", "bad"); return; }
@@ -313,7 +324,7 @@ async function editDoc(id, newType) {
   if (doc.consume && doc.consume.length) {
     const ct = el("table"); ct.append(el("tr", {}, ...["Расход сырья", "Ед.", "Кол-во", "Себест.", "Сумма"].map((h, i) => el("th", { class: i >= 2 ? "num" : "" }, h))));
     for (const c of doc.consume) ct.append(el("tr", {}, el("td", {}, c.name), el("td", {}, c.unit_id), el("td", { class: "num" }, fmt(c.qty)), el("td", { class: "num" }, fmt(c.price)), el("td", { class: "num" }, fmt(c.sum))));
-    m.root.append(el("h2", { style: "margin-top:14px" }, "Списано по техкартам"), ct);
+    m.root.append(el("h2", { style: "margin-top:14px" }, isSale ? "Списано со склада (по техкартам и как есть)" : "Списано по техкартам"), ct);
   }
   const err = el("div", { class: "err" }); const actions = el("div", { class: "actions" });
   const payload = () => ({ id: doc.id, doc_type: type, doc_date: f.date.value, store_from: f.from.value || null, store_to: f.to.value || null,
@@ -332,14 +343,14 @@ async function editDoc(id, newType) {
       el("button", { class: "ghost", onclick: cm.close }, "Отмена")));
   }
   if (!ro) actions.append(el("button", { class: "ghost", onclick: async () => { if (await save()) { toast("Черновик сохранён"); m.close(); loadDocs(); } } }, "Сохранить черновик"), el("button", { onclick: post }, "Провести"));
-  if (posted && canDoc(type)) actions.append(el("button", { class: "ghost", onclick: async () => {
+  if (posted && canDoc(type) && !isSale) actions.append(el("button", { class: "ghost", onclick: async () => {
     if (!confirmDlg("Отменить проведение?")) return;
     const r = await api("doc_unpost", { id: doc.id }); if (!r.ok) { err.textContent = r.message; return; }
     const hasWarn = r.warnings && r.warnings.length;
     toast("Проведение отменено" + (hasWarn ? " — в минусе: " + r.warnings.map((w) => `${w.name} (${w.store_name}) ${fmt(w.balance_after)}`).join("; ") : ""), hasWarn ? "bad" : "ok");
     m.close(); loadDocs();
   } }, "Отменить проведение"));
-  if (doc.id && !posted && canDoc(type)) actions.append(el("button", { class: "ghost", onclick: async () => { if (!confirmDlg("Удалить черновик?")) return; const r = await api("doc_delete", { id: doc.id }); if (!r.ok) { err.textContent = r.message; return; } toast("Удалено"); m.close(); loadDocs(); } }, "Удалить"));
+  if (doc.id && !posted && canDoc(type) && !isSale) actions.append(el("button", { class: "ghost", onclick: async () => { if (!confirmDlg("Удалить черновик?")) return; const r = await api("doc_delete", { id: doc.id }); if (!r.ok) { err.textContent = r.message; return; } toast("Удалено"); m.close(); loadDocs(); } }, "Удалить"));
   actions.append(el("button", { class: "ghost", onclick: m.close }, ro ? "Закрыть" : "Отмена"));
   m.root.append(err, actions);
 }
@@ -383,6 +394,54 @@ async function showMoves(x) {
 }
 
 // ---------- разбор файла остатков ----------
+// ---------- продажи: отчёты точек и их складские документы ----------
+const iso = (d) => d.toISOString().slice(0, 10);
+const sales = { date_from: iso(new Date(Date.now() - 7 * 864e5)), date_to: iso(new Date()), point_id: "" };
+const SALE_STATE = {
+  posted: ["проведена", "ok"], none: ["нет продаж с кодом", ""], no_store: ["у точки нет склада", "bad"],
+  locked: ["изменён после инвентаризации", "bad"], draft: ["не проведена", "bad"],
+};
+async function loadSales() {
+  const host = document.getElementById("sales-root"); if (!host) return;
+  host.innerHTML = "";
+  const r = await api("doc_sales_list", { date_from: sales.date_from, date_to: sales.date_to, point_id: sales.point_id || null });
+  if (!r.ok) { host.append(el("div", { class: "err" }, r.message)); return; }
+  const points = {}; for (const x of r.rows) points[x.point_id] = x.point_name;
+  const canSync = perms().includes("doc:sale:edit");
+  const syncBtn = canSync ? el("button", { onclick: async (e) => {
+    e.target.disabled = true;
+    const s = await api("doc_sales_sync", { date_from: sales.date_from, date_to: sales.date_to, point_id: sales.point_id || null });
+    e.target.disabled = false;
+    if (!s.ok) { toast(s.message, "bad"); return; }
+    const c = s.counts || {};
+    toast(`Проведено ${c.posted || 0}, без изменений ${c.unchanged || 0}, без склада ${c.no_store || 0}, заблокировано ${c.locked || 0}`
+      + (c.error ? `, ошибок ${c.error}` : ""));
+    loadSales();
+  } }, "Провести продажи за период") : null;
+  host.append(el("div", { class: "tools" },
+    el("input", { type: "date", title: "с", value: sales.date_from, onchange: (e) => { sales.date_from = e.target.value; loadSales(); } }),
+    el("span", { class: "dim" }, "—"),
+    el("input", { type: "date", title: "по", value: sales.date_to, onchange: (e) => { sales.date_to = e.target.value; loadSales(); } }),
+    sel({ "": "все точки", ...points }, sales.point_id, (v) => { sales.point_id = v; loadSales(); }),
+    syncBtn));
+  const t = el("table");
+  t.append(el("tr", {}, ...["Дата", "Точка", "Склад", "Строк", "Деньги в отчёте", "Продано", "Себестоимость", "Документ", "Состояние"]
+    .map((h, i) => el("th", { class: i >= 3 && i <= 6 ? "num" : "" }, h))));
+  for (const x of r.rows) {
+    const [label, cls] = SALE_STATE[x.state] || [x.state, ""];
+    t.append(el("tr", { class: x.doc_id ? "row" : "", onclick: x.doc_id ? () => editDoc(x.doc_id) : null },
+      el("td", {}, x.report_date), el("td", {}, x.point_name), el("td", {}, x.store_name || el("span", { class: "dim" }, "—")),
+      el("td", { class: "num" }, String(x.lines)), el("td", { class: "num" }, fmt(x.money)),
+      el("td", { class: "num" }, x.sale_sum != null ? fmt(x.sale_sum) : ""), el("td", { class: "num" }, x.cost != null ? fmt(x.cost) : ""),
+      el("td", {}, x.number || ""),
+      el("td", {}, el("span", { class: "tag " + cls }, label), x.sync_note ? el("div", { class: "dim", style: "font-size:12px;max-width:320px" }, x.sync_note) : null)));
+  }
+  if (!r.rows.length) t.append(el("tr", {}, el("td", { colspan: 9, class: "dim" }, "За период отчётов точек нет")));
+  host.append(el("div", { class: "card", style: "padding:0;overflow:auto" }, t),
+    el("div", { class: "dim", style: "margin-top:8px" },
+      "Продажа проводится сама, когда точка сохраняет отчёт. «Провести продажи за период» нужна, если склад точке привязали позже или отчёт правили."));
+}
+
 // SheetJS тянем один раз и только когда файл действительно выбрали: библиотека тяжёлая,
 // а в бэк-офис заходят не ради инвентаризации.
 let xlsxLoading = null;
