@@ -1,5 +1,5 @@
 // Вызовы бэк-офиса: токен сессии в payload, хранение сессии в localStorage.
-export const BUILD = 5;
+export const BUILD = 6;
 const API = "https://qeehxcnnuzuwskznhdyg.supabase.co/functions/v1/uchet";
 const KEY = "tandem_office";
 let S = null;

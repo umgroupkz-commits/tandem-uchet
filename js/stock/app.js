@@ -1,6 +1,6 @@
-import { api, session, setSession } from "../office/api.js?v=5";
-import { el, toast } from "../office/ui.js?v=5";
-import { ask, clearDraftsAll } from "./common.js?v=3";
+import { api, session, setSession } from "../office/api.js?v=6";
+import { el, toast } from "../office/ui.js?v=6";
+import { ask, clearDraftsAll } from "./common.js?v=4";
 
 const $ = (id) => document.getElementById(id);
 const SCENARIOS = [
@@ -8,7 +8,9 @@ const SCENARIOS = [
   { id: "inventory", title: "Инвентаризация", hint: "пересчёт склада", perm: "doc:inventory:edit" },
   { id: "transfer", title: "Перемещение", hint: "на другой склад", perm: "doc:transfer:edit" },
 ];
-const ctx = { store: null, stores: [], home, result };
+// stores — все действующие склады (куда перемещать), mine — те, от имени которых работает
+// пользователь: закреплённые за ним в бэк-офисе, а без закрепления — все.
+const ctx = { store: null, stores: [], mine: [], home, result };
 function show(id) { for (const s of ["login", "pinchange", "shell"]) $(s).hidden = s !== id; }
 const perms = () => (session() && session().permissions) || [];
 
@@ -49,6 +51,11 @@ async function start() {
     try {
       const r = await ask("stores_list", {});
       ctx.stores = (r.stores || []).filter((x) => x.active);
+      // Склады пользователя спрашиваются у сервера заново: в сохранённой сессии их может
+      // не быть (вход до обновления) или они уже поменялись.
+      const me = await ask("me", {});
+      const ids = (me.user && me.user.store_ids) || [];
+      ctx.mine = ids.length ? ctx.stores.filter((x) => ids.includes(x.id)) : ctx.stores;
     } catch (e) {
       const main = $("main"); main.innerHTML = "";
       main.append(el("div", { class: "card" }, el("div", { class: "err" }, "Список складов не загрузился: " + e.message),
@@ -58,7 +65,7 @@ async function start() {
     }
   }
   let saved = null; try { saved = localStorage.getItem("tandem_stock_store"); } catch {}
-  ctx.store = ctx.stores.find((x) => x.id === saved) || null;
+  ctx.store = ctx.mine.find((x) => x.id === saved) || (ctx.mine.length === 1 ? ctx.mine[0] : null);
   if (!ctx.store) { chooseStore(); return; }
   home();
 }
@@ -67,7 +74,12 @@ function chooseStore() {
   $("storename").textContent = "Выберите склад";
   const main = $("main"); main.innerHTML = "";
   const list = el("div", { class: "menu" });
-  for (const s of ctx.stores) list.append(el("button", { type: "button", onclick: () => { ctx.store = s; try { localStorage.setItem("tandem_stock_store", s.id); } catch {} home(); } },
+  if (!ctx.mine.length) {
+    main.append(el("div", { class: "card" }, el("div", { class: "err" }, "За вами не закреплён ни один действующий склад"),
+      el("div", { class: "dim", style: "margin-top:6px" }, "Попросите администратора выбрать склады в карточке пользователя.")));
+    return;
+  }
+  for (const s of ctx.mine) list.append(el("button", { type: "button", onclick: () => { ctx.store = s; try { localStorage.setItem("tandem_stock_store", s.id); } catch {} home(); } },
     s.name, el("span", {}, s.point_name || "без точки")));
   main.append(el("div", { class: "card" }, el("div", { class: "dim" }, "Склад запомнится на этом телефоне"), list));
 }
@@ -87,7 +99,7 @@ function home() {
 async function openScenario(id) {
   const main = $("main"); main.innerHTML = '<div class="dim">Загрузка…</div>';
   try {
-    const mod = await import(`./${id}.js?v=3`);
+    const mod = await import(`./${id}.js?v=4`);
     main.innerHTML = ""; await mod.mount(main, ctx);
   } catch (e) { main.innerHTML = ""; main.append(el("div", { class: "err" }, "Сценарий не открылся: " + e.message)); }
 }

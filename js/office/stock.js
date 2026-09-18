@@ -1,5 +1,5 @@
-import { api, session } from "./api.js?v=5";
-import { el, fmt, toast, debounce, modal, confirmDlg } from "./ui.js?v=5";
+import { api, session } from "./api.js?v=6";
+import { el, fmt, toast, debounce, modal, confirmDlg } from "./ui.js?v=6";
 
 const TYPES = { invoice_in: "Приход", transfer: "Перемещение", writeoff: "Списание", production: "Производство", inventory: "Инвентаризация" };
 const REASONS = { spoilage: "порча", tasting: "проработка", staff_meals: "питание персонала", other: "прочее" };
@@ -12,10 +12,16 @@ let table, pager;
 // документа и в остатках. Выбирать из него можно только действующие — active().
 const active = () => stores.filter((s) => s.active);
 const opts = (list) => Object.fromEntries(list.map((s) => [s.id, s.name]));
+// Склады, закреплённые за пользователем (пусто — все). Сервер проверяет сам; здесь лишь
+// не предлагаем то, что он отклонит.
+let myIds = [];
+const mine = (list) => myIds.length ? list.filter((s) => myIds.includes(s.id)) : list;
 
 export async function mount(r) {
   root = r; state.page = 1;
   stores = (await api("stores_list", {})).stores || [];
+  const me = await api("me", {});
+  myIds = (me.ok && me.user && me.user.store_ids) || [];
   drawShell();
   await loadDocs();
 }
@@ -80,11 +86,14 @@ async function editDoc(id, newType) {
   const m = modal(`${TYPES[type]} ${doc.number || ""}`); m.root.style.maxWidth = "960px";
   // В новом документе выбирать можно только действующие склады; в уже заведённом
   // список полный, иначе выключенный позже склад пропал бы из карточки вместе с именем.
+  // «Свой» склад документа (приход — получатель, прочие — источник) — только из закреплённых;
+  // куда перемещать — любой действующий.
   const storeOpts = { "": "— склад —", ...opts(doc.id ? stores : active()) };
+  const ownOpts = { "": "— склад —", ...opts(doc.id ? stores : mine(active())) };
   const f = {
     date: el("input", { type: "date", value: doc.doc_date, readonly: ro }),
-    from: sel(storeOpts, doc.store_from || "", () => {}, ro),
-    to: sel(storeOpts, doc.store_to || "", () => {}, ro),
+    from: sel(ownOpts, doc.store_from || "", () => {}, ro),
+    to: sel(type === "invoice_in" ? ownOpts : storeOpts, doc.store_to || "", () => {}, ro),
     reason: sel({ "": "— причина —", ...REASONS }, doc.reason || "", () => {}, ro),
     comment: el("input", { value: doc.comment || "", readonly: ro }),
     caId: doc.counteragent_id || null,
@@ -346,7 +355,7 @@ async function loadBalances() {
     el("td", { class: "num" + (Number(x.qty) < 0 ? " bad" : "") }, fmt(x.qty)), el("td", { class: "num" }, fmt(x.avg_cost)), el("td", { class: "num" }, fmt(x.sum))));
   if (!r.rows.length) t.append(el("tr", {}, el("td", { colspan: 6, class: "dim" }, "Остатков нет — проведите первую инвентаризацию или приход")));
   host.append(el("div", { class: "tools" },
-      sel({ "": "все склады", ...opts(stores) }, bal.store_id, (v) => { bal.store_id = v; bal.page = 1; loadBalances(); }),
+      sel({ "": myIds.length ? "мои склады" : "все склады", ...opts(mine(stores)) }, bal.store_id, (v) => { bal.store_id = v; bal.page = 1; loadBalances(); }),
       el("input", { placeholder: "Поиск позиции", value: bal.q, oninput: debounce((e) => { bal.q = e.target.value; bal.page = 1; loadBalances(); }, 300) }),
       el("label", { style: "margin:0" }, el("input", { type: "checkbox", checked: bal.nonzero, onchange: (e) => { bal.nonzero = e.target.checked; loadBalances(); } }), " только с остатком"),
       el("span", { class: "dim" }, `итого ${fmt(r.total_sum)} ₸`),
