@@ -34,9 +34,11 @@ function drawShell() {
   root.append(el("div", { class: "tabs" },
     el("button", { class: state.tab === "docs" ? "" : "ghost", onclick: () => { state.tab = "docs"; drawShell(); loadDocs(); } }, "Документы"),
     el("button", { class: state.tab === "bal" ? "" : "ghost", onclick: () => { state.tab = "bal"; drawShell(); loadBalances(); } }, "Остатки"),
-    canSales() ? el("button", { class: state.tab === "sales" ? "" : "ghost", onclick: () => { state.tab = "sales"; drawShell(); loadSales(); } }, "Продажи") : null));
+    canSales() ? el("button", { class: state.tab === "sales" ? "" : "ghost", onclick: () => { state.tab = "sales"; drawShell(); loadSales(); } }, "Продажи") : null,
+    el("button", { class: state.tab === "turn" ? "" : "ghost", onclick: () => { state.tab = "turn"; drawShell(); loadTurnover(); } }, "Ведомость")));
   if (state.tab === "bal") { root.append(el("div", { id: "bal-root" })); return; }
   if (state.tab === "sales") { root.append(el("div", { id: "sales-root" })); return; }
+  if (state.tab === "turn") { root.append(el("div", { id: "turn-root" })); return; }
   // Роли без единого doc:*:edit (пока таких нет, но право снимается настройкой) видят
   // журнал и остатки, но пустого выпадающего списка «+ Новый документ…» им не показываем.
   const newBtn = canAnyDoc()
@@ -400,6 +402,7 @@ const sales = { date_from: iso(new Date(Date.now() - 7 * 864e5)), date_to: iso(n
 const SALE_STATE = {
   posted: ["проведена", "ok"], none: ["нет продаж с кодом", ""], no_store: ["у точки нет склада", "bad"],
   locked: ["изменён после инвентаризации", "bad"], draft: ["не проведена", "bad"],
+  pending: ["не проведена — нажмите «Провести продажи за период»", "bad"], stale: ["устарела — проведите заново", "bad"],
 };
 async function loadSales() {
   const host = document.getElementById("sales-root"); if (!host) return;
@@ -414,8 +417,8 @@ async function loadSales() {
     e.target.disabled = false;
     if (!s.ok) { toast(s.message, "bad"); return; }
     const c = s.counts || {};
-    toast(`Проведено ${c.posted || 0}, без изменений ${c.unchanged || 0}, без склада ${c.no_store || 0}, заблокировано ${c.locked || 0}`
-      + (c.error ? `, ошибок ${c.error}` : ""));
+    toast(`Проведено ${c.posted || 0}, без изменений ${c.unchanged || 0}, без продаж ${c.empty || 0}, без склада ${c.no_store || 0}, заблокировано ${c.locked || 0}`
+      + (c.error ? `, ошибок ${c.error}` : ""), c.error || c.locked ? "bad" : undefined);
     loadSales();
   } }, "Провести продажи за период") : null;
   host.append(el("div", { class: "tools" },
@@ -440,6 +443,52 @@ async function loadSales() {
   host.append(el("div", { class: "card", style: "padding:0;overflow:auto" }, t),
     el("div", { class: "dim", style: "margin-top:8px" },
       "Продажа проводится сама, когда точка сохраняет отчёт. «Провести продажи за период» нужна, если склад точке привязали позже или отчёт правили."));
+}
+
+// ---------- оборотная ведомость склада ----------
+// Аналог «Расширенной оборотно-сальдовой ведомости» iiko: по позиции остаток на начало,
+// обороты по видам документов и остаток на конец. Нужна для сверки с iiko в параллельной работе.
+const turn = { store_id: "", date_from: iso(new Date(new Date().getFullYear(), new Date().getMonth(), 1, 12)), date_to: iso(new Date()), q: "" };
+const TURN_COLS = [["start_qty", "Начало"], ["income", "Приход"], ["transfer_in", "Перемещ. +"], ["transfer_out", "Перемещ. −"],
+  ["production_in", "Произв. +"], ["production_out", "Произв. −"], ["sales", "Продажи"], ["writeoff", "Списания"],
+  ["inventory", "Инвент. ±"], ["end_qty", "Конец"], ["end_sum", "Сумма на конец"]];
+async function loadTurnover() {
+  const host = document.getElementById("turn-root"); if (!host) return;
+  host.innerHTML = "";
+  const storeSel = sel({ "": myIds.length ? "мои склады вместе" : "все склады вместе", ...opts(mine(stores)) }, turn.store_id, (v) => { turn.store_id = v; loadTurnover(); });
+  const csvBtn = el("button", { class: "ghost" }, "Скачать CSV");
+  host.append(el("div", { class: "tools" }, storeSel,
+    el("input", { type: "date", title: "с", value: turn.date_from, onchange: (e) => { turn.date_from = e.target.value; loadTurnover(); } }),
+    el("span", { class: "dim" }, "—"),
+    el("input", { type: "date", title: "по", value: turn.date_to, onchange: (e) => { turn.date_to = e.target.value; loadTurnover(); } }),
+    el("input", { placeholder: "Позиция или код", value: turn.q, oninput: debounce((e) => { turn.q = e.target.value; loadTurnover(); }, 400) }),
+    csvBtn));
+  const wait = el("div", { class: "dim" }, "Считаю…"); host.append(wait);
+  const r = await api("stock_turnover_report", { store_id: turn.store_id || null, date_from: turn.date_from, date_to: turn.date_to, q: turn.q });
+  wait.remove();
+  if (!r.ok) { host.append(el("div", { class: "err" }, r.message)); return; }
+  const t = el("table");
+  t.append(el("tr", {}, el("th", {}, "Позиция"), el("th", {}, "Ед."), ...TURN_COLS.map(([, h]) => el("th", { class: "num" }, h))));
+  let group = null; const tot = { start_sum: 0, income_sum: 0, sales_sum: 0, writeoff_sum: 0, inventory_sum: 0, end_sum: 0 };
+  for (const x of r.rows) {
+    if ((x.group_name || "") !== group) { group = x.group_name || ""; t.append(el("tr", {}, el("td", { colspan: 2 + TURN_COLS.length, class: "dim", style: "font-weight:700;padding-top:10px" }, group || "без группы"))); }
+    for (const k of Object.keys(tot)) tot[k] += Number(x[k] || 0);
+    t.append(el("tr", {}, el("td", {}, x.name), el("td", {}, x.unit_id || ""),
+      ...TURN_COLS.map(([k]) => { const v = Number(x[k] || 0); return el("td", { class: "num" + (k === "end_qty" && v < 0 ? " bad" : "") }, v ? fmt(v) : ""); })));
+  }
+  if (!r.rows.length) t.append(el("tr", {}, el("td", { colspan: 2 + TURN_COLS.length, class: "dim" }, "За период движений нет")));
+  host.append(el("div", { class: "card", style: "padding:0;overflow:auto" }, t),
+    el("div", { class: "tot" }, el("span", {}, `Позиций ${r.rows.length} · сумма на начало ${fmt(tot.start_sum)} · приход ${fmt(tot.income_sum)} · продажи ${fmt(tot.sales_sum)} · списания ${fmt(tot.writeoff_sum)} · инвентаризация ${fmt(tot.inventory_sum)}`),
+      el("span", {}, `на конец ${fmt(tot.end_sum)} ₸`)),
+    el("div", { class: "dim", style: "margin-top:8px" }, "Суммы — по себестоимости движений, как «Сумма с/н» в оборотной ведомости iiko. Расход показан положительными числами."));
+  csvBtn.onclick = () => {
+    const head = ["Код", "Позиция", "Ед.", "Группа", ...TURN_COLS.map(([, h]) => h)];
+    const lines = [head, ...r.rows.map((x) => [x.item_code, x.name, x.unit_id || "", x.group_name || "", ...TURN_COLS.map(([k]) => String(x[k] ?? 0).replace(".", ","))])]
+      .map((row) => row.map((v) => /[;"\n]/.test(String(v)) ? '"' + String(v).replace(/"/g, '""') + '"' : String(v)).join(";")).join("\r\n");
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob(["\ufeff" + lines], { type: "text/csv;charset=utf-8" }));
+    a.download = `ведомость ${turn.date_from}—${turn.date_to}.csv`; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  };
 }
 
 // SheetJS тянем один раз и только когда файл действительно выбрали: библиотека тяжёлая,
