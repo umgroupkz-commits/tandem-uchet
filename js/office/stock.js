@@ -440,6 +440,25 @@ async function loadSales() {
       el("td", {}, el("span", { class: "tag " + cls }, label), x.sync_note ? el("div", { class: "dim", style: "font-size:12px;max-width:320px" }, x.sync_note) : null)));
   }
   if (!r.rows.length) t.append(el("tr", {}, el("td", { colspan: 9, class: "dim" }, "За период отчётов точек нет")));
+  // Итоги по проведённым продажам: выручка, себестоимость, валовая прибыль, фудкост.
+  const sum = await api("doc_sales_report", { date_from: sales.date_from, date_to: sales.date_to, point_id: sales.point_id || null });
+  if (sum.ok && sum.points.length) {
+    const pct = (v) => v == null ? "" : fmt(v) + " %";
+    const pt = el("table");
+    pt.append(el("tr", {}, ...["Точка", "Продаж", "Выручка", "Себестоимость", "Валовая прибыль", "Фудкост"].map((h, i) => el("th", { class: i ? "num" : "" }, h))));
+    for (const x of sum.points) pt.append(el("tr", {}, el("td", {}, x.point_name), el("td", { class: "num" }, String(x.docs)),
+      el("td", { class: "num" }, fmt(x.revenue)), el("td", { class: "num" }, fmt(x.cost)), el("td", { class: "num" }, fmt(x.margin)), el("td", { class: "num" }, pct(x.foodcost_pct))));
+    const it = el("table");
+    it.append(el("tr", {}, ...["Позиция", "Кол-во", "Выручка", "Себестоимость", "Прибыль", "Фудкост"].map((h, i) => el("th", { class: i ? "num" : "" }, h))));
+    for (const x of sum.items.slice(0, 30)) it.append(el("tr", {}, el("td", {}, x.name), el("td", { class: "num" }, fmt(x.qty) + " " + (x.unit_id || "")),
+      el("td", { class: "num" }, fmt(x.revenue)), el("td", { class: "num" }, fmt(x.cost)), el("td", { class: "num" }, fmt(x.margin)),
+      el("td", { class: "num" }, x.foodcost_pct == null ? "" : el("span", { class: "tag " + (x.foodcost_pct > 35 ? "bad" : "ok") }, pct(x.foodcost_pct)))));
+    host.append(el("h2", { style: "margin-top:4px" }, "Итоги по проведённым продажам"),
+      el("div", { class: "card", style: "padding:0;overflow:auto" }, pt),
+      el("details", { style: "margin:8px 0 14px" }, el("summary", {}, `Позиции по выручке (${Math.min(sum.items.length, 30)} из ${sum.items.length})`),
+        el("div", { class: "card", style: "padding:0;overflow:auto;margin-top:8px" }, it)),
+      el("h2", {}, "Отчёты точек"));
+  }
   host.append(el("div", { class: "card", style: "padding:0;overflow:auto" }, t),
     el("div", { class: "dim", style: "margin-top:8px" },
       "Продажа проводится сама, когда точка сохраняет отчёт. «Провести продажи за период» нужна, если склад точке привязали позже или отчёт правили."));

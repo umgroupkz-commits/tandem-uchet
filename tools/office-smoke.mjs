@@ -888,6 +888,18 @@ SECTIONS.sales = async (ctx) => {
   await call("office_user_save", { token: t, id: sklId, login: "zz_test_sales_sk", name: "ZZ_TEST_Кладовщик продаж", role: "storekeeper", store_ids: [S] });
   r = await call("office_doc_sales_list", { token: skl.token, date_from: "2020-03-01", date_to: "2020-03-06", point_id: "zz_test" });
   check("продажи: кладовщик своего склада видит отчёты точки", r.ok && r.rows.length === 5, r.rows && r.rows.length);
+  // 13. Отчёт «Продажи и себестоимость»: только проведённые продажи. День 1 — 5 блинов по 500
+  // (мука 5×0,2 по 100) и 2 батончика по 150 (по 50), день 3 — батончик, день 6 — 2 оладьи по 300
+  // (мука 2×0,1 по 100). День 4 не проведён (инвентаризация) и в отчёт не входит.
+  r = await call("office_doc_sales_report", { token: t, date_from: "2020-03-01", date_to: "2020-03-06", point_id: "zz_test" });
+  const mp = (r.points || []).find((x) => x.point_id === "zz_test") || {};
+  const mb = (r.items || []).find((x) => x.item_code === blin) || {}, mo = (r.items || []).find((x) => x.item_code === olad) || {};
+  check("продажи и себестоимость: по точке выручка 3550, себестоимость 270, фудкост 7,6 %",
+    r.ok && near(mp.revenue, 3550) && near(mp.cost, 270) && near(mp.margin, 3280) && near(mp.foodcost_pct, 7.61, 0.01) && mp.docs === 3, mp);
+  check("продажи и себестоимость: по позициям — блины 5 шт на 2500 с себестоимостью 100, оладьи 600/20",
+    near(mb.qty, 5) && near(mb.revenue, 2500) && near(mb.cost, 100) && near(mo.revenue, 600) && near(mo.cost, 20), { mb, mo });
+  r = await call("office_doc_sales_report", { token: skl.token, date_from: "2020-03-01", date_to: "2020-03-06" });
+  check("продажи и себестоимость: кладовщик своего склада видит свою точку", r.ok && (r.points || []).some((x) => x.point_id === "zz_test"), r);
 };
 
 // --- разделы добавляются здесь ---
