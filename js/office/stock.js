@@ -1,5 +1,5 @@
-import { api, session } from "./api.js?v=7";
-import { el, fmt, toast, debounce, modal, confirmDlg } from "./ui.js?v=7";
+import { api, session } from "./api.js?v=8";
+import { el, fmt, toast, debounce, modal, confirmDlg } from "./ui.js?v=8";
 
 const TYPES = { invoice_in: "Приход", transfer: "Перемещение", writeoff: "Списание", production: "Производство", inventory: "Инвентаризация", sale: "Продажа" };
 // Продажу заводит отчёт точки, а не человек: в «+ Новый документ» её нет.

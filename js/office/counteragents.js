@@ -1,5 +1,5 @@
-import { api, can } from "./api.js?v=7";
-import { el, toast, debounce, modal } from "./ui.js?v=7";
+import { api, can } from "./api.js?v=8";
+import { el, toast, debounce, modal } from "./ui.js?v=8";
 
 const KINDS = { supplier: "поставщик", customer: "покупатель", employee: "сотрудник", other: "прочее" };
 let root, state = { q: "", kind: "", page: 1 }, table, pager;
@@ -47,6 +47,7 @@ function edit(c) {
     active: el("input", { type: "checkbox", checked: c ? c.active : true, disabled: ro }),
   };
   const err = el("div", { class: "err" });
+  if (!ro) setTimeout(() => f.name.focus(), 0);
   m.root.append(el("div", { class: "grid2" },
       el("div", {}, el("label", {}, "Название"), f.name), el("div", {}, el("label", {}, "Вид"), f.kind),
       el("div", {}, el("label", {}, "БИН/ИИН"), f.bin), el("div", {}, el("label", {}, "Телефон"), f.phone)),

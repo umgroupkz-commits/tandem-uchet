@@ -1,12 +1,13 @@
-import { api, session, setSession } from "../office/api.js?v=7";
-import { el, toast } from "../office/ui.js?v=7";
-import { ask, clearDraftsAll } from "./common.js?v=5";
+import { api, session, setSession } from "../office/api.js?v=8";
+import { el, toast } from "../office/ui.js?v=8";
+import { ask, clearDraftsAll } from "./common.js?v=6";
 
 const $ = (id) => document.getElementById(id);
 const SCENARIOS = [
   { id: "receive", title: "Приёмка", hint: "приход от поставщика", perm: "doc:invoice_in:edit" },
   { id: "inventory", title: "Инвентаризация", hint: "пересчёт склада", perm: "doc:inventory:edit" },
   { id: "transfer", title: "Перемещение", hint: "на другой склад", perm: "doc:transfer:edit" },
+  { id: "writeoff", title: "Списание", hint: "порча, проработка, питание персонала", perm: "doc:writeoff:edit" },
 ];
 // stores — все действующие склады (куда перемещать), mine — те, от имени которых работает
 // пользователь: закреплённые за ним в бэк-офисе, а без закрепления — все.
@@ -99,7 +100,7 @@ function home() {
 async function openScenario(id) {
   const main = $("main"); main.innerHTML = '<div class="dim">Загрузка…</div>';
   try {
-    const mod = await import(`./${id}.js?v=5`);
+    const mod = await import(`./${id}.js?v=6`);
     main.innerHTML = ""; await mod.mount(main, ctx);
   } catch (e) { main.innerHTML = ""; main.append(el("div", { class: "err" }, "Сценарий не открылся: " + e.message)); }
 }

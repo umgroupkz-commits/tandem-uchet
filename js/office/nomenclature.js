@@ -1,5 +1,5 @@
-import { api, can } from "./api.js?v=7";
-import { el, fmt, toast, debounce, modal } from "./ui.js?v=7";
+import { api, can } from "./api.js?v=8";
+import { el, fmt, toast, debounce, modal } from "./ui.js?v=8";
 
 const TYPES = { goods: "товар", dish: "блюдо", prepared: "полуфабрикат", service: "услуга" };
 let groups = [], state = { q: "", group_id: "", item_type: "", active: "true", page: 1 };
@@ -150,8 +150,11 @@ async function editItem(code) {
       const r2 = await api("item_prices_save", { code: r.code, prices });
       if (!r2.ok) { err.textContent = r2.message; return; }
     }
-    toast("Сохранено"); m.close();
+    m.close();
     const g = await api("groups_list", {}); groups = g.groups || []; drawTree(); load();
+    // Цены по точкам привязаны к коду позиции, а у новой его до сохранения нет — поэтому
+    // новая карточка сразу открывается снова, уже с таблицей цен (раньше — только со второго раза).
+    if (!code) { toast("Позиция создана — задайте цены по точкам"); editItem(r.code); } else toast("Сохранено");
   }
 }
 

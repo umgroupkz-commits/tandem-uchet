@@ -1,5 +1,5 @@
-import { api } from "./api.js?v=7";
-import { el, toast, modal } from "./ui.js?v=7";
+import { api } from "./api.js?v=8";
+import { el, toast, modal } from "./ui.js?v=8";
 
 const ROLES = { admin: "администратор", owner: "собственник", accountant: "бухгалтер", technologist: "технолог", storekeeper: "кладовщик" };
 let root, stores = [];
@@ -54,10 +54,21 @@ function edit(u) {
   f.login.focus();
 }
 
-async function resetPin(u) {
-  const pin = window.prompt(`Новый временный PIN для ${u.name} (не меньше 4 цифр):`);
-  if (!pin) return;
-  const r = await api("user_reset_pin", { id: u.id, pin });
-  if (!r.ok) { toast(r.message, "bad"); return; }
-  toast("PIN сброшен, при входе попросит сменить"); load();
+// Временный PIN вводится в скрытое поле своего окна: системный prompt показывал его открытым
+// текстом каждому, кто стоит рядом (отложенное замечание подпроекта 1).
+function resetPin(u) {
+  const m = modal("Сбросить PIN — " + u.name);
+  const pin = el("input", { type: "password", inputmode: "numeric", autocomplete: "new-password", placeholder: "не меньше 4 цифр" });
+  const err = el("div", { class: "err" });
+  const go = el("button", { onclick: async () => {
+    go.disabled = true;
+    const r = await api("user_reset_pin", { id: u.id, pin: pin.value });
+    go.disabled = false;
+    if (!r.ok) { err.textContent = r.message; return; }
+    toast("PIN сброшен, при входе попросит сменить"); m.close(); load();
+  } }, "Сбросить PIN");
+  pin.addEventListener("keydown", (e) => { if (e.key === "Enter") go.click(); });
+  m.root.append(el("div", { class: "dim" }, "Пользователь войдёт с этим PIN и сразу задаст свой. Все его открытые сессии закроются."),
+    el("label", {}, "Временный PIN"), pin, err, el("div", { class: "actions" }, go, el("button", { class: "ghost", onclick: m.close }, "Отмена")));
+  setTimeout(() => pin.focus(), 0);
 }
