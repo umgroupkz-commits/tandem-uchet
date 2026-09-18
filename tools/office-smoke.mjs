@@ -9,11 +9,16 @@ const UCHET = process.env.TANDEM_API_URL || "https://qeehxcnnuzuwskznhdyg.supaba
 const section = process.argv[2] || "all";
 let failed = 0, passed = 0;
 
+// Служебные действия (перенос, уборка теста) с миграции 0029 требуют длинного ключа
+// TANDEM_SERVICE_KEY — кода собственника для них больше недостаточно.
+const SERVICE = new Set(["migrate", "test_cleanup", "sync_items", "sync_prices", "recalc_ranks", "set_packaging", "set_short_list"]);
 export async function call(action, payload) {
+  payload = payload || {};
+  if (SERVICE.has(action) && !("service_key" in payload)) payload = { ...payload, service_key: process.env.TANDEM_SERVICE_KEY || "" };
   const r = await fetch(UCHET, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ action, payload: payload || {} }),
+    body: JSON.stringify({ action, payload }),
   });
   const text = await r.text();
   try { return JSON.parse(text); } catch { return { ok: false, error: "bad_json", message: text.slice(0, 200) }; }
@@ -153,7 +158,7 @@ SECTIONS.migrate = async () => {
       && typeof first[0].n === "string" && Number(first[0].a) > 0,
     { n: keys.length, first: first[0] });
 
-  r = await call("migrate", { pin: "wrong", kind: "groups", rows: [] });
+  r = await call("migrate", { service_key: "wrong", kind: "groups", rows: [] });
   check("чужой код — отказ", r.ok === false, r);
 };
 
@@ -906,6 +911,35 @@ SECTIONS.sales = async (ctx) => {
   check("продажи и себестоимость: кладовщик своего склада видит свою точку", r.ok && (r.points || []).some((x) => x.point_id === "zz_test"), r);
 };
 
+// Единый вход (миграция 0029): служебный ключ и счётчик неверных кодов. Идёт последним:
+// раздел сам запирает вход по коду для служебной точки, замок снимает уборка теста.
+SECTIONS.gate = async () => {
+  const pin = process.env.TANDEM_OWNER_PIN || "";
+  let r = await call("test_cleanup", { pin, service_key: "" });
+  check("служебное действие с одним кодом собственника — forbidden", r.ok === false && r.error === "forbidden", r);
+  r = await call("migrate", { pin, service_key: "не тот ключ", kind: "groups", rows: [] });
+  check("служебное действие с неверным ключом — forbidden", r.ok === false && r.error === "forbidden", r);
+  r = await call("migrate", { kind: "groups", rows: [] });
+  check("служебное действие с ключом и без кода собственника — проходит", r.ok === true, r);
+  await call("test_cleanup", {});   // счётчик служебной точки — с нуля, что бы ни было до этого
+  for (let i = 0; i < 10; i++) r = await call("login", { pin: "000" + i, point_id: "zz_test" });
+  check("десятый неверный код — ещё обычный отказ", r.ok === false && r.error === "Неверный код", r);
+  r = await call("login", { pin: "0011", point_id: "zz_test" });
+  check("одиннадцатый — вход по коду закрыт на 5 минут", r.ok === false && r.code === "throttled", r);
+  if (pin) {
+    r = await call("get_report", { pin, point_id: "zz_test", date: "2020-01-01" });
+    check("во время замка верный код получает тот же отказ (нет подсказки перебору)", r.ok === false && r.code === "throttled", r);
+  }
+  r = await call("points", {});
+  check("другие точки и действия без кода не заперты", Array.isArray(r) && r.length > 0, r);
+  r = await call("test_cleanup", {});
+  check("уборка теста снимает замок служебной точки", r.ok === true, r);
+  if (pin) {
+    r = await call("get_report", { pin, point_id: "zz_test", date: "2020-01-01" });
+    check("после уборки верный код снова работает", r.ok === true, r);
+  }
+};
+
 // --- разделы добавляются здесь ---
 
 // Проверка готовности (миграция 0028): отчёт о том, что в справочниках помешает учёту.
@@ -975,14 +1009,26 @@ SECTIONS.polish = async (ctx) => {
   await call("office_user_save", { token: t, id: uid, login: "zz_test_role", name: "ZZ_TEST_Роль", role: "accountant" });
   r = await call("office_me", { token: u.token });
   check("сессии: смена роли выкидывает пользователя — войти заново с новыми правами", r.ok === false && r.error === "unauthorized", r);
+  // Смена своего PIN закрывает остальные сессии пользователя, текущая остаётся (миграция 0030).
+  await call("office_user_save", { token: t, login: "zz_test_pin2", name: "ZZ_TEST_Две сессии", role: "storekeeper", pin: "4321" });
+  const sA = await call("office_login", { login: "zz_test_pin2", pin: "4321" });
+  await call("office_change_pin", { token: sA.token, pin: "4321" });
+  const sB = await call("office_login", { login: "zz_test_pin2", pin: "4321" });
+  r = await call("office_change_pin", { token: sA.token, pin: "5678" });
+  r = await call("office_me", { token: sA.token });
+  check("сессии: после смены PIN текущая сессия жива", r.ok, r);
+  r = await call("office_me", { token: sB.token });
+  check("сессии: после смены PIN вторая сессия закрыта", r.ok === false && r.error === "unauthorized", r);
 };
 
 // migrate и reimport требуют TANDEM_OWNER_PIN и в "all" входят только при его наличии;
 // любой раздел кроме auth/migrate сначала прогоняет auth — ему нужен токен.
-const NEEDS_OWNER = ["migrate", "reimport"];
+const NEEDS_OWNER = ["migrate", "reimport", "gate"];
 let names = section === "all"
-  ? Object.keys(SECTIONS).filter((n) => !NEEDS_OWNER.includes(n) || process.env.TANDEM_OWNER_PIN)
+  ? Object.keys(SECTIONS).filter((n) => !NEEDS_OWNER.includes(n) || (process.env.TANDEM_OWNER_PIN && process.env.TANDEM_SERVICE_KEY))
   : [section];
+// gate запирает вход по коду служебной точки — он обязан идти последним.
+if (names.includes("gate")) names = [...names.filter((n) => n !== "gate"), "gate"];
 if (!names.includes("auth") && names.some((n) => n !== "migrate")) names = ["auth", ...names];
 for (const n of names) {
   if (!SECTIONS[n]) { console.log("нет раздела " + n); process.exit(2); }
@@ -991,12 +1037,12 @@ for (const n of names) {
 }
 
 // Уборка: тестовые записи не должны пережить прогон.
-if (process.env.TANDEM_OWNER_PIN) {
+if (process.env.TANDEM_SERVICE_KEY) {
   console.log("\n== очистка");
-  const r = await call("test_cleanup", { pin: process.env.TANDEM_OWNER_PIN });
+  const r = await call("test_cleanup", {});
   check("очистка: следов нет", r.ok && r.leftovers === 0, r);
 } else {
-  console.log("\n== очистка пропущена: задайте TANDEM_OWNER_PIN, чтобы убрать записи ZZ_TEST_/zz_test_");
+  console.log("\n== очистка пропущена: задайте TANDEM_SERVICE_KEY, чтобы убрать записи ZZ_TEST_/zz_test_");
 }
 
 console.log(`\nпройдено ${passed}, провалено ${failed}`);

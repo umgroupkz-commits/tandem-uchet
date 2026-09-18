@@ -1,9 +1,9 @@
 -- Полный снимок схемы учёта Тандем KZ (схема tandem + функции public.tandem_*).
--- Снят из боевой базы каталогом PostgreSQL 2026-09-18 (скрипт в README этой папки), данных не содержит.
+-- Снят из боевой базы каталогом PostgreSQL 2026-09-18 запросом db/schema/snapshot-query.sql
+-- и собран tools/build-schema-snapshot.mjs. Данных не содержит.
 -- Назначение: поднять пустую базу на собственном сервере одной командой
 --   psql -v ON_ERROR_STOP=1 -f db/schema/tandem_full.sql
--- и дальше применять новые миграции из db/migrations по порядку. Проверяется подъёмом в Docker
--- и прогоном дымового теста (server/README.md).
+-- затем db/schema/tandem_seed.sql. Проверяется подъёмом в Docker и дымовым тестом (server/README.md).
 
 set check_function_bodies = off;   -- функции ссылаются друг на друга и на таблицы: порядок создания не важен
 create extension if not exists pgcrypto;
@@ -14,13 +14,8 @@ create schema if not exists tandem;
 create schema if not exists extensions;
 
 -- ---------------------------------------------------------------- последовательности
-create sequence if not exists tandem.cash_expenses_id_seq as bigint increment 1 minvalue 1 maxvalue 9223372036854775807 start 1;
-create sequence if not exists tandem.daily_reports_id_seq as bigint increment 1 minvalue 1 maxvalue 9223372036854775807 start 1;
 create sequence if not exists tandem.item_code_seq as bigint increment 1 minvalue 1 maxvalue 9223372036854775807 start 90000;
-create sequence if not exists tandem.realization_ledger_id_seq as bigint increment 1 minvalue 1 maxvalue 9223372036854775807 start 1;
-create sequence if not exists tandem.sale_lines_id_seq as bigint increment 1 minvalue 1 maxvalue 9223372036854775807 start 1;
 create sequence if not exists tandem.stock_moves_id_seq as bigint increment 1 minvalue 1 maxvalue 9223372036854775807 start 1;
-create sequence if not exists tandem.takeout_lines_id_seq as bigint increment 1 minvalue 1 maxvalue 9223372036854775807 start 1;
 
 -- ---------------------------------------------------------------- таблицы
 create table if not exists tandem.assets (
@@ -200,6 +195,12 @@ create table if not exists tandem.items (
   cost_source text
 );
 
+create table if not exists tandem.pin_failures (
+  id bigint generated always as identity not null,
+  key text not null,
+  at timestamp with time zone default now() not null
+);
+
 create table if not exists tandem.points (
   id text not null,
   name text not null,
@@ -371,6 +372,7 @@ alter table tandem.items add constraint items_cost_source_check CHECK (((cost_so
 alter table tandem.items add constraint items_iiko_id_key UNIQUE (iiko_id);
 alter table tandem.items add constraint items_item_type_check CHECK ((item_type = ANY (ARRAY['goods'::text, 'dish'::text, 'prepared'::text, 'service'::text])));
 alter table tandem.items add constraint items_pkey PRIMARY KEY (code);
+alter table tandem.pin_failures add constraint pin_failures_pkey PRIMARY KEY (id);
 alter table tandem.points add constraint points_mode_check CHECK ((mode = ANY (ARRAY['position'::text, 'takeout'::text, 'import'::text, 'manual'::text])));
 alter table tandem.points add constraint points_pkey PRIMARY KEY (id);
 alter table tandem.realization_clients add constraint realization_clients_pkey PRIMARY KEY (id);
@@ -404,6 +406,8 @@ CREATE UNIQUE INDEX documents_source_idx ON tandem.documents USING btree (source
 CREATE INDEX documents_type_status_idx ON tandem.documents USING btree (doc_type, status);
 CREATE INDEX items_group_idx ON tandem.items USING btree (group_name);
 CREATE INDEX items_point_idx ON tandem.items USING btree (point_hint);
+CREATE INDEX pin_failures_at ON tandem.pin_failures USING btree (at);
+CREATE INDEX pin_failures_key_at ON tandem.pin_failures USING btree (key, at);
 CREATE INDEX sessions_user_idx ON tandem.sessions USING btree (user_id);
 CREATE INDEX stock_moves_doc_idx ON tandem.stock_moves USING btree (document_id);
 CREATE INDEX stock_moves_replay_idx ON tandem.stock_moves USING btree (store_id, item_code, id);
@@ -449,12 +453,7 @@ alter table tandem.user_stores add constraint user_stores_store_id_fkey FOREIGN 
 alter table tandem.user_stores add constraint user_stores_user_id_fkey FOREIGN KEY (user_id) REFERENCES tandem.users(id) ON DELETE CASCADE;
 
 -- ---------------------------------------------------------------- владельцы последовательностей
-alter sequence tandem.cash_expenses_id_seq owned by tandem.cash_expenses.id;
-alter sequence tandem.daily_reports_id_seq owned by tandem.daily_reports.id;
-alter sequence tandem.realization_ledger_id_seq owned by tandem.realization_ledger.id;
-alter sequence tandem.sale_lines_id_seq owned by tandem.sale_lines.id;
 alter sequence tandem.stock_moves_id_seq owned by tandem.stock_moves.id;
-alter sequence tandem.takeout_lines_id_seq owned by tandem.takeout_lines.id;
 
 -- ---------------------------------------------------------------- функции
 CREATE OR REPLACE FUNCTION public.tandem_api(action text, payload jsonb DEFAULT '{}'::jsonb)
@@ -759,6 +758,78 @@ begin
         and (v_cats is null or cardinality(v_cats) = 0 or i.category = any(v_cats))
       group by c.item_code
     ) t));
+end $function$
+;
+
+CREATE OR REPLACE FUNCTION public.tandem_gate(action text, payload jsonb DEFAULT '{}'::jsonb)
+ RETURNS jsonb
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO 'tandem', 'public', 'extensions'
+AS $function$
+declare
+  v_pin   text := coalesce(payload->>'pin', '');
+  v_key   text;
+  v_res   jsonb;
+  v_hash  text;
+  v_owner text;
+  v_service boolean := action in ('migrate','test_cleanup','sync_items','sync_prices','recalc_ranks','set_packaging','set_short_list');
+begin
+  if action like 'office\_%' then
+    -- Токен текущей сессии — в настройку транзакции: триггер смены PIN закроет все сессии
+    -- пользователя, кроме этой (см. tandem.users_pin_sessions).
+    perform set_config('tandem.token', coalesce(payload->>'token', ''), true);
+    return public.tandem_office(substr(action, 8), payload);
+  end if;
+
+  -- Ключ счётчика — настоящая точка из запроса; всё остальное (вход собственника и водителя,
+  -- выдуманные точки) падает в один общий ключ, чтобы перебор нельзя было размазать по ключам.
+  v_key := case when v_service then 'service'
+                else coalesce((select p.id from tandem.points p
+                                where p.id = coalesce(nullif(payload->>'point_id',''), nullif(payload->>'point',''))), '-') end;
+  if (select count(*) from tandem.pin_failures f where f.key = v_key and f.at > now() - interval '5 minutes') >= 10
+     or (select count(*) from tandem.pin_failures f where f.at > now() - interval '5 minutes') >= 60 then
+    return jsonb_build_object('ok', false, 'error', 'Слишком много неверных кодов. Подождите 5 минут',
+                              'code', 'throttled');
+  end if;
+
+  if v_service then
+    select value into v_hash from tandem.settings where key = 'service_key_hash';
+    if v_hash is null or coalesce(payload->>'service_key', '') = ''
+       or encode(digest(payload->>'service_key', 'sha256'), 'hex') <> v_hash then
+      insert into tandem.pin_failures (key) values ('service');
+      return jsonb_build_object('ok', false, 'error', 'forbidden', 'message', 'Нужен служебный ключ');
+    end if;
+    select value into v_owner from tandem.settings where key = 'owner_pin';
+    v_res := case action
+      when 'migrate'        then public.tandem_migrate(v_owner, coalesce(payload->>'kind',''), coalesce(payload->'rows','[]'::jsonb))
+      when 'test_cleanup'   then public.tandem_test_cleanup(v_owner)
+      when 'sync_items'     then public.tandem_sync_items(v_owner, coalesce(payload->'items','[]'::jsonb))
+      when 'sync_prices'    then public.tandem_sync_prices(v_owner, coalesce(payload->'data','[]'::jsonb))
+      when 'recalc_ranks'   then public.tandem_recalc_ranks(v_owner, coalesce((payload->>'days')::int, 30))
+      when 'set_packaging'  then public.tandem_set_packaging(v_owner, coalesce(payload->'data','[]'::jsonb))
+      when 'set_short_list' then public.tandem_set_short_list(v_owner, coalesce(payload->>'point',''), coalesce(payload->'codes','[]'::jsonb))
+    end;
+    -- Уборка теста снимает и его неверные коды: иначе проверка счётчика запирала бы следующий прогон.
+    if action = 'test_cleanup' then delete from tandem.pin_failures where key in ('zz_test'); end if;
+    return v_res;
+  end if;
+
+  v_res := case action
+    when 'charts'       then public.tandem_charts(v_pin, coalesce(payload->>'point_id',''))
+    when 'realization'  then public.tandem_realization(v_pin, coalesce(payload->>'op','list'), coalesce(payload->'data','{}'::jsonb))
+    when 'save_aliases' then public.tandem_save_aliases(v_pin, coalesce(payload->>'point_id',''), coalesce(payload->'data','[]'::jsonb))
+    else public.tandem_api(action, payload)
+  end;
+
+  -- Неверный код узнаём по ответу нижележащей функции: их тела не трогаем.
+  if v_pin <> '' and jsonb_typeof(v_res) = 'object' and (v_res->>'ok') = 'false'
+     and (v_res->>'error' in ('Неверный код', 'Нет доступа')
+          or (v_res->>'error' = 'forbidden' and v_res->>'message' = 'Нет доступа')) then
+    insert into tandem.pin_failures (key) values (v_key);
+    delete from tandem.pin_failures where at < now() - interval '1 day';
+  end if;
+  return v_res;
 end $function$
 ;
 
@@ -3607,6 +3678,19 @@ AS $function$
 $function$
 ;
 
+CREATE OR REPLACE FUNCTION tandem.users_pin_sessions()
+ RETURNS trigger
+ LANGUAGE plpgsql
+AS $function$
+begin
+  if new.pin_hash is distinct from old.pin_hash then
+    delete from tandem.sessions
+     where user_id = new.id and token <> coalesce(current_setting('tandem.token', true), '');
+  end if;
+  return new;
+end $function$
+;
+
 CREATE OR REPLACE FUNCTION tandem.users_role_sessions()
  RETURNS trigger
  LANGUAGE plpgsql
@@ -3673,6 +3757,7 @@ create or replace view tandem.v_daily as
 
 
 -- ---------------------------------------------------------------- триггеры
+CREATE TRIGGER users_pin_sessions AFTER UPDATE OF pin_hash ON tandem.users FOR EACH ROW EXECUTE FUNCTION tandem.users_pin_sessions();
 CREATE TRIGGER users_role_sessions AFTER UPDATE OF role ON tandem.users FOR EACH ROW EXECUTE FUNCTION tandem.users_role_sessions();
 
 -- ---------------------------------------------------------------- RLS: запрет всего, доступ только через функции
@@ -3690,6 +3775,7 @@ alter table tandem.item_groups enable row level security;
 alter table tandem.item_prices enable row level security;
 alter table tandem.item_rank enable row level security;
 alter table tandem.items enable row level security;
+alter table tandem.pin_failures enable row level security;
 alter table tandem.points enable row level security;
 alter table tandem.realization_clients enable row level security;
 alter table tandem.realization_ledger enable row level security;

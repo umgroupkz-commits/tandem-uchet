@@ -16,32 +16,9 @@ const CORS = {
 };
 const send = (res, status, obj) => { res.writeHead(status, { "content-type": "application/json; charset=utf-8", ...CORS }); res.end(JSON.stringify(obj)); };
 
-// Имя функции и её именованные аргументы по действию. Значения уходят параметрами запроса,
-// имена — только из этой таблицы: из запроса пользователя в текст SQL ничего не попадает.
-function route(action, payload) {
-  const pin = payload.pin ?? "";
-  switch (action) {
-    case "charts": return ["tandem_charts", { p_pin: pin, p_point: payload.point_id ?? "" }];
-    case "realization": return ["tandem_realization", { p_pin: pin, p_action: payload.op ?? "list", p_data: payload.data ?? {} }];
-    case "save_aliases": return ["tandem_save_aliases", { p_pin: pin, p_point: payload.point_id ?? "", p_data: payload.data ?? [] }];
-    case "sync_items": return ["tandem_sync_items", { p_pin: pin, p_items: payload.items ?? [] }];
-    case "sync_prices": return ["tandem_sync_prices", { p_pin: pin, p_data: payload.data ?? [] }];
-    case "recalc_ranks": return ["tandem_recalc_ranks", { p_pin: pin, p_days: payload.days ?? 30 }];
-    case "set_packaging": return ["tandem_set_packaging", { p_pin: pin, p_data: payload.data ?? [] }];
-    case "set_short_list": return ["tandem_set_short_list", { p_pin: pin, p_point: payload.point ?? "", p_codes: payload.codes ?? [] }];
-    case "migrate": return ["tandem_migrate", { p_pin: pin, p_kind: payload.kind ?? "", p_rows: payload.rows ?? [] }];
-    case "test_cleanup": return ["tandem_test_cleanup", { p_pin: pin }];
-  }
-  if (action.startsWith("office_")) return ["tandem_office", { action: action.slice(7), payload }];
-  return ["tandem_api", { action, payload }];
-}
-
-const JSON_ARGS = new Set(["payload", "p_data", "p_items", "p_rows", "p_codes"]);
-async function callFn(fn, args) {
-  const names = Object.keys(args);
-  const sql = `select public.${fn}(${names.map((n, i) => `${n} => $${i + 1}${JSON_ARGS.has(n) ? "::jsonb" : ""}`).join(", ")}) as r`;
-  const values = names.map((n) => JSON_ARGS.has(n) ? JSON.stringify(args[n]) : args[n]);
-  const q = await pool.query(sql, values);
+// Вся маршрутизация, служебный ключ и счётчик неверных кодов — в базе (public.tandem_gate).
+async function gate(action, payload) {
+  const q = await pool.query("select public.tandem_gate(action => $1, payload => $2::jsonb) as r", [action, JSON.stringify(payload)]);
   return q.rows[0].r;
 }
 
@@ -58,8 +35,7 @@ http.createServer(async (req, res) => {
     const payload = body.payload && typeof body.payload === "object" ? body.payload : {};
     if (!/^[a-z_]{1,60}$/.test(action)) return send(res, 400, { ok: false, error: "Некорректное действие" });
     try {
-      const [fn, args] = route(action, payload);
-      send(res, 200, await callFn(fn, args));
+      send(res, 200, await gate(action, payload));
     } catch (e) {
       console.error(action, e.message);
       send(res, 500, { ok: false, error: "Ошибка базы данных", detail: String(e.message).slice(0, 300) });

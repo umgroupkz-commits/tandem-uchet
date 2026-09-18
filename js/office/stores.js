@@ -1,5 +1,5 @@
-import { api, can } from "./api.js?v=9";
-import { el, toast, modal } from "./ui.js?v=9";
+import { api, can } from "./api.js?v=10";
+import { el, toast, modal } from "./ui.js?v=10";
 
 let root, data;
 export async function mount(r) { root = r; await load(); }

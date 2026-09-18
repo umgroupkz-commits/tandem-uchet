@@ -2,7 +2,7 @@
 
 Всё, что нужно для переезда с Supabase + GitHub Pages на свой сервер. Проверено репетицией
 18.09.2026: пустой PostgreSQL 17 в Docker, схема из `db/schema/tandem_full.sql`, справочники из
-выгрузки, прокси из этой папки — дымовой тест `tools/office-smoke.mjs all` прошёл 281 из 281,
+выгрузки, прокси из этой папки — дымовой тест `tools/office-smoke.mjs all` прошёл 292 из 292,
 бэк-офис в браузере работал через локальный прокси.
 
 ## Что где
@@ -39,7 +39,8 @@
 5. nginx: сайт — статические файлы репозитория; `location /api/ { proxy_pass http://127.0.0.1:8787/; }`.
    HTTPS обязателен: по сети ходят коды и PIN.
 6. В `config.js` вписать `window.TANDEM_API_URL = "https://<адрес>/api/";`.
-7. Сменить `owner_pin` и `driver_pin` в `tandem.settings`, завести администратора:
+7. Сменить `owner_pin` и `driver_pin` в `tandem.settings`, задать служебный ключ
+   (`service_key_hash` = sha256 от длинной случайной строки), завести администратора:
    ```sql
    insert into tandem.users (login, name, role, pin_hash)
    values ('admin', 'Администратор', 'admin', crypt('<временный PIN>', gen_salt('bf')));
@@ -54,7 +55,7 @@ cd server
 printf 'DB_PASSWORD=rehearsal_local_only\n' > .env
 docker compose -p tandem-rehearsal up -d --build
 docker compose -p tandem-rehearsal exec -T db psql -U tandem -d tandem -v ON_ERROR_STOP=1 < seed-dev.sql
-TANDEM_API_URL=http://127.0.0.1:8787 TANDEM_ADMIN_PIN=123456 TANDEM_OWNER_PIN=000111 node ../tools/office-smoke.mjs all
+TANDEM_API_URL=http://127.0.0.1:8787 TANDEM_ADMIN_PIN=123456 TANDEM_OWNER_PIN=000111 TANDEM_SERVICE_KEY=dev-service-key node ../tools/office-smoke.mjs all
 docker compose -p tandem-rehearsal down -v     # убрать стенд вместе с данными
 ```
 Часть проверок рассчитана на настоящие справочники (точка «Енешка», сотни позиций) — для полного
@@ -75,9 +76,10 @@ docker run --rm postgres:17 pg_dump "<строка подключения Supaba
 Снимок снят запросом к каталогу PostgreSQL (последовательности, таблицы, ограничения, индексы, функции
 `tandem.*` и `public.tandem_*`, представления, триггеры, RLS). После каждой новой миграции его надо
 переснять, иначе новая установка отстанет от боевой базы; до пересъёмки догоняется файлами
-`db/migrations` новее снимка. Сейчас снимок включает миграции 0001–0028.
+`db/migrations` новее снимка. Сейчас снимок включает миграции 0001–0030. Запрос — `db/schema/snapshot-query.sql`, сборка файла —
+`node tools/build-schema-snapshot.mjs <результат запроса>`.
 
 ## Чего прокси не делает намеренно
 
-Логики в нём нет: проверка прав, сессии, блокировки — в функциях базы. Маршруты повторяют
-`supabase/functions/uchet/index.ts`; при правке одного правьте другой.
+Логики в нём нет: маршрутизация, проверка прав, сессии, счётчик неверных кодов и служебный ключ —
+в функции базы `public.tandem_gate`. Прокси передаёт ей действие и возвращает ответ.
