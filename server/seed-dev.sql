@@ -11,3 +11,6 @@ insert into tandem.items (code, name, artikul, iiko_code, item_type, unit_id, un
 values ('1', 'Мука пшеничная в/с', '00001', '1', 'goods', 'кг', 'кг', 0.5, true, false, 'iiko'),
        ('2', 'Сахар', '00002', '2', 'goods', 'кг', 'кг', 0.5, true, false, 'iiko')
 on conflict (code) do nothing;
+-- Служебный ключ репетиции: «dev-service-key» (в базе — его sha256).
+insert into tandem.settings (key, value) values ('service_key_hash', '791207901d3024fbf4d8fcace01198e66a6594fac3c4fcf2345554dc1e42d6e2')
+on conflict (key) do update set value = excluded.value;

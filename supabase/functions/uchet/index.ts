@@ -49,48 +49,9 @@ Deno.serve(async (req: Request) => {
     }
     const action = body.action ?? "";
     const payload = (body.payload ?? {}) as Record<string, unknown>;
-    const pin = payload.pin ?? "";
-
-    if (action === "charts") {
-      return await proxy("tandem_charts", { p_pin: pin, p_point: payload.point_id ?? "" });
-    }
-    if (action === "realization") {
-      return await proxy("tandem_realization", { p_pin: pin, p_action: payload.op ?? "list", p_data: payload.data ?? {} });
-    }
-    if (action === "save_aliases") {
-      return await proxy("tandem_save_aliases", { p_pin: pin, p_point: payload.point_id ?? "", p_data: payload.data ?? [] });
-    }
-
-    // Служебные действия синхронизации — проверка кода внутри функций.
-    if (action === "sync_items") {
-      return await proxy("tandem_sync_items", { p_pin: pin, p_items: payload.items ?? [] });
-    }
-    if (action === "sync_prices") {
-      return await proxy("tandem_sync_prices", { p_pin: pin, p_data: payload.data ?? [] });
-    }
-    if (action === "recalc_ranks") {
-      return await proxy("tandem_recalc_ranks", { p_pin: pin, p_days: payload.days ?? 30 });
-    }
-    if (action === "set_packaging") {
-      return await proxy("tandem_set_packaging", { p_pin: pin, p_data: payload.data ?? [] });
-    }
-    if (action === "set_short_list") {
-      return await proxy("tandem_set_short_list", { p_pin: pin, p_point: payload.point ?? "", p_codes: payload.codes ?? [] });
-    }
-    // Перенос справочников из iiko (скрипт tools/iiko-migrate.mjs). Защита — код собственника внутри функции.
-    if (action === "migrate") {
-      return await proxy("tandem_migrate", { p_pin: pin, p_kind: payload.kind ?? "", p_rows: payload.rows ?? [] });
-    }
-    // Уборка следов дымового теста (tools/office-smoke.mjs). Защита — код собственника внутри функции.
-    if (action === "test_cleanup") {
-      return await proxy("tandem_test_cleanup", { p_pin: pin });
-    }
-    // Бэк-офис: свой вход (токен сессии в payload), диспетчер tandem_office.
-    if (action.startsWith("office_")) {
-      return await proxy("tandem_office", { action: action.slice(7), payload });
-    }
-
-    return await proxy("tandem_api", { action, payload });
+    // Вся маршрутизация, служебный ключ и счётчик неверных кодов — в базе (public.tandem_gate,
+    // миграция 0029). Прокси остаётся тонким: тот же вызов делает server/proxy.mjs на своём сервере.
+    return await proxy("tandem_gate", { action, payload });
   }
 
   if (new URL(req.url).searchParams.has("health")) {

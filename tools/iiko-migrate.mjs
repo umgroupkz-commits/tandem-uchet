@@ -4,7 +4,7 @@
 // такие строки закрывает — они уходят в «пропущено»). Названия групп, складов и контрагентов,
 // изменённые в офисе, перенос перезапишет: у них признака «правлено вручную» нет.
 //
-// Переменные окружения: IIKO_API_KEY, IIKO_APP_ID, IIKO_CLIENT_SECRET, TANDEM_OWNER_PIN.
+// Переменные окружения: IIKO_API_KEY, IIKO_APP_ID, IIKO_CLIENT_SECRET, TANDEM_SERVICE_KEY.
 // Запуск: node tools/iiko-migrate.mjs [--dry] [--from-cache]
 //   --from-cache — не ходить в iiko, взять data/iiko/*.json из прошлого запуска.
 import fs from "node:fs";
@@ -81,7 +81,7 @@ async function send(kind, rows) {
   for (let i = 0; i < rows.length; i += 500) {
     const r = await fetch(UCHET, {
       method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ action: "migrate", payload: { pin: process.env.TANDEM_OWNER_PIN, kind, rows: rows.slice(i, i + 500) } }),
+      body: JSON.stringify({ action: "migrate", payload: { service_key: process.env.TANDEM_SERVICE_KEY, kind, rows: rows.slice(i, i + 500) } }),
     }).then((x) => x.json());
     if (!r.ok) throw new Error(kind + " пачка " + (i / 500 + 1) + ": " + (r.message || r.error));
     ins += r.inserted; upd += r.updated; skip += r.skipped;
@@ -119,7 +119,7 @@ const items = [...byCode.values()]
 
 console.log(`к переносу: групп ${groups.length}, складов ${stores.length}, контрагентов ${counteragents.length}, позиций ${items.length} (из них удалённых в iiko ${items.filter((x) => x.deleted).length}; дублей кода отброшено ${dupes})`);
 if (DRY) { console.log("--dry: в базу ничего не отправлено"); process.exit(0); }
-if (!process.env.TANDEM_OWNER_PIN) throw new Error("TANDEM_OWNER_PIN не задан");
+if (!process.env.TANDEM_SERVICE_KEY) throw new Error("TANDEM_SERVICE_KEY не задан");
 
 await send("groups", groups);
 await send("stores", stores);

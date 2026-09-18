@@ -3,7 +3,7 @@
 // с паузой от 1,3 с, которая сама подстраивается под лимит iiko, — около часа-полутора.
 // Ответы кэшируются в data/iiko/charts/<productId>.json, повторный запуск берёт кэш
 // и не ходит в iiko за уже полученным, поэтому обрыв на 429 не теряет сделанного.
-// Переменные окружения: IIKO_API_KEY, IIKO_APP_ID, IIKO_CLIENT_SECRET, TANDEM_OWNER_PIN.
+// Переменные окружения: IIKO_API_KEY, IIKO_APP_ID, IIKO_CLIENT_SECRET, TANDEM_SERVICE_KEY.
 // Запуск: node tools/iiko-migrate-charts.mjs [--dry] [--limit=N] [--skip-costs] [--only-costs]
 // Прогресс пишется в data/iiko/charts.log — запускайте в фоне и смотрите лог.
 import fs from "node:fs";
@@ -16,7 +16,7 @@ const DRY = args.includes("--dry");
 const SKIP_COSTS = args.includes("--skip-costs");
 const ONLY_COSTS = args.includes("--only-costs");
 const LIMIT = Number((args.find((a) => a.startsWith("--limit=")) || "--limit=0").split("=")[1]) || 0;
-const PIN = process.env.TANDEM_OWNER_PIN;
+const PIN = process.env.TANDEM_SERVICE_KEY;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 fs.mkdirSync(CACHE, { recursive: true });
 const log = (s) => { const line = new Date().toISOString().slice(11, 19) + " " + s; console.log(line); fs.appendFileSync(LOG, line + "\n"); };
@@ -68,7 +68,7 @@ async function iiko(path, body) {
 }
 async function migrate(kind, rows) {
   const r = await fetch(UCHET, { method: "POST", headers: { "content-type": "application/json" },
-    body: JSON.stringify({ action: "migrate", payload: { pin: PIN, kind, rows } }) }).then((x) => x.json());
+    body: JSON.stringify({ action: "migrate", payload: { service_key: PIN, kind, rows } }) }).then((x) => x.json());
   if (!r.ok) throw new Error(kind + ": " + (r.message || r.error));
   return r;
 }
@@ -187,7 +187,7 @@ async function costs() {
   log(`цены: обновлено ${upd}, пропущено ${skip} (не найдены по iiko_id или помечены manual)`);
 }
 
-if (!PIN) throw new Error("TANDEM_OWNER_PIN не задан");
+if (!PIN) throw new Error("TANDEM_SERVICE_KEY не задан");
 let failedCount = 0;
 if (!ONLY_COSTS) failedCount = await charts();
 if (!SKIP_COSTS) await costs();
