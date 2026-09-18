@@ -1,5 +1,5 @@
-import { ask, el, fmt, toast, debounce, itemPicker, linesTable, drafts, warningsText,
-  withBusy, saveDoc, draftHint, okNum, numOf } from "./common.js?v=6";
+import { ask, el, fmt, today, toast, debounce, itemPicker, linesTable, drafts, warningsText,
+  withBusy, saveDoc, draftHint, okNum, numOf } from "./common.js?v=7";
 
 const SCN = "receive";
 export async function mount(root, ctx) {
@@ -51,7 +51,7 @@ export async function mount(root, ctx) {
     await withBusy(document.getElementById("post"), async () => {
       let s = null;
       try {
-        s = await saveDoc(d, { doc_type: "invoice_in", doc_date: new Date().toISOString().slice(0, 10), store_to: st.id, counteragent_id: d.supplier.id,
+        s = await saveDoc(d, { doc_type: "invoice_in", doc_date: today(), store_to: st.id, counteragent_id: d.supplier.id,
           ext_number: d.ext_number || null, lines: lines.map((l) => ({ item_code: l.item_code, qty: numOf(l.qty), price: numOf(l.price) })) }, save);
         d.server_id = s.id; save();
         const p = await ask("doc_post", { id: s.id });

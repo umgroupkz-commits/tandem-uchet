@@ -1,5 +1,5 @@
-import { api, session, setSession, can, BUILD } from "./api.js?v=8";
-import { toast } from "./ui.js?v=8";
+import { api, session, setSession, can, BUILD } from "./api.js?v=9";
+import { toast } from "./ui.js?v=9";
 
 const SECTIONS = [
   { id: "nomenclature", title: "Номенклатура" },
@@ -48,6 +48,12 @@ async function open(id) {
       if (hashCode) mod.openChart(hashCode);
       history.replaceState(null, "", location.pathname);
     }
+    if (id === "nomenclature" && location.hash.startsWith("#item/") && mod.openItem) {
+      let itemCode = null;
+      try { itemCode = decodeURIComponent(location.hash.slice(6)); } catch { itemCode = null; }
+      if (itemCode) mod.openItem(itemCode);
+      history.replaceState(null, "", location.pathname);
+    }
   } catch (e) {
     main.innerHTML = "";
     main.append(Object.assign(document.createElement("div"), { className: "err", textContent: "Раздел не открылся: " + e.message }));
@@ -74,6 +80,7 @@ function start() {
   try { first = localStorage.getItem("tandem_office_section"); } catch {}
   if (!allowed.some((x) => x.id === first)) first = allowed[0] && allowed[0].id;
   if (location.hash.startsWith("#charts/") && allowed.some((x) => x.id === "charts")) first = "charts";
+  if (location.hash.startsWith("#item/") && allowed.some((x) => x.id === "nomenclature")) first = "nomenclature";
   if (first) open(first); else $("main").textContent = "У вашей роли нет разделов.";
 }
 

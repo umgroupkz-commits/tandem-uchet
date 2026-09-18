@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#1F3864">
+<title>Тандем KZ — памятки по ролям</title>
+<style>
+  :root{--ink:#1B2430;--ink2:#4A5568;--muted:#6B7588;--line:#E2E7EF;--bg:#F5F7FB;--card:#fff;
+        --accent:#1F3864;--accent2:#3E6EA8;--ok:#0B6B4F;--okbg:#E3F3EC;--warnbg:#FCF3E1;--warn:#7A5710}
+  *{box-sizing:border-box}
+  [hidden]{display:none!important}
+  body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.55 -apple-system,"Segoe UI",Roboto,Arial,sans-serif}
+  .wrap{max-width:720px;margin:0 auto;padding:0 14px 60px}
+  header{padding:18px 0 12px;border-bottom:2px solid var(--accent);margin-bottom:14px}
+  h1{font-size:21px;margin:0;color:var(--accent)}
+  .sub{font-size:14px;color:var(--ink2);margin-top:6px}
+  nav{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 16px}
+  nav button{min-height:44px;padding:10px 16px;border-radius:8px;border:1px solid var(--accent);background:#fff;color:var(--accent);
+    font:inherit;font-weight:600;cursor:pointer}
+  nav button[aria-selected=true]{background:var(--accent);color:#fff}
+  button:focus-visible,a:focus-visible{outline:3px solid var(--accent2);outline-offset:2px}
+  h2{font-size:13px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);margin:22px 0 8px;font-weight:700}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px;margin-bottom:10px}
+  .card h3{margin:0 0 6px;font-size:16px}
+  .where{font-size:13.5px;color:var(--accent2);font-weight:600;margin-bottom:6px}
+  .card p{margin:0 0 8px}.card p:last-child{margin-bottom:0}
+  ol,ul{margin:0 0 8px;padding-left:22px}li{margin-bottom:4px}
+  .rule{background:var(--warnbg);color:var(--warn);border-radius:8px;padding:10px 12px;font-size:14.5px;margin-bottom:10px}
+  .links{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0 0}
+  a.btn{display:inline-flex;align-items:center;min-height:44px;padding:10px 16px;border-radius:8px;border:1px solid var(--accent);
+    background:var(--accent);color:#fff;font-weight:600;text-decoration:none}
+  a.btn.ghost{background:#fff;color:var(--accent)}
+  @media print{nav,.links{display:none}section[hidden]{display:block!important}body{background:#fff}.card{break-inside:avoid}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Памятки по ролям</h1>
+    <div class="sub">Тандем KZ · что делать каждый день и где это в программе. Выберите свою роль.</div>
+  </header>
+  <nav role="tablist" aria-label="Роль">
+    <button role="tab" data-r="sklad">Кладовщик</button>
+    <button role="tab" data-r="tech">Технолог</button>
+    <button role="tab" data-r="buh">Бухгалтер</button>
+    <button role="tab" data-r="owner">Собственник</button>
+    <button role="tab" data-r="point">Точка</button>
+  </nav>
+
+  <section id="r-sklad">
+    <div class="rule">Главное правило: всё, что пришло, ушло или испортилось, заносится в тот же день. Остаток в программе верен ровно настолько, насколько занесены документы.</div>
+    <h2>Каждый день</h2>
+    <div class="card"><h3>Принять товар от поставщика</h3><div class="where">Склад с телефона → Приёмка</div>
+      <ol><li>Поставщик — начните вводить название и выберите из списка.</li><li>Номер и дата накладной — как на бумаге.</li>
+      <li>Позиции: количество и цена из накладной. Частые позиции склада предложены сверху.</li><li>«Провести».</li></ol>
+      <p>Цена из прихода становится учётной ценой сырья — от неё считается себестоимость блюд. Ошибка в цене здесь даёт неверный фудкост везде.</p></div>
+    <div class="card"><h3>Передать на другой склад</h3><div class="where">Склад с телефона → Перемещение</div>
+      <p>Выберите склад-получатель, позиции и количество. Если программа предупреждает «уйдёт в минус» — скорее всего, не занесён приход: сначала занесите его.</p></div>
+    <div class="card"><h3>Списать порчу, проработку, питание персонала</h3><div class="where">Склад с телефона → Списание</div>
+      <p>Причина обязательна. Одним словом в комментарии — что случилось: «истёк срок», «разбили при разгрузке».</p></div>
+    <h2>По графику</h2>
+    <div class="card"><h3>Инвентаризация</h3><div class="where">Склад с телефона → Инвентаризация</div>
+      <p>Пересчёт «вслепую»: программа не показывает, сколько должно быть, — вводите то, что насчитали. Перед проведением увидите расхождения и подтвердите их. Позицию, которой нет в списке, добавьте поиском.</p>
+      <p>После проведённой инвентаризации документы с более ранней датой по этому складу не меняются — занесите всё до пересчёта.</p></div>
+    <h2>Если что-то не так</h2>
+    <div class="card"><ul><li>Нет связи — черновик остаётся на телефоне, откройте сценарий снова и нажмите «Провести».</li>
+      <li>Провели с ошибкой — отмена и исправление в бэк-офисе: Склад → Документы → открыть → «Отменить проведение».</li>
+      <li>Нет нужного склада в списке — склады закрепляет администратор в карточке пользователя.</li></ul></div>
+    <div class="links"><a class="btn" href="stock.html">Открыть склад с телефона</a></div>
+  </section>
+
+  <section id="r-tech" hidden>
+    <div class="rule">Главное правило: техкарта — это то, по чему программа списывает продукты при каждой продаже. Неверная карта = неверный остаток каждый день.</div>
+    <h2>Каждый день</h2>
+    <div class="card"><h3>Акт производства полуфабрикатов</h3><div class="where">Бэк-офис → Склад → «+ Новый документ…» → Производство</div>
+      <p>Склад кухни, что выпустили и сколько. Программа спишет сырьё по карте и поставит полуфабрикат на остаток по себестоимости. Перед проведением видно, что будет списано.</p>
+      <p>Продажа блюда списывает его ингредиенты на один уровень: если в карте блюда стоит полуфабрикат, спишется полуфабрикат — поэтому его выпуск нужно заносить актом.</p></div>
+    <h2>Когда меняется рецептура</h2>
+    <div class="card"><h3>Новая версия карты, а не правка старой</h3><div class="where">Бэк-офис → Техкарты → блюдо → «Новая версия с даты…»</div>
+      <p>Старая версия закроется датой, новая начнёт действовать с выбранного дня. Продажи прошлых дней останутся посчитанными по старой карте.</p></div>
+    <h2>Раз в неделю</h2>
+    <div class="card"><h3>Вкладка «Готовность»</h3><div class="where">Бэк-офис → Склад → Готовность</div>
+      <ul><li>«Сырьё без цены» — из-за него не считается себестоимость; сверху те, что стоят в наибольшем числе карт.</li>
+      <li>«Блюда на продаже без техкарты» — при продаже спишутся «как есть». Заведите карту.</li></ul></div>
+    <div class="card"><h3>Фудкост меню</h3><div class="where">Бэк-офис → Техкарты → «Фудкост меню»</div>
+      <p>Красным — блюда выше порога. Причина обычно одна из трёх: подорожало сырьё, занижена цена продажи, в карте завышено брутто.</p></div>
+    <div class="links"><a class="btn" href="office.html">Открыть бэк-офис</a></div>
+  </section>
+
+  <section id="r-buh" hidden>
+    <div class="rule">Главное правило: приход в программе должен совпадать с бумажной накладной — номер, дата, цены. По нему будут считаться долги поставщикам.</div>
+    <h2>Каждый день</h2>
+    <div class="card"><h3>Проверить приходы за день</h3><div class="where">Бэк-офис → Склад → Документы → тип «Приход»</div>
+      <p>Откройте каждый приход кладовщика, сверьте с накладной. Ошибка в цене: «Отменить проведение» → исправить → «Провести».</p></div>
+    <div class="card"><h3>Проверить продажи точек</h3><div class="where">Бэк-офис → Склад → Продажи</div>
+      <p>У каждого отчёта точки должно стоять «проведена». Если «не проведена» или «устарела» — нажмите «Провести продажи за период». «Нет склада» — точке не привязан склад (раздел «Склады»).</p></div>
+    <h2>Раз в месяц</h2>
+    <div class="card"><h3>Оборотная ведомость</h3><div class="where">Бэк-офис → Склад → Ведомость</div>
+      <p>Остаток на начало, приход, продажи, списания, инвентаризация, остаток на конец — по складу за период. Выгружается в CSV. Устроена как «Расширенная оборотно-сальдовая ведомость» iiko — по ней сверяются обе системы.</p></div>
+    <div class="card"><h3>Контрагенты</h3><div class="where">Бэк-офис → Контрагенты</div>
+      <p>Нового поставщика заведите до первой приёмки — кладовщик выбирает только из справочника. Поиск понимает часть БИН и телефон.</p></div>
+    <div class="links"><a class="btn" href="office.html">Открыть бэк-офис</a></div>
+  </section>
+
+  <section id="r-owner" hidden>
+    <div class="rule">Три экрана отвечают на три вопроса: сколько заработали, сколько это стоило, что лежит на складах.</div>
+    <h2>Каждый день — 5 минут</h2>
+    <div class="card"><h3>Сколько заработали и сколько это стоило</h3><div class="where">Бэк-офис → Склад → Продажи</div>
+      <p>Итоги за период: выручка, себестоимость, валовая прибыль и фудкост по каждой точке, ниже — по позициям. Фудкост выше 35 % выделен красным.</p></div>
+    <div class="card"><h3>Кто не сдал отчёт, сверка с выписками</h3><div class="where">Главная страница → вход по коду собственника</div>
+      <p>Сводка по точкам: выручка по каналам, расхождения кассы, расходы без чека.</p></div>
+    <h2>Раз в неделю</h2>
+    <div class="card"><h3>Что лежит на складах и на сколько денег</h3><div class="where">Бэк-офис → Склад → Остатки</div>
+      <p>Остаток и средняя цена по каждому складу, сумма внизу. Минус — признак незанесённого прихода или производства.</p></div>
+    <div class="card"><h3>Что мешает учёту</h3><div class="where">Бэк-офис → Склад → Готовность</div>
+      <p>Одна страница проблем: сырьё без цены, блюда без техкарт, точки без склада, непроведённые продажи. Цель — «чисто» по красным пунктам.</p></div>
+    <div class="card"><h3>Где теряем</h3><div class="where">Бэк-офис → Склад → Документы → тип «Инвентаризация»</div>
+      <p>В проведённой инвентаризации видны расчёт, факт, разница и сумма недостачи по каждой позиции.</p></div>
+    <div class="links"><a class="btn" href="office.html">Открыть бэк-офис</a><a class="btn ghost" href="index.html">Сводка по точкам</a></div>
+  </section>
+
+  <section id="r-point" hidden>
+    <div class="rule">Главное правило: отчёт сдаётся в конце каждой смены. Проданное в отчёте сразу списывает продукты со склада точки.</div>
+    <h2>В конце смены</h2>
+    <div class="card"><h3>Дневной отчёт</h3><div class="where">Главная страница → точка и её код</div>
+      <ol><li>Выручка по каналам: наличные, Kaspi QR, переводы.</li><li>Продажи по позициям — найдите поиском, количество кнопками «+» и «−».</li>
+      <li>Расходы из кассы — только с номером чека.</li><li>«Сохранить отчёт».</li></ol>
+      <p>Ошиблись — откройте тот же день, исправьте и сохраните снова: склад пересчитается сам. После инвентаризации склада отчёты прошлых дней склад уже не меняют — исправление увидит бухгалтер.</p></div>
+    <div class="links"><a class="btn" href="index.html">Открыть отчёт точки</a></div>
+  </section>
+</div>
+<script>
+const tabs = [...document.querySelectorAll("nav button")];
+function show(r) {
+  if (!document.getElementById("r-" + r)) r = "sklad";
+  for (const b of tabs) b.setAttribute("aria-selected", String(b.dataset.r === r));
+  for (const s of document.querySelectorAll("section")) s.hidden = s.id !== "r-" + r;   // id раздела ≠ хешу, иначе браузер прокрутит к нему и спрячет шапку
+  try { localStorage.setItem("tandem_help_role", r); } catch {}
+  history.replaceState(null, "", "#" + r);
+}
+for (const b of tabs) b.addEventListener("click", () => show(b.dataset.r));
+let start = location.hash.slice(1);
+if (!start) { try { start = localStorage.getItem("tandem_help_role") || ""; } catch {} }
+show(start || "sklad");
+</script>
+</body>
+</html>

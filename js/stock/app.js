@@ -1,6 +1,6 @@
-import { api, session, setSession } from "../office/api.js?v=8";
-import { el, toast } from "../office/ui.js?v=8";
-import { ask, clearDraftsAll } from "./common.js?v=6";
+import { api, session, setSession } from "../office/api.js?v=9";
+import { el, toast } from "../office/ui.js?v=9";
+import { ask, clearDraftsAll } from "./common.js?v=7";
 
 const $ = (id) => document.getElementById(id);
 const SCENARIOS = [
@@ -93,14 +93,15 @@ function home() {
   for (const x of allowed) menu.append(el("button", { type: "button", onclick: () => openScenario(x.id) }, x.title, el("span", {}, x.hint)));
   if (!allowed.length) menu.append(el("div", { class: "err" }, "У вашей роли нет складских операций"));
   main.append(menu,
-    el("div", {}, el("a", { class: "link", href: "index.html" }, "← отчёт точки")),
+    el("div", {}, el("a", { class: "link", href: "index.html" }, "← отчёт точки"), " · ",
+      el("a", { class: "link", href: "help.html#sklad", target: "_blank", rel: "noopener" }, "памятка кладовщика")),
     el("div", {}, el("button", { class: "link", onclick: doLogout }, "Выйти")));
 }
 
 async function openScenario(id) {
   const main = $("main"); main.innerHTML = '<div class="dim">Загрузка…</div>';
   try {
-    const mod = await import(`./${id}.js?v=6`);
+    const mod = await import(`./${id}.js?v=7`);
     main.innerHTML = ""; await mod.mount(main, ctx);
   } catch (e) { main.innerHTML = ""; main.append(el("div", { class: "err" }, "Сценарий не открылся: " + e.message)); }
 }

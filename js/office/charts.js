@@ -1,5 +1,5 @@
-import { api, can } from "./api.js?v=8";
-import { el, fmt, toast, debounce, modal, confirmDlg } from "./ui.js?v=8";
+import { api, can } from "./api.js?v=9";
+import { el, fmt, toast, debounce, modal, confirmDlg, today } from "./ui.js?v=9";
 
 const TYPES = { dish: "блюдо", prepared: "полуфабрикат" };
 let root, table, pager, groups = [];
@@ -78,7 +78,7 @@ async function editChart(code, chartId) {
       `Вы правите версию, закрытую датой ${ch.date_to}; для изменений с новой даты используйте «Новая версия».`));
   }
   const f = {
-    date_from: el("input", { type: "date", value: ch ? ch.date_from : new Date().toISOString().slice(0, 10), readonly: ro }),
+    date_from: el("input", { type: "date", value: ch ? ch.date_from : today(), readonly: ro }),
     date_to: el("input", { type: "date", value: ch && ch.date_to ? ch.date_to : "", readonly: ro }),
     output: el("input", { type: "number", step: "0.001", value: ch ? ch.output_amount : 1, readonly: ro }),
     technology: el("textarea", { readonly: ro }, ch && ch.technology ? ch.technology : ""),
@@ -177,7 +177,7 @@ async function editChart(code, chartId) {
     toast("Сохранено"); m.close(); load();
   }
   async function newVersion() {
-    const d = window.prompt("Новая версия действует с даты (ГГГГ-ММ-ДД):", new Date().toISOString().slice(0, 10));
+    const d = window.prompt("Новая версия действует с даты (ГГГГ-ММ-ДД):", today());
     if (!d) return;
     const r2 = await api("chart_new_version", { code, date_from: d });
     if (!r2.ok) { err.textContent = r2.message; return; }
@@ -192,7 +192,7 @@ async function editChart(code, chartId) {
 }
 
 // ---------- отчёт ----------
-let fc = { point_id: "", group_id: "", date: new Date().toISOString().slice(0, 10), sort: "foodcost_pct" };
+let fc = { point_id: "", group_id: "", date: today(), sort: "foodcost_pct" };
 async function loadReport() {
   const host = document.getElementById("fc-root"); host.innerHTML = "";
   const pts = (await api("stores_list", {})).points || [];   // список точек уже отдаёт stores_list

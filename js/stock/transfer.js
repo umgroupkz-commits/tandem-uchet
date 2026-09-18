@@ -1,5 +1,5 @@
-import { ask, el, fmt, toast, itemPicker, linesTable, drafts, warningsText,
-  withBusy, saveDoc, draftHint, okNum, numOf } from "./common.js?v=6";
+import { ask, el, fmt, today, toast, itemPicker, linesTable, drafts, warningsText,
+  withBusy, saveDoc, draftHint, okNum, numOf } from "./common.js?v=7";
 
 const SCN = "transfer";
 export async function mount(root, ctx) {
@@ -30,7 +30,7 @@ export async function mount(root, ctx) {
     await withBusy(document.getElementById("post"), async () => {
       let s = null;
       try {
-        s = await saveDoc(d, { doc_type: "transfer", doc_date: new Date().toISOString().slice(0, 10), store_from: st.id, store_to: d.to,
+        s = await saveDoc(d, { doc_type: "transfer", doc_date: today(), store_from: st.id, store_to: d.to,
           lines: lines.map((l) => ({ item_code: l.item_code, qty: numOf(l.qty) })) }, save);
         d.server_id = s.id; save();
         // Предпросмотр — единственная проверка остатков до записи движений. Если он не

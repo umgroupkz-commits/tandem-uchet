@@ -1,5 +1,5 @@
-import { ask, el, fmt, toast, itemPicker, linesTable, drafts, warningsText,
-  withBusy, saveDoc, draftHint, okNum, numOf } from "./common.js?v=6";
+import { ask, el, fmt, today, toast, itemPicker, linesTable, drafts, warningsText,
+  withBusy, saveDoc, draftHint, okNum, numOf } from "./common.js?v=7";
 
 // Списание с телефона: порча, проработка, питание персонала — то, что кладовщик видит
 // первым. Устроено как перемещение: черновик на телефоне, предпросмотр остатков, проведение.
@@ -36,7 +36,7 @@ export async function mount(root, ctx) {
     await withBusy(document.getElementById("post"), async () => {
       let s = null;
       try {
-        s = await saveDoc(d, { doc_type: "writeoff", doc_date: new Date().toISOString().slice(0, 10), store_from: st.id,
+        s = await saveDoc(d, { doc_type: "writeoff", doc_date: today(), store_from: st.id,
           reason: d.reason, comment: d.comment || "",
           lines: lines.map((l) => ({ item_code: l.item_code, qty: numOf(l.qty) })) }, save);
         d.server_id = s.id; save();
