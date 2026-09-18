@@ -537,7 +537,7 @@ begin
           )
           and (v_q = '' or i.name ilike '%' || v_q || '%')
         order by i.category, i.name
-        limit 1200
+        limit 5000   -- было 1200: у Актау после включения штучных товаров 1231 позиция, хвост списка пропадал
       ) s));
   end if;
 
