@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#1F3864">
+<title>Тандем KZ — маршрут проверки учёта</title>
+<style>
+  :root{--ink:#1B2430;--ink2:#4A5568;--muted:#6B7588;--line:#E2E7EF;--bg:#F5F7FB;--card:#fff;
+        --accent:#1F3864;--accent2:#3E6EA8;--ok:#0B6B4F;--okbg:#E3F3EC;--bad:#B4453C;--badbg:#FBEAE8;
+        --warnbg:#FCF3E1;--warn:#7A5710;--in:#FFFBF0}
+  *{box-sizing:border-box}
+  [hidden]{display:none!important}
+  body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 -apple-system,"Segoe UI",Roboto,Arial,sans-serif}
+  .wrap{max-width:680px;margin:0 auto;padding:0 14px 60px}
+  header{padding:18px 0 12px;border-bottom:2px solid var(--accent);margin-bottom:14px}
+  h1{font-size:21px;margin:0;color:var(--accent);letter-spacing:-.2px}
+  .sub{font-size:14px;color:var(--ink2);margin-top:6px}
+  .bar{position:sticky;top:0;z-index:5;background:var(--bg);padding:10px 0 8px;margin-bottom:6px}
+  .progress{height:8px;background:var(--line);border-radius:4px;overflow:hidden}
+  .progress i{display:block;height:100%;width:0;background:var(--ok);transition:width .3s}
+  .ptext{display:flex;justify-content:space-between;font-size:13px;color:var(--ink2);margin-top:5px;gap:10px;flex-wrap:wrap}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:12px}
+  .intro p{margin:0 0 10px}
+  .intro p:last-child{margin-bottom:0}
+  label.f{display:block;font-size:13px;color:var(--ink2);font-weight:600;margin:0 0 4px}
+  input[type=text],textarea{width:100%;padding:11px 12px;border:1px solid var(--line);border-radius:8px;font:inherit;background:var(--in);color:var(--ink)}
+  textarea{min-height:70px;resize:vertical}
+  input:focus-visible,textarea:focus-visible,button:focus-visible,a:focus-visible,summary:focus-visible{outline:3px solid var(--accent2);outline-offset:2px}
+  .links{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+  a.btn,button{display:inline-flex;align-items:center;justify-content:center;min-height:44px;padding:10px 16px;border-radius:8px;
+    border:1px solid var(--accent);background:var(--accent);color:#fff;font:inherit;font-weight:600;text-decoration:none;cursor:pointer}
+  a.btn.ghost,button.ghost{background:#fff;color:var(--accent)}
+  h2{font-size:13px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);margin:26px 0 4px;font-weight:700}
+  .who{font-size:14px;color:var(--ink2);margin:0 0 10px}
+  details.step{background:var(--card);border:1px solid var(--line);border-radius:12px;margin-bottom:10px}
+  details.step[data-st=ok]{border-color:#A9D8C4}
+  details.step[data-st=bad]{border-color:#E6B3AD}
+  summary{list-style:none;display:flex;gap:12px;align-items:center;padding:14px 16px;cursor:pointer;min-height:44px}
+  summary::-webkit-details-marker{display:none}
+  .num{flex:0 0 34px;height:34px;border-radius:8px;background:var(--accent);color:#fff;font-weight:700;font-size:14px;
+    display:flex;align-items:center;justify-content:center}
+  [data-st=ok] .num{background:var(--ok)}
+  [data-st=bad] .num{background:var(--bad)}
+  .stitle{flex:1;font-weight:600}
+  .badge{font-size:12px;font-weight:600;padding:3px 8px;border-radius:6px;white-space:nowrap}
+  .badge.ok{background:var(--okbg);color:var(--ok)}
+  .badge.bad{background:var(--badbg);color:var(--bad)}
+  .body{padding:0 16px 16px}
+  .where{font-size:14px;color:var(--ink2);margin:0 0 8px}
+  ol{margin:0 0 12px;padding-left:22px}
+  ol li{margin-bottom:6px}
+  .expect{background:var(--okbg);border-left:4px solid var(--ok);border-radius:6px;padding:10px 12px;margin-bottom:12px}
+  .expect b{display:block;font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--ok);margin-bottom:2px}
+  .note{background:var(--warnbg);color:var(--warn);border-radius:6px;padding:9px 12px;font-size:14px;margin-bottom:12px}
+  .res{display:flex;gap:8px;flex-wrap:wrap}
+  .res button{flex:1 1 150px}
+  .res button.on-ok{background:var(--ok);border-color:var(--ok);color:#fff}
+  .res button.on-bad{background:var(--bad);border-color:var(--bad);color:#fff}
+  .comment{margin-top:10px}
+  .final textarea{min-height:200px;font-size:13px;background:#fff}
+  .done{color:var(--ok);font-size:14px;margin-left:8px}
+  code{background:#EEF2F8;padding:1px 5px;border-radius:4px;font-size:.92em}
+  @media (prefers-reduced-motion:reduce){.progress i{transition:none}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Маршрут проверки учёта</h1>
+    <div class="sub">Тандем KZ · бэк-офис и склад с телефона · пройдите шаги по порядку и отметьте результат каждого</div>
+  </header>
+
+  <div class="bar">
+    <div class="progress" aria-hidden="true"><i id="pbar"></i></div>
+    <div class="ptext"><span id="ptext">Пройдено 0 из 0</span><span id="pbad"></span></div>
+  </div>
+
+  <div class="card intro">
+    <p>Этот маршрут проверяет программу учёта от начала до конца. Шаги повторяют обычную работу: завести склад и поставщика, принять товар, переместить, пересчитать, списать, произвести полуфабрикат и посмотреть себестоимость.</p>
+    <p>Всё делается на <b>учебных складах</b>, которые вы создадите в первом разделе. Настоящие склады в эти дни не трогайте: документы на них поменяют остатки до запуска.</p>
+    <p>В каждом шаге есть блок «Что должно получиться». Совпало — нажмите «Получилось». Не совпало, непонятно или появилась ошибка — нажмите «Не так» и опишите, что увидели. Отметки сохраняются в этом браузере, маршрут можно проходить в несколько заходов.</p>
+    <label class="f" for="tester" style="margin-top:12px">Кто проходит маршрут</label>
+    <input type="text" id="tester" placeholder="Имя и должность, например: Айгерим, кладовщик" autocomplete="name">
+    <div class="links">
+      <a class="btn" href="office.html" target="_blank" rel="noopener">Открыть бэк-офис</a>
+      <a class="btn ghost" href="stock.html" target="_blank" rel="noopener">Открыть склад с телефона</a>
+    </div>
+  </div>
+
+  <div id="steps"></div>
+
+  <h2>Отчёт</h2>
+  <div class="card final">
+    <p class="who" style="margin-bottom:10px">Когда пройдёте маршрут (или часть), скопируйте отчёт и отправьте его Андрею. В отчёт попадают отметки и ваши комментарии.</p>
+    <textarea id="report" readonly aria-label="Текст отчёта"></textarea>
+    <div class="links">
+      <button type="button" id="copy">Скопировать отчёт</button>
+      <a class="btn ghost" id="wa" href="#" target="_blank" rel="noopener">Отправить в WhatsApp</a>
+      <span class="done" id="copied" hidden>Скопировано</span>
+    </div>
+    <div class="links">
+      <button type="button" class="ghost" id="reset">Начать маршрут заново</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// Шаги маршрута. Текст кнопок и экранов — дословно как в программе, иначе человек
+// ищет на экране то, чего там нет. Учебные названия одни на весь маршрут: шаги
+// ссылаются друг на друга («позиция из шага 5»).
+const PARTS = [
+  { title: "1. Подготовка — администратор или собственник, компьютер",
+    who: "Бэк-офис, вход под своим логином. Этот раздел создаёт всё, на чём пройдут остальные шаги.",
+    steps: [
+      { t: "Вход и смена временного PIN", where: "Бэк-офис",
+        do: ["Откройте бэк-офис и введите логин и PIN, которые вам выдали.",
+             "Если программа просит сменить временный PIN — придумайте свой, не меньше 4 цифр, и сохраните."],
+        exp: "Открылись разделы «Номенклатура», «Техкарты», «Склад», «Склады», «Контрагенты». Справа вверху видны ваше имя и роль." },
+      { t: "Два учебных склада", where: "Бэк-офис → Склады",
+        do: ["Нажмите «+ Склад».", "Название: <code>Учебный склад</code>. Точка — «без точки». Сохранить.",
+             "Ещё раз «+ Склад»: <code>Учебный склад 2</code>, тоже без точки. Сохранить."],
+        exp: "Оба склада появились в списке, статус пустой (не «выключен»)." },
+      { t: "Учебный поставщик", where: "Бэк-офис → Контрагенты",
+        do: ["Нажмите «+ Контрагент».", "Название: <code>Учебный поставщик</code>, вид — «поставщик». Телефон и БИН можно не заполнять. Сохранить.",
+             "Наберите «учеб» в поиске."],
+        exp: "Поиск находит «Учебный поставщик» с видом «поставщик»." },
+      { t: "Карточка существующей позиции", where: "Бэк-офис → Номенклатура",
+        do: ["В поиске наберите <code>мука</code> и откройте любую муку.", "Посмотрите карточку, ничего не меняйте, нажмите «Отмена»."],
+        exp: "В карточке видны единица, группа, учётная цена сырья, цены по точкам. Карточка закрывается без изменений." },
+      { t: "Учебная позиция и учебный полуфабрикат", where: "Бэк-офис → Номенклатура",
+        do: ["«+ Позиция»: название <code>Учебная позиция</code>, тип «товар», единица «кг», учётная цена сырья <code>500</code>. Сохранить.",
+             "«+ Позиция»: название <code>Учебный полуфабрикат</code>, тип «полуфабрикат», единица «кг». Сохранить.",
+             "Найдите обе поиском по слову «учеб»."],
+        exp: "Обе позиции находятся. У «Учебной позиции» учётная цена 500 за кг." },
+      { t: "Кладовщик учебного склада", where: "Бэк-офис → Пользователи (только администратор)",
+        do: ["«+ Пользователь»: логин латиницей, например <code>test.sklad</code>, имя, роль «кладовщик», временный PIN из 4 цифр.",
+             "В блоке «Склады пользователя» поставьте галочку только у «Учебный склад». Сохранить.",
+             "Запишите логин и PIN — они нужны в разделе 2."],
+        exp: "В списке пользователей у нового кладовщика в колонке «Склады» написано «Учебный склад», статус — «временный PIN».",
+        note: "Если у вас роль «собственник», раздела «Пользователи» нет — попросите администратора завести кладовщика и отметьте шаг по его результату." },
+    ] },
+  { title: "2. Кладовщик — телефон",
+    who: "Склад с телефона, вход под кладовщиком из шага 6. Лучше с настоящего телефона, но подойдёт и компьютер.",
+    steps: [
+      { t: "Вход кладовщика и выбор склада", where: "Склад с телефона",
+        do: ["Откройте склад с телефона. Если там уже кто-то вошёл — нажмите «Выйти».",
+             "Войдите логином и PIN кладовщика, смените временный PIN.",
+             "Нажмите «сменить склад» вверху."],
+        exp: "Сразу после входа выбран «Учебный склад». В «сменить склад» есть только он — чужих складов нет. В меню: «Приёмка», «Инвентаризация», «Перемещение»." },
+      { t: "Приёмка от поставщика", where: "Склад с телефона → Приёмка",
+        do: ["Поставщик: начните вводить «учеб» и выберите «Учебный поставщик».",
+             "Добавьте «Учебная позиция»: количество <code>10</code>, цена <code>500</code>.",
+             "Нажмите «Провести»."],
+        exp: "Сообщение «Проведено: ПН-…» с номером документа. Сумма прихода 5 000." },
+      { t: "Перемещение на другой склад", where: "Склад с телефона → Перемещение",
+        do: ["Куда: «Учебный склад 2».", "Добавьте «Учебная позиция», количество <code>2</code>.", "Нажмите «Провести»."],
+        exp: "Сообщение «Перемещение проведено: ПМ-…». В списке «Куда» были все склады — перемещать можно на любой." },
+      { t: "Слепая инвентаризация", where: "Склад с телефона → Инвентаризация",
+        do: ["В списке найдите «Учебная позиция» и введите факт <code>7,5</code> (с запятой).",
+             "Нажмите «Провести» — откроется итог пересчёта.", "Проверьте итог и нажмите «Подтвердить и провести»."],
+        exp: "Во время ввода расчётного остатка не видно. В итоге: расчёт 8, факт 7,5, разница −0,5. После проведения — «Инвентаризация проведена: ИН-…»." },
+    ] },
+  { title: "3. Документы и остатки — бэк-офис",
+    who: "Бэк-офис, вход администратора или собственника. Бухгалтер может пройти шаги 11–13.",
+    steps: [
+      { t: "Остатки учебного склада", where: "Бэк-офис → Склад → Остатки",
+        do: ["Выберите склад «Учебный склад».", "Нажмите на строку «Учебная позиция» — откроются её движения."],
+        exp: "Остаток 7,5 кг, средняя 500. В движениях три документа кладовщика: ПН (+10), ПМ (−2), ИН (−0,5)." },
+      { t: "Журнал документов", where: "Бэк-офис → Склад → Документы",
+        do: ["Выберите склад «Учебный склад».", "Откройте приход ПН из шага 8."],
+        exp: "В журнале три документа кладовщика со статусом «Проведено». В карточке прихода — поставщик, строка 10 × 500 и сумма 5 000." },
+      { t: "Приход по другой цене", where: "Бэк-офис → Склад → «+ Новый документ…» → Приход",
+        do: ["Склад-получатель «Учебный склад», поставщик «Учебный поставщик», № накладной <code>Т-1</code>.",
+             "Добавьте «Учебная позиция»: 2,5 кг по <code>600</code>.",
+             "Нажмите «Сохранить черновик», потом «Провести» и подтвердите."],
+        exp: "Документ получил номер ПН-… и статус «Проведено». В «Остатках» у «Учебной позиции» 10 кг, средняя 525 (7,5 по 500 и 2,5 по 600). В карточке позиции учётная цена сырья стала 600 — она берётся из последнего прихода." },
+      { t: "Списание и отмена проведения", where: "Бэк-офис → Склад → «+ Новый документ…» → Списание",
+        do: ["Склад «Учебный склад», причина «порча», «Учебная позиция» 1 кг. Провести.",
+             "Проверьте остаток в «Остатках».",
+             "Откройте это списание снова, нажмите «Отменить проведение» и подтвердите. Потом «Удалить»."],
+        exp: "После списания остаток 9 кг. После отмены проведения снова 10 кг, а удалённый черновик исчез из журнала." },
+      { t: "Кладовщик не видит чужое", where: "Бэк-офис, вход под кладовщиком",
+        do: ["Выйдите и войдите в бэк-офис под кладовщиком из шага 6.",
+             "Откройте «Склад» → «Остатки» и «Документы».", "Попробуйте создать списание — посмотрите список складов."],
+        exp: "Видны только документы и остатки «Учебного склада». В новом списании на выбор только «Учебный склад». Раздела «Пользователи» нет." },
+    ] },
+  { title: "4. Техкарты, производство и себестоимость",
+    who: "Бэк-офис, вход технолога, администратора или собственника.",
+    steps: [
+      { t: "Техкарта готового блюда", where: "Бэк-офис → Техкарты",
+        do: ["Найдите любое блюдо из меню и откройте его карту.", "Посмотрите состав и итог внизу, ничего не меняйте."],
+        exp: "В составе видны брутто, нетто, выход, цена и сумма по каждому ингредиенту. Внизу — себестоимость и фудкост. Если себестоимость «посчитана частично», программа называет, у какого сырья нет цены.",
+        note: "Если у блюда нет цены ингредиента — запишите в комментарий, какого именно. Это не ошибка программы, а недостающая цена сырья, её заведём." },
+      { t: "Фудкост меню", where: "Бэк-офис → Техкарты → «Фудкост меню»",
+        do: ["Выберите точку.", "Пролистайте список."],
+        exp: "У блюд видны себестоимость, цена продажи и фудкост в процентах. Фудкост выше порога выделен красным, в пределах — зелёным." },
+      { t: "Карта учебного полуфабриката", where: "Бэк-офис → Техкарты",
+        do: ["Найдите «Учебный полуфабрикат» и откройте — откроется пустая карта.",
+             "Выход: <code>1</code> кг. Добавьте ингредиент «Учебная позиция»: брутто <code>1,2</code>, нетто <code>1</code>, выход <code>1</code>.",
+             "Сохранить."],
+        exp: "Карта сохранена. Себестоимость 720 за кг: 1,2 кг сырья по учётной цене 600 из последнего прихода.",
+        note: "Техкарта считает по учётной цене (последний приход), а склад при производстве — по средней цене склада. Поэтому в следующем шаге сумма будет другой, и это верно." },
+      { t: "Производство полуфабриката", where: "Бэк-офис → Склад → «+ Новый документ…» → Производство",
+        do: ["Склад кухни — «Учебный склад».", "Выпуск: «Учебный полуфабрикат», 2 кг.", "Провести."],
+        exp: "Под документом блок «Списано по техкартам»: «Учебная позиция» 2,4 кг по 525. В «Остатках»: «Учебная позиция» 7,6 кг, «Учебный полуфабрикат» 2 кг со средней 630 (2,4 × 525 ÷ 2)." },
+    ] },
+  { title: "5. Вход и защита",
+    who: "Любой компьютер или телефон. Шаг лучше проходить администратору: в конце он же снимает блокировку.",
+    steps: [
+      { t: "Неверный PIN и блокировка", where: "Бэк-офис, страница входа",
+        do: ["Выйдите. Пять раз введите логин кладовщика из шага 6 с неверным PIN.",
+             "Шестой раз — снова неверный PIN. Затем правильный.",
+             "Под администратором: «Пользователи» → «сбросить PIN» у этого кладовщика."],
+        exp: "На все неверные PIN ответ один: «Неверный логин или PIN». На правильный после пяти ошибок — «Слишком много попыток, подождите 15 минут». После сброса PIN кладовщик входит с новым временным PIN и должен его сменить." },
+    ] },
+  { title: "6. Загрузка остатков из iiko — по желанию",
+    who: "Бэк-офис. Нужен файл «Расширенная оборотно-сальдовая ведомость», выгруженный из iiko в Excel.",
+    steps: [
+      { t: "Факт инвентаризации из файла iiko", where: "Бэк-офис → Склад → «+ Новый документ…» → Инвентаризация",
+        do: ["Склад — «Учебный склад».", "Нажмите «Загрузить факт из файла» и выберите файл из iiko.",
+             "Если в файле несколько листов — посмотрите на окно выбора листа.",
+             "Проверьте строки и итог под таблицей. <b>Не проводите</b> — нажмите «Отмена»."],
+        exp: "Программа предлагает лист и предупреждает, если в листе сложены несколько складов. Строки заполняются фактом, внизу сводка: сколько загружено, сколько не найдено, у скольких позиций в iiko был минус.",
+        note: "На учебный склад загружать настоящие остатки не нужно — поэтому «Отмена». В день запуска то же самое делается на настоящих складах." },
+    ] },
+];
+
+const KEY = "tandem_guide_v1";
+let st = { tester: "", marks: {} };
+try { st = Object.assign(st, JSON.parse(localStorage.getItem(KEY) || "{}")); } catch {}
+const save = () => { try { localStorage.setItem(KEY, JSON.stringify(st)); } catch {} };
+
+const all = [];
+PARTS.forEach((p) => p.steps.forEach((s) => all.push(s)));
+all.forEach((s, i) => { s.n = i + 1; });
+
+function h(tag, attrs, ...kids) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (k === "html") e.innerHTML = v; else if (k.startsWith("on")) e.addEventListener(k.slice(2), v);
+    else if (v !== false && v != null) e.setAttribute(k, v === true ? "" : v);
+  }
+  for (const k of kids) if (k != null) e.append(k);
+  return e;
+}
+
+function render() {
+  const root = document.getElementById("steps"); root.innerHTML = "";
+  for (const p of PARTS) {
+    root.append(h("h2", {}, p.title), h("p", { class: "who" }, p.who));
+    for (const s of p.steps) root.append(stepEl(s));
+  }
+  refresh();
+}
+
+function stepEl(s) {
+  const m = st.marks[s.n] || {};
+  const d = h("details", { class: "step", "data-st": m.st || "" });
+  const badge = h("span", { class: "badge" + (m.st ? " " + m.st : "") }, m.st === "ok" ? "получилось" : m.st === "bad" ? "не так" : "");
+  d.append(h("summary", {}, h("span", { class: "num" }, String(s.n)), h("span", { class: "stitle" }, s.t), badge));
+  const ol = h("ol"); s.do.forEach((x) => ol.append(h("li", { html: x })));
+  const comment = h("textarea", { placeholder: "Что вы увидели вместо ожидаемого? Номер документа, текст ошибки, на каком шаге", "aria-label": "Комментарий к шагу " + s.n });
+  comment.value = m.c || "";
+  const cbox = h("div", { class: "comment", hidden: m.st !== "bad" }, comment);
+  comment.addEventListener("input", () => { (st.marks[s.n] = st.marks[s.n] || {}).c = comment.value; save(); refresh(); });
+  const bOk = h("button", { type: "button", class: "ghost" + (m.st === "ok" ? " on-ok" : "") }, "Получилось");
+  const bBad = h("button", { type: "button", class: "ghost" + (m.st === "bad" ? " on-bad" : "") }, "Не так");
+  const mark = (v) => {
+    const cur = st.marks[s.n] = st.marks[s.n] || {};
+    cur.st = cur.st === v ? "" : v; save();
+    d.dataset.st = cur.st; bOk.className = "ghost" + (cur.st === "ok" ? " on-ok" : ""); bBad.className = "ghost" + (cur.st === "bad" ? " on-bad" : "");
+    badge.className = "badge" + (cur.st ? " " + cur.st : ""); badge.textContent = cur.st === "ok" ? "получилось" : cur.st === "bad" ? "не так" : "";
+    cbox.hidden = cur.st !== "bad"; if (cur.st === "bad") comment.focus();
+    if (cur.st === "ok") { d.open = false; const next = d.nextElementSibling; if (next && next.tagName === "DETAILS" && !next.dataset.st) next.open = true; }
+    refresh();
+  };
+  bOk.addEventListener("click", () => mark("ok")); bBad.addEventListener("click", () => mark("bad"));
+  d.append(h("div", { class: "body" },
+    h("p", { class: "where" }, "Где: " + s.where), ol,
+    h("div", { class: "expect" }, h("b", {}, "Что должно получиться"), s.exp),
+    s.note ? h("div", { class: "note" }, s.note) : null,
+    h("div", { class: "res" }, bOk, bBad), cbox));
+  return d;
+}
+
+function refresh() {
+  const done = all.filter((s) => (st.marks[s.n] || {}).st).length;
+  const bad = all.filter((s) => (st.marks[s.n] || {}).st === "bad").length;
+  document.getElementById("pbar").style.width = (done / all.length * 100) + "%";
+  document.getElementById("ptext").textContent = `Пройдено ${done} из ${all.length}`;
+  document.getElementById("pbad").textContent = bad ? `Не так: ${bad}` : "";
+  const lines = [`Проверка учёта Тандем KZ — ${st.tester || "имя не указано"}`, `Пройдено ${done} из ${all.length}, не так: ${bad}`, ""];
+  for (const s of all) {
+    const m = st.marks[s.n] || {};
+    const mark = m.st === "ok" ? "получилось" : m.st === "bad" ? "НЕ ТАК" : "не пройден";
+    lines.push(`${s.n}. ${s.t} — ${mark}` + (m.st === "bad" && m.c ? `\n   ${m.c.trim().replace(/\n/g, "\n   ")}` : ""));
+  }
+  const text = lines.join("\n");
+  document.getElementById("report").value = text;
+  document.getElementById("wa").href = "https://wa.me/?text=" + encodeURIComponent(text);
+}
+
+const tester = document.getElementById("tester");
+tester.value = st.tester;
+tester.addEventListener("input", () => { st.tester = tester.value; save(); refresh(); });
+document.getElementById("copy").addEventListener("click", async () => {
+  const t = document.getElementById("report");
+  try { await navigator.clipboard.writeText(t.value); } catch { t.select(); document.execCommand("copy"); }
+  const c = document.getElementById("copied"); c.hidden = false; setTimeout(() => { c.hidden = true; }, 2500);
+});
+document.getElementById("reset").addEventListener("click", () => {
+  if (!confirm("Стереть все отметки и комментарии в этом браузере?")) return;
+  st = { tester: st.tester, marks: {} }; save(); render();
+});
+render();
+const first = document.querySelector("details.step:not([data-st=ok]):not([data-st=bad])");
+if (first) first.open = true;
+</script>
+</body>
+</html>
