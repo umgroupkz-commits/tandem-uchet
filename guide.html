@@ -255,9 +255,26 @@ const PARTS = [
     ] },
 ];
 
-const KEY = "tandem_guide_v1";
+// Отметки хранятся по названию шага: номера сдвигаются, когда в маршрут добавляются шаги.
+// Первая версия (21 шаг) хранила их по номеру — переносим по её списку названий один раз.
+const KEY = "tandem_guide_v2";
+const V1_TITLES = ["Вход и смена временного PIN","Два учебных склада","Учебный поставщик","Карточка существующей позиции",
+  "Учебная позиция и учебный полуфабрикат","Кладовщик учебного склада","Вход кладовщика и выбор склада","Приёмка от поставщика",
+  "Перемещение на другой склад","Слепая инвентаризация","Остатки учебного склада","Журнал документов","Приход по другой цене",
+  "Списание и отмена проведения","Кладовщик не видит чужое","Техкарта готового блюда","Фудкост меню","Карта учебного полуфабриката",
+  "Производство полуфабриката","Неверный PIN и блокировка","Факт инвентаризации из файла iiko"];
 let st = { tester: "", marks: {} };
-try { st = Object.assign(st, JSON.parse(localStorage.getItem(KEY) || "{}")); } catch {}
+try {
+  const v2 = localStorage.getItem(KEY);
+  if (v2) st = Object.assign(st, JSON.parse(v2));
+  else {
+    const v1 = JSON.parse(localStorage.getItem("tandem_guide_v1") || "null");
+    if (v1) {
+      st.tester = v1.tester || "";
+      for (const [n, m] of Object.entries(v1.marks || {})) { const title = V1_TITLES[Number(n) - 1]; if (title) st.marks[title] = m; }
+    }
+  }
+} catch {}
 const save = () => { try { localStorage.setItem(KEY, JSON.stringify(st)); } catch {} };
 
 const all = [];
@@ -284,7 +301,7 @@ function render() {
 }
 
 function stepEl(s) {
-  const m = st.marks[s.n] || {};
+  const m = st.marks[s.t] || {};
   const d = h("details", { class: "step", "data-st": m.st || "" });
   const badge = h("span", { class: "badge" + (m.st ? " " + m.st : "") }, m.st === "ok" ? "получилось" : m.st === "bad" ? "не так" : "");
   d.append(h("summary", {}, h("span", { class: "num" }, String(s.n)), h("span", { class: "stitle" }, s.t), badge));
@@ -292,11 +309,11 @@ function stepEl(s) {
   const comment = h("textarea", { placeholder: "Что вы увидели вместо ожидаемого? Номер документа, текст ошибки, на каком шаге", "aria-label": "Комментарий к шагу " + s.n });
   comment.value = m.c || "";
   const cbox = h("div", { class: "comment", hidden: m.st !== "bad" }, comment);
-  comment.addEventListener("input", () => { (st.marks[s.n] = st.marks[s.n] || {}).c = comment.value; save(); refresh(); });
+  comment.addEventListener("input", () => { (st.marks[s.t] = st.marks[s.t] || {}).c = comment.value; save(); refresh(); });
   const bOk = h("button", { type: "button", class: "ghost" + (m.st === "ok" ? " on-ok" : "") }, "Получилось");
   const bBad = h("button", { type: "button", class: "ghost" + (m.st === "bad" ? " on-bad" : "") }, "Не так");
   const mark = (v) => {
-    const cur = st.marks[s.n] = st.marks[s.n] || {};
+    const cur = st.marks[s.t] = st.marks[s.t] || {};
     cur.st = cur.st === v ? "" : v; save();
     d.dataset.st = cur.st; bOk.className = "ghost" + (cur.st === "ok" ? " on-ok" : ""); bBad.className = "ghost" + (cur.st === "bad" ? " on-bad" : "");
     badge.className = "badge" + (cur.st ? " " + cur.st : ""); badge.textContent = cur.st === "ok" ? "получилось" : cur.st === "bad" ? "не так" : "";
@@ -314,14 +331,14 @@ function stepEl(s) {
 }
 
 function refresh() {
-  const done = all.filter((s) => (st.marks[s.n] || {}).st).length;
-  const bad = all.filter((s) => (st.marks[s.n] || {}).st === "bad").length;
+  const done = all.filter((s) => (st.marks[s.t] || {}).st).length;
+  const bad = all.filter((s) => (st.marks[s.t] || {}).st === "bad").length;
   document.getElementById("pbar").style.width = (done / all.length * 100) + "%";
   document.getElementById("ptext").textContent = `Пройдено ${done} из ${all.length}`;
   document.getElementById("pbad").textContent = bad ? `Не так: ${bad}` : "";
   const lines = [`Проверка учёта Тандем KZ — ${st.tester || "имя не указано"}`, `Пройдено ${done} из ${all.length}, не так: ${bad}`, ""];
   for (const s of all) {
-    const m = st.marks[s.n] || {};
+    const m = st.marks[s.t] || {};
     const mark = m.st === "ok" ? "получилось" : m.st === "bad" ? "НЕ ТАК" : "не пройден";
     lines.push(`${s.n}. ${s.t} — ${mark}` + (m.st === "bad" && m.c ? `\n   ${m.c.trim().replace(/\n/g, "\n   ")}` : ""));
   }
