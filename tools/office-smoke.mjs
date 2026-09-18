@@ -254,32 +254,32 @@ SECTIONS.stores = async (ctx) => {
   let r = await call("office_stores_list", { token: t });
   check("склады: список с точками", r.ok && r.stores.length >= 27 && Array.isArray(r.points) && r.points.length >= 5, { n: r.stores && r.stores.length });
   // Раздел трогает склад по умолчанию точки «Аян» — запоминаем, чтобы вернуть как было.
-  const aianWas = (r.stores || []).find((x) => x.point_id === "aian" && x.is_default === true) || null;
-  r = await call("office_store_save", { token: t, name: "ZZ_TEST_склад", point_id: "aian", is_default: true });
+  const tpWas = (r.stores || []).find((x) => x.point_id === "zz_test" && x.is_default === true) || null;
+  r = await call("office_store_save", { token: t, name: "ZZ_TEST_склад", point_id: "zz_test", is_default: true });
   check("склад: создание с привязкой и по умолчанию", r.ok && r.id, r);
   const id = r.id;
   r = await call("office_stores_list", { token: t });
   const s = r.stores.find((x) => x.id === id);
-  check("склад: виден как по умолчанию у Аяна", s && s.point_id === "aian" && s.is_default === true, s);
+  check("склад: виден как по умолчанию у тестовой точки", s && s.point_id === "zz_test" && s.is_default === true, s);
   r = await call("office_store_save", { token: t, id, name: "ZZ_TEST_склад", point_id: null, is_default: false, active: false });
   check("склад: отвязка и деактивация", r.ok, r);
-  r = await call("office_store_save", { token: t, id, name: "ZZ_TEST_склад", point_id: "aian", active: false, is_default: true });
+  r = await call("office_store_save", { token: t, id, name: "ZZ_TEST_склад", point_id: "zz_test", active: false, is_default: true });
   check("выключенный склад не становится складом по умолчанию", r.ok, r);
   r = await call("office_stores_list", { token: t });
   const s2 = r.stores.find((x) => x.id === id);
-  check("у Аяна нет склада по умолчанию после этого", s2 && s2.is_default !== true && !r.stores.some((x) => x.point_id === "aian" && x.is_default === true), s2);
+  check("у тестовой точки нет склада по умолчанию после этого", s2 && s2.is_default !== true && !r.stores.some((x) => x.point_id === "zz_test" && x.is_default === true), s2);
   r = await call("office_store_save", { token: t, id, name: "ZZ_TEST_склад", point_id: "нет-такой" });
   check("склад: чужая точка — validation", r.ok === false && r.error === "validation", r);
   // возвращаем точке её прежний склад по умолчанию
-  if (aianWas) {
-    await call("office_store_save", { token: t, id: aianWas.id, name: aianWas.name,
-      point_id: "aian", active: aianWas.active !== false, is_default: true });
+  if (tpWas) {
+    await call("office_store_save", { token: t, id: tpWas.id, name: tpWas.name,
+      point_id: "zz_test", active: tpWas.active !== false, is_default: true });
   }
   r = await call("office_stores_list", { token: t });
-  const aianNow = (r.stores || []).find((x) => x.point_id === "aian" && x.is_default === true) || null;
+  const tpNow = (r.stores || []).find((x) => x.point_id === "zz_test" && x.is_default === true) || null;
   check("склад по умолчанию точки «Аян» — как до теста",
-    (aianNow && aianNow.id) === (aianWas && aianWas.id) || (!aianNow && !aianWas),
-    { было: aianWas && aianWas.id, стало: aianNow && aianNow.id });
+    (tpNow && tpNow.id) === (tpWas && tpWas.id) || (!tpNow && !tpWas),
+    { было: tpWas && tpWas.id, стало: tpNow && tpNow.id });
 };
 
 SECTIONS.counteragents = async (ctx) => {
@@ -353,14 +353,14 @@ SECTIONS.users = async (ctx) => {
       perms: ["charts:edit", "charts:view", "counteragents:edit", "counteragents:view",
         "doc:inventory:edit", "doc:inventory:view", "doc:invoice_in:edit", "doc:invoice_in:view",
         "doc:production:edit", "doc:production:view", "doc:transfer:edit", "doc:transfer:view",
-        "doc:writeoff:edit", "doc:writeoff:view",
+        "doc:sale:edit", "doc:sale:view", "doc:writeoff:edit", "doc:writeoff:view",
         "nomenclature:edit", "nomenclature:view", "stock:edit", "stock:view", "stores:edit", "stores:view"] },
     zz_test_buh: { role: "accountant", name: "ZZ_TEST_Бухгалтер",
       perms: ["charts:view", "counteragents:edit", "counteragents:view",
-        "doc:invoice_in:edit", "doc:invoice_in:view", "nomenclature:view", "stock:edit", "stock:view", "stores:view"] },
+        "doc:invoice_in:edit", "doc:invoice_in:view", "doc:sale:edit", "doc:sale:view", "nomenclature:view", "stock:edit", "stock:view", "stores:view"] },
     zz_test_tech: { role: "technologist", name: "ZZ_TEST_Технолог",
       perms: ["charts:edit", "charts:view", "counteragents:view",
-        "doc:production:edit", "doc:production:view", "nomenclature:edit", "nomenclature:view",
+        "doc:production:edit", "doc:production:view", "doc:sale:view", "nomenclature:edit", "nomenclature:view",
         "stock:edit", "stock:view", "stores:view"] },
   };
   const same = (a, b) => Array.isArray(a) && a.length === b.length && a.slice().sort().join("|") === b.slice().sort().join("|");
@@ -750,6 +750,144 @@ SECTIONS.stock = async (ctx) => {
   check("журнал: документы тестового склада", r.ok && r.total >= 6 && r.rows[0].number, { total: r.total });
   r = await call("office_doc_delete", { token: t, id: prod });
   check("удалить проведённый нельзя — validation", r.ok === false && r.error === "validation", r);
+};
+
+
+// Подпроект 4: отчёт точки порождает документ «Продажа» на складе точки. Отчёты пишутся на
+// служебную выключенную точку «zz_test» (миграция 0023) датами 2020 года — их убирает test_cleanup.
+SECTIONS.sales = async (ctx) => {
+  const t = ctx.token;
+  const pin = process.env.TANDEM_OWNER_PIN || "";
+  if (!pin) { console.log("  пропуск: нужен TANDEM_OWNER_PIN (отчёт точки сдаётся кодом)"); return; }
+  const near = (a, b, e = 0.001) => Math.abs(Number(a) - Number(b)) < e;
+  let r = await call("office_store_save", { token: t, name: "ZZ_TEST_склад продаж", point_id: "zz_test", is_default: true });
+  const S = r.id;
+  r = await call("office_counteragent_save", { token: t, name: "ZZ_TEST_поставщик продаж", kind: "supplier" }); const SUP = r.id;
+  r = await call("office_item_save", { token: t, name: "ZZ_TEST_мука продаж", item_type: "goods", unit_id: "кг" }); const muka = r.code;
+  r = await call("office_item_save", { token: t, name: "ZZ_TEST_батончик", item_type: "goods", unit_id: "шт" }); const bar = r.code;
+  r = await call("office_item_save", { token: t, name: "ZZ_TEST_блин", item_type: "dish", unit_id: "порц" }); const blin = r.code;
+  r = await call("office_item_save", { token: t, name: "ZZ_TEST_услуга", item_type: "service", unit_id: "шт" }); const svc = r.code;
+  r = await call("office_chart_save", { token: t, code: blin, date_from: "2020-01-01", output_amount: 1, lines: [{ ingredient_code: muka, brutto: 0.2, netto: 0.2, output: 0.2 }] });
+  check("продажи: подготовка — склад точки, позиции, карта", S && SUP && muka && bar && blin && svc && r.ok, r);
+  r = await call("office_doc_save", { token: t, doc_type: "invoice_in", doc_date: "2020-02-01", store_to: S, counteragent_id: SUP,
+    lines: [{ item_code: muka, qty: 10, price: 100 }, { item_code: bar, qty: 5, price: 50 }] });
+  await call("office_doc_post", { token: t, id: r.id });
+  const bal = async (code) => { const b = await call("office_stock_balances", { token: t, store_id: S, only_nonzero: false });
+    const row = (b.rows || []).find((x) => x.item_code === code); return row ? Number(row.qty) : 0; };
+  const report = (date, sales, takeout) => call("save_report", { pin, point_id: "zz_test", date, comment: "ZZ_TEST_продажи",
+    cash: 1000, sales: sales || [], takeout: takeout || [] });
+  const list = async (date) => (await call("office_doc_sales_list", { token: t, date_from: date, date_to: date, point_id: "zz_test" })).rows || [];
+
+  // 1. Отчёт: блюдо с картой, товар без карты, строка без кода, услуга — в склад идут только первые два.
+  r = await report("2020-03-01", [{ item_code: blin, item_name: "блин", qty: 3, price: 500 },
+    { item_code: bar, item_name: "батончик", qty: 2, price: 150 }, { item_code: "", item_name: "без кода", qty: 1, price: 10 },
+    { item_code: svc, item_name: "услуга", qty: 1, price: 100 }]);
+  check("продажи: отчёт точки сохранён", r.ok, r);
+  let rows = await list("2020-03-01");
+  check("продажи: по отчёту проведён документ ПД", rows.length === 1 && (rows[0] || {}).state === "posted" && /^ПД-2020-\d{6}$/.test((rows[0] || {}).number)
+    && near((rows[0] || {}).sale_sum, 1800), rows);
+  const saleId = rows[0] && (rows[0] || {}).doc_id;
+  check("продажи: мука списана по карте (10 − 3×0,2), батончик как есть (5 − 2)", near(await bal(muka), 9.4) && near(await bal(bar), 3),
+    { muka: await bal(muka), bar: await bal(bar) });
+  r = await call("office_doc_get", { token: t, id: saleId });
+  check("продажи: карточка — проданное с выручкой и списанное по картам",
+    r.ok && r.doc.doc_type === "sale" && r.doc.lines.length === 2 && r.doc.lines.some((l) => l.item_code === blin && near(l.sum, 1500))
+    && r.doc.consume.some((c) => c.item_code === muka && near(c.qty, 0.6)) && r.doc.consume.some((c) => c.item_code === bar && near(c.qty, 2))
+    && near(r.doc.total_sum, 0.6 * 100 + 2 * 50), r.doc && { lines: r.doc.lines, consume: r.doc.consume, total: r.doc.total_sum });
+
+  // 2. Повторное сохранение без изменений — тот же документ, движения не задвоены.
+  r = await report("2020-03-01", [{ item_code: blin, item_name: "блин", qty: 3, price: 500 }, { item_code: bar, item_name: "батончик", qty: 2, price: 150 }]);
+  rows = await list("2020-03-01");
+  check("продажи: повторное сохранение — тот же документ, остатки те же", (rows[0] || {}).doc_id === saleId && near(await bal(muka), 9.4), rows);
+  // 3. Изменили количество — документ пересчитан.
+  r = await report("2020-03-01", [{ item_code: blin, item_name: "блин", qty: 5, price: 500 }, { item_code: bar, item_name: "батончик", qty: 2, price: 150 }]);
+  rows = await list("2020-03-01");
+  check("продажи: изменение отчёта пересчитывает продажу", (rows[0] || {}).doc_id === saleId && (rows[0] || {}).state === "posted" && near(await bal(muka), 9), { rows, muka: await bal(muka) });
+
+  // 4. Руками продажу не трогают.
+  r = await call("office_doc_unpost", { token: t, id: saleId });
+  check("продажи: ручная отмена — validation", r.ok === false && r.error === "validation", r);
+  r = await call("office_doc_delete", { token: t, id: saleId });
+  check("продажи: ручное удаление — validation", r.ok === false && r.error === "validation", r);
+  r = await call("office_doc_save", { token: t, doc_type: "sale", doc_date: "2020-03-01", store_from: S, lines: [{ item_code: bar, qty: 1 }] });
+  check("продажи: ручное создание — validation", r.ok === false && r.error === "validation", r);
+  r = await call("office_doc_save", { token: t, id: saleId, doc_type: "writeoff", doc_date: "2020-03-01", store_from: S, reason: "other", lines: [{ item_code: bar, qty: 1 }] });
+  check("продажи: правка продажи через другой тип — отказ", r.ok === false, r);
+
+  // 5. Продаж с кодом нет — документа нет; отчёт с продажей, а потом без неё — документ удалён.
+  await report("2020-03-02", [{ item_code: bar, item_name: "батончик", qty: 1, price: 150 }]);
+  check("продажи: второй день — свой документ", ((await list("2020-03-02"))[0] || {}).state === "posted" && near(await bal(bar), 2), await list("2020-03-02"));
+  await report("2020-03-02", [{ item_code: "", item_name: "без кода", qty: 1, price: 10 }]);
+  rows = await list("2020-03-02");
+  check("продажи: продажи ушли из отчёта — документ удалён, остаток вернулся", (rows[0] || {}).state === "none" && !(rows[0] || {}).doc_id && near(await bal(bar), 3), rows);
+
+  // 6. Точка без склада — документа нет; после привязки — пересчёт за период.
+  await call("office_store_save", { token: t, id: S, name: "ZZ_TEST_склад продаж", point_id: null, is_default: false });
+  await report("2020-03-03", [{ item_code: bar, item_name: "батончик", qty: 1, price: 150 }]);
+  rows = await list("2020-03-03");
+  check("продажи: точка без склада — «нет склада»", (rows[0] || {}).state === "no_store" && !(rows[0] || {}).doc_id, rows);
+  await call("office_store_save", { token: t, id: S, name: "ZZ_TEST_склад продаж", point_id: "zz_test", is_default: true });
+  r = await call("office_user_save", { token: t, login: "zz_test_sales_sk", name: "ZZ_TEST_Кладовщик продаж", role: "storekeeper", pin: "4321" });
+  const skl = await call("office_login", { login: "zz_test_sales_sk", pin: "4321" }); await call("office_change_pin", { token: skl.token, pin: "4321" });
+  r = await call("office_doc_sales_sync", { token: skl.token, date_from: "2020-03-01", date_to: "2020-03-03", point_id: "zz_test" });
+  check("продажи: кладовщик не пересчитывает — forbidden", r.ok === false && r.error === "forbidden", r);
+  r = await call("office_doc_sales_list", { token: skl.token, date_from: "2020-03-01", date_to: "2020-03-03", point_id: "zz_test" });
+  check("продажи: кладовщик видит список продаж", r.ok && r.rows.length === 3, r);
+  r = await call("office_doc_sales_sync", { token: t, date_from: "2020-03-01", date_to: "2020-03-03", point_id: "zz_test" });
+  check("продажи: пересчёт за период — третий день проведён", r.ok && r.counts.posted === 1 && r.counts.unchanged === 1 && r.counts.empty === 1, r);
+  check("продажи: после пересчёта батончик списан", near(await bal(bar), 2), await bal(bar));
+
+  // 7. Дашборд собственницы: расход сырья по карте на дату отчёта.
+  r = await call("dashboard", { pin, from: "2020-03-01", to: "2020-03-03" });
+  check("продажи: дашборд — расход муки по карте", r.ok && (r.raw_usage || []).some((x) => x.name === "ZZ_TEST_мука продаж" && near(x.amount, 1)), r.raw_usage);
+
+  // 8. Инвентаризация после продажи: изменение отчёта задним числом не переписывает склад.
+  r = await call("office_doc_save", { token: t, doc_type: "inventory", doc_date: "2020-03-05", store_from: S, lines: [{ item_code: muka, fact_qty: 9 }] });
+  await call("office_doc_post", { token: t, id: r.id });
+  await report("2020-03-01", [{ item_code: blin, item_name: "блин", qty: 1, price: 500 }, { item_code: bar, item_name: "батончик", qty: 2, price: 150 }]);
+  rows = await list("2020-03-01");
+  check("продажи: отчёт изменён после инвентаризации — пометка, склад не тронут",
+    (rows[0] || {}).state === "locked" && /инвентаризац/i.test((rows[0] || {}).sync_note || "") && near(await bal(muka), 9), { rows, muka: await bal(muka) });
+
+  // 9. Оборотная ведомость склада (как «Расширенная оборотно-сальдовая ведомость» iiko).
+  r = await call("office_stock_turnover_report", { token: t, store_id: S, date_from: "2020-03-01", date_to: "2020-03-31" });
+  const tm = (r.rows || []).find((x) => x.item_code === muka), tb = (r.rows || []).find((x) => x.item_code === bar);
+  check("ведомость: мука — начало 10, продано 1, конец 9", r.ok && tm && near(tm.start_qty, 10) && near(tm.sales, 1) && near(tm.end_qty, 9)
+    && near(tm.income, 0) && near(tm.end_sum, 900), tm);
+  check("ведомость: батончик — начало 5, продано 3, конец 2", tb && near(tb.start_qty, 5) && near(tb.sales, 3) && near(tb.end_qty, 2), tb);
+  r = await call("office_stock_turnover_report", { token: t, store_id: S, date_from: "2020-02-01", date_to: "2020-02-29" });
+  const tf = (r.rows || []).find((x) => x.item_code === muka);
+  check("ведомость: февраль — приход 10 по 100, начало 0", r.ok && tf && near(tf.start_qty, 0) && near(tf.income, 10) && near(tf.income_sum, 1000) && near(tf.end_qty, 10), tf);
+  r = await call("office_stock_turnover_report", { token: t, store_id: S, date_from: "2020-03-31", date_to: "2020-03-01" });
+  check("ведомость: перепутанный период — validation", r.ok === false && r.error === "validation", r);
+  r = await call("office_stock_turnover_report", { token: skl.token, store_id: S, date_from: "2020-03-01", date_to: "2020-03-31" });
+  check("ведомость: кладовщик без привязки видит склад", r.ok && r.rows.length >= 2, r);
+
+  // 10. Ревью: продажа задним числом до инвентаризации не проводится — иначе двойное списание.
+  await report("2020-03-04", [{ item_code: bar, item_name: "батончик", qty: 1, price: 150 }]);
+  rows = await list("2020-03-04");
+  check("продажи: отчёт за день до инвентаризации — не проведён, пометка, склад не тронут",
+    (rows[0] || {}).state === "draft" && /инвентаризац/i.test((rows[0] || {}).sync_note || "") && near(await bal(bar), 2), { rows, bar: await bal(bar) });
+  // 11. Блюдо без карты списывается как есть; появилась карта — пересчёт проводит заново.
+  r = await call("office_item_save", { token: t, name: "ZZ_TEST_оладьи", item_type: "dish", unit_id: "порц" }); const olad = r.code;
+  await report("2020-03-06", [{ item_code: olad, item_name: "оладьи", qty: 2, price: 300 }]);
+  rows = await list("2020-03-06");
+  check("продажи: блюдо без карты — списано как есть, пометка",
+    (rows[0] || {}).state === "posted" && /Без техкарты/.test((rows[0] || {}).sync_note || "") && near(await bal(olad), -2), { rows, olad: await bal(olad) });
+  await call("office_chart_save", { token: t, code: olad, date_from: "2020-01-01", output_amount: 1, lines: [{ ingredient_code: muka, brutto: 0.1, netto: 0.1, output: 0.1 }] });
+  r = await call("office_doc_sales_sync", { token: t, date_from: "2020-03-06", date_to: "2020-03-06", point_id: "zz_test" });
+  rows = await list("2020-03-06");
+  check("продажи: карта появилась — пересчёт списал муку, пометка снята",
+    r.ok && r.counts.posted === 1 && !(rows[0] || {}).sync_note && near(await bal(muka), 8.8) && near(await bal(olad), 0), { r, rows, muka: await bal(muka) });
+  // 12. Кладовщик с привязкой к чужому складу не видит отчёты и деньги точки.
+  r = await call("office_store_save", { token: t, name: "ZZ_TEST_чужой склад" }); const OTHER = r.id;
+  const sklId = (await call("office_users_list", { token: t })).users.find((u) => u.login === "zz_test_sales_sk").id;
+  await call("office_user_save", { token: t, id: sklId, login: "zz_test_sales_sk", name: "ZZ_TEST_Кладовщик продаж", role: "storekeeper", store_ids: [OTHER] });
+  r = await call("office_doc_sales_list", { token: skl.token, date_from: "2020-03-01", date_to: "2020-03-06", point_id: "zz_test" });
+  check("продажи: кладовщик чужого склада не видит отчёты точки", r.ok && r.rows.length === 0, r.rows && r.rows.length);
+  await call("office_user_save", { token: t, id: sklId, login: "zz_test_sales_sk", name: "ZZ_TEST_Кладовщик продаж", role: "storekeeper", store_ids: [S] });
+  r = await call("office_doc_sales_list", { token: skl.token, date_from: "2020-03-01", date_to: "2020-03-06", point_id: "zz_test" });
+  check("продажи: кладовщик своего склада видит отчёты точки", r.ok && r.rows.length === 5, r.rows && r.rows.length);
 };
 
 // --- разделы добавляются здесь ---

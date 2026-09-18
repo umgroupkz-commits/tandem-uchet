@@ -1,6 +1,6 @@
-import { api, session, setSession } from "../office/api.js?v=6";
-import { el, toast } from "../office/ui.js?v=6";
-import { ask, clearDraftsAll } from "./common.js?v=4";
+import { api, session, setSession } from "../office/api.js?v=7";
+import { el, toast } from "../office/ui.js?v=7";
+import { ask, clearDraftsAll } from "./common.js?v=5";
 
 const $ = (id) => document.getElementById(id);
 const SCENARIOS = [
@@ -99,7 +99,7 @@ function home() {
 async function openScenario(id) {
   const main = $("main"); main.innerHTML = '<div class="dim">Загрузка…</div>';
   try {
-    const mod = await import(`./${id}.js?v=4`);
+    const mod = await import(`./${id}.js?v=5`);
     main.innerHTML = ""; await mod.mount(main, ctx);
   } catch (e) { main.innerHTML = ""; main.append(el("div", { class: "err" }, "Сценарий не открылся: " + e.message)); }
 }
