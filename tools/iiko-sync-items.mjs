@@ -14,6 +14,16 @@
 //
 // Запуск:  node tools/iiko-sync-items.mjs [--dry]
 
+// Выключен 18.09.2026 (отложенное замечание подпроекта 1): скрипт перезаписывал правки
+// бэк-офиса и ставил source=iiko_api, снимая с позиции защиту от переноса. Его заменил
+// перенос tools/iiko-migrate.mjs, который правки бэк-офиса не трогает. Запустить старый путь
+// можно только осознанно: ключ --force-legacy.
+if (!process.argv.includes("--force-legacy")) {
+  console.error("Скрипт выключен: он затирает правки бэк-офиса. Используйте node tools/iiko-migrate.mjs " +
+    "(перенос из iiko, правки бэк-офиса сохраняет). Старый путь: --force-legacy.");
+  process.exit(2);
+}
+
 const IIKO = "https://api-ru.iiko.services";
 const UCHET = "https://qeehxcnnuzuwskznhdyg.supabase.co/functions/v1/uchet";
 const DRY = process.argv.includes("--dry");
