@@ -1,4 +1,4 @@
-const API = "https://qeehxcnnuzuwskznhdyg.supabase.co/functions/v1/uchet";
+const API = window.TANDEM_API_URL || "https://qeehxcnnuzuwskznhdyg.supabase.co/functions/v1/uchet";   // адрес меняется в config.js
 
 var S = {
   role: null, point: null, pin: '', items: [], mode: null,

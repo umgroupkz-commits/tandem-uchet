@@ -1,0 +1,8 @@
+{
+  "name": "tandem-uchet-proxy",
+  "private": true,
+  "type": "module",
+  "version": "1.0.0",
+  "scripts": { "start": "node proxy.mjs" },
+  "dependencies": { "pg": "^8.13.1" }
+}

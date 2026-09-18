@@ -5,13 +5,13 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="theme-color" content="#1F3864">
 <title>Тандем KZ — бэк-офис</title>
-<link rel="stylesheet" href="office.css?v=8">
+<link rel="stylesheet" href="office.css?v=9">
 </head>
 <body>
 <div id="login" class="login" hidden>
   <div class="card">
     <h1>Тандем KZ · бэк-офис</h1>
-    <div class="sub">Справочники, техкарты, склад · сборка 8</div>
+    <div class="sub">Справочники, техкарты, склад · сборка 9</div>
     <label for="llogin">Логин</label>
     <input id="llogin" autocomplete="username" autocapitalize="off">
     <label for="lpin">PIN</label>
@@ -39,6 +39,7 @@
     <div class="brand">Тандем KZ · бэк-офис</div>
     <nav id="menu"></nav>
     <div class="who"><span id="uname"></span> <span id="urole" class="role"></span>
+      <a class="link" href="help.html" target="_blank" rel="noopener" style="margin-right:8px">Памятка</a>
       <a class="link" href="guide.html" target="_blank" rel="noopener" style="margin-right:8px">Маршрут проверки</a>
       <a class="link" href="stock.html" style="margin-right:8px">Телефон</a>
       <button class="link" id="logout">Выйти</button></div>
@@ -46,6 +47,7 @@
   <main id="main"></main>
 </div>
 <div id="toast" class="toast" hidden></div>
-<script type="module" src="js/office/app.js?v=8"></script>
+<script src="config.js?v=1"></script>
+<script type="module" src="js/office/app.js?v=9"></script>
 </body>
 </html>

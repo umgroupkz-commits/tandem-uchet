@@ -1,5 +1,5 @@
-import { api, can } from "./api.js?v=8";
-import { el, fmt, toast, debounce, modal } from "./ui.js?v=8";
+import { api, can } from "./api.js?v=9";
+import { el, fmt, toast, debounce, modal } from "./ui.js?v=9";
 
 const TYPES = { goods: "товар", dish: "блюдо", prepared: "полуфабрикат", service: "услуга" };
 let groups = [], state = { q: "", group_id: "", item_type: "", active: "true", page: 1 };
@@ -71,6 +71,8 @@ async function load() {
     el("button", { class: "ghost", disabled: r.page >= r.pages, onclick: () => { state.page++; load(); } }, "→"));
 }
 
+// Открыть карточку по ссылке #item/<код> (из вкладки «Готовность»).
+export function openItem(code) { editItem(code); }
 async function editItem(code) {
   let item = { item_type: "dish", unit_id: "шт", group_id: state.group_id || "", active: true, for_sale: false }, points = [], r = null;
   if (code) {

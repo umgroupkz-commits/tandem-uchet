@@ -1,5 +1,5 @@
-import { api, session } from "./api.js?v=8";
-import { el, fmt, toast, debounce, modal, confirmDlg } from "./ui.js?v=8";
+import { api, session } from "./api.js?v=9";
+import { el, fmt, toast, debounce, modal, confirmDlg, today, isoDate } from "./ui.js?v=9";
 
 const TYPES = { invoice_in: "Приход", transfer: "Перемещение", writeoff: "Списание", production: "Производство", inventory: "Инвентаризация", sale: "Продажа" };
 // Продажу заводит отчёт точки, а не человек: в «+ Новый документ» её нет.
@@ -35,10 +35,12 @@ function drawShell() {
     el("button", { class: state.tab === "docs" ? "" : "ghost", onclick: () => { state.tab = "docs"; drawShell(); loadDocs(); } }, "Документы"),
     el("button", { class: state.tab === "bal" ? "" : "ghost", onclick: () => { state.tab = "bal"; drawShell(); loadBalances(); } }, "Остатки"),
     canSales() ? el("button", { class: state.tab === "sales" ? "" : "ghost", onclick: () => { state.tab = "sales"; drawShell(); loadSales(); } }, "Продажи") : null,
-    el("button", { class: state.tab === "turn" ? "" : "ghost", onclick: () => { state.tab = "turn"; drawShell(); loadTurnover(); } }, "Ведомость")));
+    el("button", { class: state.tab === "turn" ? "" : "ghost", onclick: () => { state.tab = "turn"; drawShell(); loadTurnover(); } }, "Ведомость"),
+    el("button", { class: state.tab === "ready" ? "" : "ghost", onclick: () => { state.tab = "ready"; drawShell(); loadReady(); } }, "Готовность")));
   if (state.tab === "bal") { root.append(el("div", { id: "bal-root" })); return; }
   if (state.tab === "sales") { root.append(el("div", { id: "sales-root" })); return; }
   if (state.tab === "turn") { root.append(el("div", { id: "turn-root" })); return; }
+  if (state.tab === "ready") { root.append(el("div", { id: "ready-root" })); return; }
   // Роли без единого doc:*:edit (пока таких нет, но право снимается настройкой) видят
   // журнал и остатки, но пустого выпадающего списка «+ Новый документ…» им не показываем.
   const newBtn = canAnyDoc()
@@ -87,7 +89,7 @@ async function loadDocs() {
 
 // ---------- форма документа ----------
 async function editDoc(id, newType) {
-  let doc = { doc_type: newType, doc_date: new Date().toISOString().slice(0, 10), status: "draft", lines: [], consume: [] };
+  let doc = { doc_type: newType, doc_date: today(), status: "draft", lines: [], consume: [] };
   if (id) { const r = await api("doc_get", { id }); if (!r.ok) { toast(r.message, "bad"); return; } doc = r.doc; }
   const type = doc.doc_type, posted = doc.status === "posted";
   const isSale = type === "sale";
@@ -397,7 +399,7 @@ async function showMoves(x) {
 
 // ---------- разбор файла остатков ----------
 // ---------- продажи: отчёты точек и их складские документы ----------
-const iso = (d) => d.toISOString().slice(0, 10);
+const iso = isoDate;
 const sales = { date_from: iso(new Date(Date.now() - 7 * 864e5)), date_to: iso(new Date()), point_id: "" };
 const SALE_STATE = {
   posted: ["проведена", "ok"], none: ["нет продаж с кодом", ""], no_store: ["у точки нет склада", "bad"],
@@ -508,6 +510,40 @@ async function loadTurnover() {
     a.href = URL.createObjectURL(new Blob(["\ufeff" + lines], { type: "text/csv;charset=utf-8" }));
     a.download = `ведомость ${turn.date_from}—${turn.date_to}.csv`; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
   };
+}
+
+// ---------- готовность: что в справочниках и документах помешает учёту ----------
+const READY_GO = {
+  item: (x) => { location.hash = "#item/" + encodeURIComponent(x.code); location.reload(); },
+  chart: (x) => { location.hash = "#charts/" + encodeURIComponent(x.code); location.reload(); },
+};
+async function loadReady() {
+  const host = document.getElementById("ready-root"); if (!host) return;
+  host.innerHTML = ""; const wait = el("div", { class: "dim" }, "Проверяю…"); host.append(wait);
+  const r = await api("stock_quality_report", {});
+  wait.remove();
+  if (!r.ok) { host.append(el("div", { class: "err" }, r.message), el("button", { class: "ghost", onclick: loadReady }, "Повторить")); return; }
+  const open = r.checks.filter((c) => c.count > 0);
+  host.append(el("div", { class: "tot" },
+    el("span", {}, open.length ? `Нужно внимание: ${open.length} из ${r.checks.length} проверок` : "Все проверки чистые"),
+    el("span", {}, r.bad ? `мешают учёту: ${r.bad}` : "критичного нет")));
+  for (const c of r.checks) {
+    const clean = !c.count;
+    const d = el("details", { class: "card", style: "padding:12px 16px" });
+    d.append(el("summary", { style: "cursor:pointer;display:flex;gap:10px;align-items:center" },
+      el("span", { class: "tag " + (clean ? "ok" : c.severity === "bad" ? "bad" : "") }, clean ? "чисто" : String(c.count)),
+      el("b", {}, c.title)));
+    d.append(el("div", { class: "dim", style: "margin:8px 0" }, c.hint));
+    if (!clean) {
+      const go = READY_GO[c.target];
+      const t = el("table");
+      for (const x of c.rows) t.append(el("tr", { class: go ? "row" : "", onclick: go ? () => go(x) : null },
+        el("td", {}, x.name), el("td", { class: "dim" }, x.detail || ""), el("td", { class: "dim" }, go ? "открыть →" : "")));
+      if (c.count > c.rows.length) t.append(el("tr", {}, el("td", { colspan: 3, class: "dim" }, `…и ещё ${c.count - c.rows.length}`)));
+      d.append(el("div", { style: "overflow:auto;max-height:420px" }, t));
+    }
+    host.append(d);
+  }
 }
 
 // SheetJS тянем один раз и только когда файл действительно выбрали: библиотека тяжёлая,

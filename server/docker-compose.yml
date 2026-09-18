@@ -1,0 +1,40 @@
+# Учёт Тандем KZ на собственном сервере: база, прокси, сайт. Запуск: см. README.md рядом.
+services:
+  db:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: tandem
+      POSTGRES_USER: tandem
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?задайте DB_PASSWORD в .env}
+    volumes:
+      - dbdata:/var/lib/postgresql/data
+      # Пустая база при первом запуске: схема и обязательные справочники.
+      - ../db/schema/tandem_full.sql:/docker-entrypoint-initdb.d/10_schema.sql:ro
+      - ../db/schema/tandem_seed.sql:/docker-entrypoint-initdb.d/20_seed.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tandem -d tandem"]
+      interval: 5s
+      retries: 20
+    restart: unless-stopped
+  proxy:
+    build: .
+    environment:
+      DATABASE_URL: postgres://tandem:${DB_PASSWORD}@db:5432/tandem
+      PORT: "8787"
+      CORS_ORIGIN: ${CORS_ORIGIN:-*}
+    depends_on:
+      db: { condition: service_healthy }
+    ports: ["127.0.0.1:${PROXY_PORT:-8787}:8787"]
+    restart: unless-stopped
+  backup:
+    image: postgres:17
+    environment:
+      PGPASSWORD: ${DB_PASSWORD}
+    volumes: ["./backups:/backups"]
+    depends_on:
+      db: { condition: service_healthy }
+    # Раз в сутки — дамп в ./backups, хранится 30 последних.
+    entrypoint: ["sh", "-c", "while true; do f=/backups/tandem_$$(date +%Y%m%d_%H%M).dump; pg_dump -h db -U tandem -d tandem -Fc -f $$f && ls -1t /backups/*.dump | tail -n +31 | xargs -r rm --; sleep 86400; done"]
+    restart: unless-stopped
+volumes:
+  dbdata:

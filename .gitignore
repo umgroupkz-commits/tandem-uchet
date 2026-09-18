@@ -13,3 +13,7 @@ data/
 
 # служебная папка сессий Claude Code, не код
 .claude/
+
+server/.env
+server/backups/
+server/node_modules/

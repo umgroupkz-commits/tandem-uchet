@@ -4,7 +4,8 @@
 //   TANDEM_OWNER_PIN — код собственника; без него не идут разделы migrate/reimport и уборка.
 // Создаёт сущности с префиксом ZZ_TEST_ (пользователи — zz_test_). В конце прогона раннер
 // зовёт действие test_cleanup (RPC public.tandem_test_cleanup) и проверяет, что следов не осталось.
-const UCHET = "https://qeehxcnnuzuwskznhdyg.supabase.co/functions/v1/uchet";
+// TANDEM_API_URL — прогон по другому стенду (репетиция переезда: server/README.md).
+const UCHET = process.env.TANDEM_API_URL || "https://qeehxcnnuzuwskznhdyg.supabase.co/functions/v1/uchet";
 const section = process.argv[2] || "all";
 let failed = 0, passed = 0;
 
@@ -331,11 +332,14 @@ SECTIONS.users = async (ctx) => {
   // ответ, что и всегда; о блокировке узнаёт только тот, кто знает PIN.
   for (let i = 0; i < 5; i++) r = await call("office_login", { login: "zz_test_sklad", pin: "0000" });
   r = await call("office_login", { login: "zz_test_sklad", pin: "0000" });
-  check("заблокирован, неверный PIN — обычный ответ", r.ok === false && r.error === "unauthorized" && r.message === "Неверный логин или PIN", r);
+  check("заблокирован, неверный PIN — обычный ответ", r.ok === false && r.error === "unauthorized" && /^Неверный логин или PIN/.test(r.message), r);
+  const lockedWrong = r.message;
   const nobody = await call("office_login", { login: "zz_test_nobody", pin: "0000" });
   check("несуществующий логин — тот же ответ", nobody.ok === false && nobody.message === r.message, nobody);
   r = await call("office_login", { login: "zz_test_sklad", pin: "5555" });
-  check("заблокирован, верный PIN — просьба подождать", r.ok === false && r.error === "unauthorized" && /подождите/.test(r.message), r);
+  // Ответ на верный PIN во время блокировки обязан совпадать с ответом на неверный:
+  // иначе перебор узнаёт PIN по тексту ответа, не дожидаясь конца блокировки.
+  check("заблокирован, верный PIN — тот же ответ, что на неверный", r.ok === false && r.error === "unauthorized" && r.message === lockedWrong, r);
   r = await call("office_user_reset_pin", { token: t, id: uid, pin: "5555" });
   check("сброс PIN снимает блокировку", r.ok, r);
   r = await call("office_user_save", { token: t, id: uid, login: "zz_test_sklad", name: "ZZ_TEST_Кладовщик", role: "storekeeper", active: false });
@@ -403,7 +407,7 @@ SECTIONS.users = async (ctx) => {
   }
   r = await call("office_login", { login: "zz_test_owner", pin: "4321" });
   check("лок: шестая попытка с верным PIN отбита",
-    r.ok === false && r.error === "unauthorized" && /Слишком много попыток/.test(r.message || ""), r);
+    r.ok === false && r.error === "unauthorized" && /15 минут/.test(r.message || ""), r);
 
   // сброс PIN администратором обязан снимать и сам лок, не только менять хэш
   r = await call("office_user_reset_pin", { token: t, id: ids.zz_test_owner, pin: "4321" });
@@ -903,6 +907,31 @@ SECTIONS.sales = async (ctx) => {
 };
 
 // --- разделы добавляются здесь ---
+
+// Проверка готовности (миграция 0028): отчёт о том, что в справочниках помешает учёту.
+SECTIONS.quality = async (ctx) => {
+  const t = ctx.token;
+  let r = await call("office_item_save", { token: t, name: "ZZ_TEST_сырьё без цены", item_type: "goods", unit_id: "кг" }); const raw = r.code;
+  r = await call("office_item_save", { token: t, name: "ZZ_TEST_блюдо без карты", item_type: "dish", unit_id: "порц", for_sale: true }); const dish = r.code;
+  r = await call("office_item_save", { token: t, name: "ZZ_TEST_блюдо с картой", item_type: "dish", unit_id: "порц", for_sale: true, price: 100 }); const dish2 = r.code;
+  await call("office_chart_save", { token: t, code: dish2, date_from: "2020-01-01", output_amount: 1, lines: [{ ingredient_code: raw, brutto: 0.1, netto: 0.1, output: 0.1 }] });
+  r = await call("office_stock_quality_report", { token: t });
+  const by = Object.fromEntries((r.checks || []).map((c) => [c.id, c]));
+  check("готовность: отчёт пришёл со всеми проверками", r.ok && ["raw_no_cost", "dish_no_chart", "sale_no_price", "dup_names", "no_group", "point_no_store", "sales_not_posted", "negative_stock", "users"].every((k) => by[k]), Object.keys(by));
+  check("готовность: сырьё без цены найдено, с числом карт", (by.raw_no_cost.rows || []).some((x) => x.code === raw && /1 карт/.test(x.detail)), by.raw_no_cost && by.raw_no_cost.count);
+  check("готовность: блюдо без карты найдено, блюдо с картой — нет",
+    by.dish_no_chart.rows.some((x) => x.code === dish) && !by.dish_no_chart.rows.some((x) => x.code === dish2), by.dish_no_chart.count);
+  check("готовность: на продаже без цены — только блюдо без цены",
+    by.sale_no_price.rows.some((x) => x.code === dish) && !by.sale_no_price.rows.some((x) => x.code === dish2), by.sale_no_price.count);
+  check("готовность: счётчики bad/warn посчитаны", r.bad >= 2 && r.warn >= 1, { bad: r.bad, warn: r.warn });
+  await call("office_item_save", { token: t, code: raw, cost_price: 50 });
+  r = await call("office_stock_quality_report", { token: t });
+  check("готовность: цена задана — сырьё ушло из списка", !(r.checks.find((c) => c.id === "raw_no_cost").rows || []).some((x) => x.code === raw), null);
+  await call("office_user_save", { token: t, login: "zz_test_q", name: "ZZ_TEST_Кладовщик готовности", role: "storekeeper", pin: "4321" });
+  const u = await call("office_login", { login: "zz_test_q", pin: "4321" }); await call("office_change_pin", { token: u.token, pin: "4321" });
+  r = await call("office_stock_quality_report", { token: u.token });
+  check("готовность: кладовщик видит отчёт без проверки пользователей", r.ok && !r.checks.some((c) => c.id === "users"), r.checks && r.checks.map((c) => c.id));
+};
 
 // Отложенные замечания подпроекта 1 (миграция 0026): поиск без «жокеров», часть БИН и телефон,
 // очистка цены, цикл групп, обрыв сессий при смене роли.

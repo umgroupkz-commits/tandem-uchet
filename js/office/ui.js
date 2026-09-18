@@ -13,6 +13,12 @@ export function el(tag, attrs, ...children) {
   }
   return n;
 }
+// Дата по часам пользователя, а не по Гринвичу: toISOString() до пяти утра по Казахстану
+// отдавал вчерашний день, и ночной документ получал вчерашнюю дату.
+export function isoDate(d) {
+  return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+}
+export const today = () => isoDate(new Date());
 export function fmt(n) {
   if (n === null || n === undefined || n === "") return "";
   return (Math.round(Number(n) * 100) / 100).toLocaleString("ru-RU");
