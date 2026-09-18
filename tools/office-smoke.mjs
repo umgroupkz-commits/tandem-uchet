@@ -327,6 +327,17 @@ SECTIONS.users = async (ctx) => {
   check("сброс PIN администратором", r.ok, r);
   r = await call("office_login", { login: "zz_test_sklad", pin: "5555" });
   check("вход с новым PIN", r.ok, r);
+  // Блокировка не выдаёт себя чужому: пока логин заблокирован, неверный PIN получает тот же
+  // ответ, что и всегда; о блокировке узнаёт только тот, кто знает PIN.
+  for (let i = 0; i < 5; i++) r = await call("office_login", { login: "zz_test_sklad", pin: "0000" });
+  r = await call("office_login", { login: "zz_test_sklad", pin: "0000" });
+  check("заблокирован, неверный PIN — обычный ответ", r.ok === false && r.error === "unauthorized" && r.message === "Неверный логин или PIN", r);
+  const nobody = await call("office_login", { login: "zz_test_nobody", pin: "0000" });
+  check("несуществующий логин — тот же ответ", nobody.ok === false && nobody.message === r.message, nobody);
+  r = await call("office_login", { login: "zz_test_sklad", pin: "5555" });
+  check("заблокирован, верный PIN — просьба подождать", r.ok === false && r.error === "unauthorized" && /подождите/.test(r.message), r);
+  r = await call("office_user_reset_pin", { token: t, id: uid, pin: "5555" });
+  check("сброс PIN снимает блокировку", r.ok, r);
   r = await call("office_user_save", { token: t, id: uid, login: "zz_test_sklad", name: "ZZ_TEST_Кладовщик", role: "storekeeper", active: false });
   check("деактивация", r.ok, r);
   r = await call("office_login", { login: "zz_test_sklad", pin: "5555" });
@@ -665,6 +676,47 @@ SECTIONS.stock = async (ctx) => {
   check("кладовщик создаёт приход", r.ok && r.id, r);
   r = await call("office_doc_post", { token: sk.token, id: r.id });
   check("кладовщик проводит приход", r.ok && near(r.total_sum, 420), r);
+
+  // 10к. Привязка кладовщика к складам: с привязкой он видит и трогает только свои склады.
+  const skId = (await call("office_users_list", { token: t })).users.find((u) => u.login === "zz_test_sklad_s").id;
+  r = await call("office_user_save", { token: t, id: skId, login: "zz_test_sklad_s", name: "ZZ_TEST_Кладовщик склада", role: "storekeeper", store_ids: [A] });
+  check("кладовщик привязан к складу А", r.ok, r);
+  r = await call("office_users_list", { token: t });
+  check("users_list отдаёт склады пользователя", r.ok && JSON.stringify(r.users.find((u) => u.id === skId).store_ids) === JSON.stringify([A]), r.users && r.users.find((u) => u.id === skId));
+  r = await call("office_me", { token: sk.token });
+  check("me отдаёт склады кладовщика", r.ok && JSON.stringify(r.user.store_ids) === JSON.stringify([A]), r.user);
+  r = await call("office_doc_save", { token: sk.token, doc_type: "writeoff", doc_date: "2026-09-05", store_from: B, reason: "other", lines: [{ item_code: muka, qty: 1 }] });
+  check("чужой склад: списание — forbidden", r.ok === false && r.error === "forbidden", r);
+  r = await call("office_doc_save", { token: sk.token, doc_type: "transfer", doc_date: "2026-09-05", store_from: B, store_to: A, lines: [{ item_code: muka, qty: 1 }] });
+  check("чужой склад: перемещение с чужого — forbidden", r.ok === false && r.error === "forbidden", r);
+  r = await call("office_doc_save", { token: sk.token, doc_type: "transfer", doc_date: "2026-09-05", store_from: A, store_to: B, lines: [{ item_code: muka, qty: 1 }] });
+  check("свой склад: перемещение со своего — ok", r.ok, r);
+  const skTr = r.id;
+  r = await call("office_doc_save", { token: t, doc_type: "writeoff", doc_date: "2026-09-05", store_from: B, reason: "other", lines: [{ item_code: muka, qty: 1 }] });
+  const draftB = r.id;
+  r = await call("office_doc_save", { token: sk.token, id: draftB, doc_type: "writeoff", doc_date: "2026-09-05", store_from: A, reason: "other", lines: [{ item_code: muka, qty: 1 }] });
+  check("чужой черновик нельзя перетащить на свой склад — forbidden", r.ok === false && r.error === "forbidden", r);
+  r = await call("office_doc_get", { token: sk.token, id: draftB });
+  check("чужой склад: карточка — forbidden", r.ok === false && r.error === "forbidden", r);
+  r = await call("office_doc_preview", { token: sk.token, id: draftB });
+  check("чужой склад: предпросмотр — forbidden", r.ok === false && r.error === "forbidden", r);
+  r = await call("office_doc_post", { token: sk.token, id: draftB });
+  check("чужой склад: проведение — forbidden", r.ok === false && r.error === "forbidden", r);
+  r = await call("office_doc_delete", { token: sk.token, id: draftB });
+  check("чужой склад: удаление — forbidden", r.ok === false && r.error === "forbidden", r);
+  r = await call("office_docs_list", { token: sk.token });
+  check("журнал кладовщика — только документы его склада", r.ok && r.rows.length > 0 && r.rows.every((x) => x.store_from === A || x.store_to === A), r.rows && r.rows.map((x) => [x.store_from_name, x.store_to_name]));
+  r = await call("office_stock_balances", { token: sk.token, only_nonzero: false });
+  check("остатки кладовщика — только его склад", r.ok && r.rows.length > 0 && r.rows.every((x) => x.store_id === A), r.rows && r.rows.slice(0, 3));
+  r = await call("office_stock_balances", { token: sk.token, store_id: B });
+  check("остатки чужого склада — пусто", r.ok && r.rows.length === 0, r.total);
+  r = await call("office_stock_moves", { token: sk.token });
+  check("движения кладовщика — только его склад", r.ok && r.rows.every((x) => x.store_id === A), r.rows && r.rows.slice(0, 3));
+  r = await call("office_user_save", { token: t, id: skId, login: "zz_test_sklad_s", name: "ZZ_TEST_Кладовщик склада", role: "storekeeper", store_ids: [] });
+  r = await call("office_doc_get", { token: sk.token, id: draftB });
+  check("без привязки — снова все склады", r.ok, r);
+  await call("office_doc_delete", { token: t, id: draftB });
+  await call("office_doc_delete", { token: t, id: skTr });
 
   // 11. права по типам
   r = await call("office_user_save", { token: t, login: "zz_test_tech_s", name: "ZZ_TEST_Технолог", role: "technologist", pin: "4321" });
