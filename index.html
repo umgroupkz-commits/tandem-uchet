@@ -125,6 +125,8 @@
   .dtools>div{flex:0 0 150px}
   .dtools button{width:auto}
   .dper.on{background:var(--accent);color:#fff}
+input[readonly]{background:#EEF2F8;color:var(--ink2)}
+.kassalink{display:inline-flex;align-items:center;min-height:44px;margin-top:8px;color:var(--accent2);font-weight:600}
 </style>
 </head>
 <body>
@@ -133,7 +135,7 @@
   <header>
     <div>
       <h1>Тандем KZ · дневной отчёт</h1>
-      <div class="sub">Заполняется в конце смены · сборка 10</div>
+      <div class="sub">Заполняется в конце смены · сборка 11</div>
     </div>
   </header>
 
@@ -171,6 +173,13 @@
     <button class="link" id="logout" style="flex:0 0 auto">Выйти</button>
   </header>
 
+  <div class="card" id="block-kassa" hidden>
+    <h2>Закрытие смены кассы</h2>
+    <div class="hint" style="margin:0 0 12px">Продажи и деньги по каналам уже собраны из чеков. Осталось пересчитать наличные, внести расходы под отчёт и сохранить.</div>
+    <div class="rrow"><span>Чеков за день</span><b id="kcount">—</b></div>
+    <a class="kassalink" href="kassa.html">← Вернуться в кассу</a>
+  </div>
+
   <div class="card">
     <h2>Смена</h2>
     <label for="date">Дата</label>
@@ -188,6 +197,9 @@
     <input id="kaspi_qr" inputmode="decimal" placeholder="0">
     <label for="transfer">Перевод на счёт, ₸</label>
     <input id="transfer" inputmode="decimal" placeholder="0">
+    <label for="card">Карта через терминал, ₸</label>
+    <input id="card" inputmode="decimal" placeholder="0">
+    <div class="hint" id="moneyhint" hidden>Суммы собраны из чеков кассы и здесь не правятся. Ошибку исправляют в самом чеке: касса → «Смена» → «Исправить».</div>
     <div class="tot"><span>Итого выручка</span><span id="total">0 ₸</span></div>
   </div>
 
@@ -352,7 +364,7 @@
     <div class="scroll">
       <table>
         <thead><tr><th>Дата</th><th>Точка</th><th style="text-align:right">Нал.</th><th style="text-align:right">QR</th>
-          <th style="text-align:right">Перевод</th><th style="text-align:right">Итого</th>
+          <th style="text-align:right">Перевод</th><th style="text-align:right">Карта</th><th style="text-align:right">Итого</th>
           <th style="text-align:right">Сдано</th><th style="text-align:right">Подотчёт</th><th>Проверка</th></tr></thead>
         <tbody id="dbody"></tbody>
       </table>
@@ -405,7 +417,7 @@
   </div>
 </div>
 
-<script src="config.js?v=10"></script>
-<script src="app.js?v=10"></script>
+<script src="config.js?v=11"></script>
+<script src="app.js?v=11"></script>
 </body>
 </html>

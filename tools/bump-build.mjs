@@ -7,8 +7,8 @@ import path from "path";
 import { fileURLToPath } from "url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const files = ["office.html", "stock.html", "index.html",
-  ...["js/office", "js/stock"].flatMap((d) => fs.readdirSync(path.join(root, d)).filter((f) => f.endsWith(".js")).map((f) => d + "/" + f))];
+const files = ["office.html", "stock.html", "index.html", "kassa.html",
+  ...["js/office", "js/stock", "js/kassa"].flatMap((d) => fs.readdirSync(path.join(root, d)).filter((f) => f.endsWith(".js")).map((f) => d + "/" + f))];
 const api = fs.readFileSync(path.join(root, "js/office/api.js"), "utf8");
 const cur = Number((api.match(/export const BUILD = (\d+);/) || [])[1] || 0);
 const next = Number(process.argv[2]) || cur + 1;
