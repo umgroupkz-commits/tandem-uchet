@@ -164,6 +164,8 @@ for (const b of tabs) b.addEventListener("click", () => show(b.dataset.r));
 let start = location.hash.slice(1);
 if (!start) { try { start = localStorage.getItem("tandem_help_role") || ""; } catch {} }
 show(start || "sklad");
+// Ссылка с другой ролью в уже открытой странице меняет только хеш — страница не перезагружается.
+window.addEventListener("hashchange", () => show(location.hash.slice(1)));
 </script>
 </body>
 </html>
