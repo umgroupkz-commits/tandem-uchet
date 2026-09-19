@@ -83,11 +83,18 @@ function showForm() {
   $('fpoint').textContent = S.point.name;
   $('fmode').textContent = S.mode === 'takeout' ? 'заборный лист' :
     S.mode === 'position' ? 'продажи по позициям' :
-    S.mode === 'import' ? 'загрузка листа продаж' : 'только суммы';
+    S.mode === 'import' ? 'загрузка листа продаж' :
+    S.mode === 'checks' ? 'касса: закрытие смены' : 'только суммы';
   $('date').value = today();
   $('block-takeout').hidden = (S.mode !== 'takeout');
   $('block-sales').hidden = (S.mode !== 'position' && S.mode !== 'import');
   $('block-import').hidden = (S.mode !== 'import');
+  // Касса: деньги и продажи приходят из чеков — поля выручки только для чтения, позиции не показываем
+  // (они видны в кассе, вкладка «Смена»). Сохранение этой формы и есть закрытие смены.
+  var isK = S.mode === 'checks';
+  $('block-kassa').hidden = !isK; $('moneyhint').hidden = !isK;
+  ['cash', 'kaspi_qr', 'transfer', 'card'].forEach(function (id) { $(id).readOnly = isK; });
+  $('savebtn').textContent = isK ? 'Закрыть смену' : 'Сохранить отчёт';
   if (S.mode === 'import') mountImport();
   api('items', {}).then(function (r) {
     S.items = (r && r.items) ? r.items : [];
@@ -240,13 +247,20 @@ function loadReport() {
     }
     restoreDraft(!rep);
     var rep = r.report;
-    var f = ['cash', 'kaspi_qr', 'transfer', 'qr_statement', 'tr_statement', 'cash_open', 'cash_handed', 'cash_counted'];
+    var f = ['cash', 'kaspi_qr', 'transfer', 'card', 'qr_statement', 'tr_statement', 'cash_open', 'cash_handed', 'cash_counted'];
     for (var i = 0; i < f.length; i++) {
       $(f[i]).value = rep && rep[f[i]] !== null && rep[f[i]] !== undefined ? rep[f[i]] : '';
     }
     $('shift_by').value = rep && rep.shift_by ? rep.shift_by : '';
     $('comment').value = rep && rep.comment ? rep.comment : '';
     $('saved').textContent = rep ? 'Отчёт за этот день уже был сохранён — можно поправить' : '';
+    if (S.mode === 'checks') {
+      $('kcount').textContent = rep ? rep.checks_count : '0';
+      // Имя продавца уже введено в кассе — не заставляем набирать второй раз.
+      if (!$('shift_by').value) { try { $('shift_by').value = JSON.parse(localStorage.getItem('tandem_kassa_seller') || '""') || ''; } catch (e) { } }
+      $('saved').textContent = rep && rep.closed_at ? 'Смена за этот день уже закрыта — можно поправить и закрыть заново'
+        : (rep ? '' : 'За этот день чеков ещё нет');
+    }
     // Восстанавливаем фасовку из справочника: в строках листа она не хранится.
     for (var z = 0; z < S.takeout.length; z++) {
       var rt = itemByCode(S.takeout[z].item_code);
@@ -452,7 +466,7 @@ function saveDraft() {
   if (!S.point) return;
   try {
     var f = {};
-    ['shift_by','cash','kaspi_qr','transfer','qr_statement','tr_statement',
+    ['shift_by','cash','kaspi_qr','transfer','card','qr_statement','tr_statement',
      'cash_open','cash_handed','cash_counted','comment'].forEach(function (id) {
       var el = $(id); if (el) f[id] = el.value;
     });
@@ -702,7 +716,7 @@ function saveRealization() {
 
 function recalc() {
   var cash = num($('cash').value), qr = num($('kaspi_qr').value), tr = num($('transfer').value);
-  var total = cash + qr + tr;
+  var total = cash + qr + tr + num($('card').value);
   $('total').textContent = fmt(total) + ' ₸';
 
   var pod = 0, noReceipt = 0;
@@ -767,6 +781,7 @@ function saveReport() {
     date: $('date').value,
     shift_by: $('shift_by').value,
     cash: num($('cash').value), kaspi_qr: num($('kaspi_qr').value), transfer: num($('transfer').value),
+    card: num($('card').value),
     qr_statement: $('qr_statement').value, tr_statement: $('tr_statement').value,
     cash_open: num($('cash_open').value), cash_handed: num($('cash_handed').value),
     cash_counted: $('cash_counted').value,
@@ -779,7 +794,7 @@ function saveReport() {
     $('savebtn').disabled = false;
     if (!r.ok) { $('savemsg').textContent = 'Ошибка: ' + (r.error || 'не сохранилось'); return; }
     clearDraft();
-    $('savemsg').textContent = 'Отчёт сохранён ' + new Date().toLocaleTimeString('ru-RU');
+    $('savemsg').textContent = (S.mode === 'checks' ? 'Смена закрыта ' : 'Отчёт сохранён ') + new Date().toLocaleTimeString('ru-RU');
     $('saved').textContent = 'Отчёт за этот день уже был сохранён — можно поправить';
   });
 }
@@ -807,7 +822,7 @@ function markPeriod(per) {
 }
 function loadDash() {
   api('dashboard', { from: $('dfrom').value, to: $('dto').value }).then(function (r) {
-    if (!r.ok) { $('dbody').innerHTML = '<tr><td colspan="9">' + (r.error || 'нет доступа') + '</td></tr>'; return; }
+    if (!r.ok) { $('dbody').innerHTML = '<tr><td colspan="10">' + (r.error || 'нет доступа') + '</td></tr>'; return; }
     S.dash = r;
     var rows = r.rows || [];
     var byPoint = {}, tot = 0, totPod = 0, flags = 0;
@@ -863,9 +878,9 @@ function loadDash() {
 
     // ── Каналы и юрлица ──
     var ch = r.channels || {};
-    var chTotal = num(ch.cash) + num(ch.kaspi_qr) + num(ch.transfer);
+    var chTotal = num(ch.cash) + num(ch.kaspi_qr) + num(ch.transfer) + num(ch.card);
     var chHtml = '';
-    [['Наличные', ch.cash], ['Kaspi QR', ch.kaspi_qr], ['Перевод на счёт', ch.transfer]].forEach(function (c) {
+    [['Наличные', ch.cash], ['Kaspi QR', ch.kaspi_qr], ['Перевод на счёт', ch.transfer], ['Карта через терминал', ch.card]].forEach(function (c) {
       var share = chTotal ? Math.round(num(c[1]) / chTotal * 100) : 0;
       chHtml += '<div class="rrow"><span>' + c[0] + '</span><b>' + fmt(c[1]) + ' ₸ · ' + share + ' %</b></div>';
     });
@@ -901,7 +916,7 @@ function loadDash() {
       : '<div class="empty">Долгов нет</div>';
 
     var b = $('dbody'); b.innerHTML = '';
-    if (!rows.length) { b.innerHTML = '<tr><td colspan="9" class="empty">Отчётов за период нет</td></tr>'; return; }
+    if (!rows.length) { b.innerHTML = '<tr><td colspan="10" class="empty">Отчётов за период нет</td></tr>'; return; }
     for (var j = 0; j < rows.length; j++) {
       var y = rows[j];
       var issues = [];
@@ -914,7 +929,7 @@ function loadDash() {
       trr.style.cursor = 'pointer';
       trr.innerHTML = '<td>' + y.report_date + '</td><td>' + y.point_name + '</td>' +
         '<td class="n">' + fmt(y.cash) + '</td><td class="n">' + fmt(y.kaspi_qr) + '</td>' +
-        '<td class="n">' + fmt(y.transfer) + '</td><td class="n b">' + fmt(y.revenue_total) + '</td>' +
+        '<td class="n">' + fmt(y.transfer) + '</td><td class="n">' + fmt(y.card) + '</td><td class="n b">' + fmt(y.revenue_total) + '</td>' +
         '<td class="n">' + fmt(y.cash_handed) + '</td><td class="n">' + fmt(y.podotchet) + '</td>' +
         '<td>' + (issues.length ? '<span class="pill bad">' + issues.join(' · ') + '</span>' : '<span class="pill ok">ОК</span>') + '</td>';
       (function (row, tr) { tr.onclick = function () { toggleReportDetail(tr, row); }; })(y, trr);
@@ -933,14 +948,14 @@ function toggleReportDetail(tr, row) {
 
   var dtr = document.createElement('tr');
   dtr.className = 'detail-row';
-  dtr.innerHTML = '<td colspan="9" style="background:#F7F9FC;padding:14px 16px">Загружаю отчёт…</td>';
+  dtr.innerHTML = '<td colspan="10" style="background:#F7F9FC;padding:14px 16px">Загружаю отчёт…</td>';
   tr.parentNode.insertBefore(dtr, tr.nextSibling);
 
   fetch(API, {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ action: 'get_report', payload: { pin: S.pin, point_id: row.point_id, date: row.report_date } })
   }).then(function (r) { return r.json(); }).then(function (d) {
-    var html = '<td colspan="9" style="background:#F7F9FC;padding:14px 16px">';
+    var html = '<td colspan="10" style="background:#F7F9FC;padding:14px 16px">';
     var sl = d.sales || [], tk = d.takeout || [], ex = d.expenses || [];
 
     if (sl.length) {
@@ -994,18 +1009,18 @@ function toggleReportDetail(tr, row) {
     html += '</td>';
     dtr.innerHTML = html;
   }).catch(function () {
-    dtr.innerHTML = '<td colspan="9" style="padding:14px 16px;color:var(--bad)">Не удалось загрузить отчёт</td>';
+    dtr.innerHTML = '<td colspan="10" style="padding:14px 16px;color:var(--bad)">Не удалось загрузить отчёт</td>';
   });
 }
 
 function exportCsv() {
   if (!S.dash || !S.dash.rows) return;
   var rows = S.dash.rows;
-  var head = ['Дата', 'Точка', 'Наличные', 'Kaspi QR', 'Перевод', 'Итого', 'Сдано', 'Подотчёт', 'Расх. QR', 'Расх. перевод', 'Расх. касса'];
+  var head = ['Дата', 'Точка', 'Наличные', 'Kaspi QR', 'Перевод', 'Карта', 'Итого', 'Сдано', 'Подотчёт', 'Расх. QR', 'Расх. перевод', 'Расх. касса'];
   var lines = [head.join(';')];
   for (var i = 0; i < rows.length; i++) {
     var x = rows[i];
-    lines.push([x.report_date, x.point_name, x.cash, x.kaspi_qr, x.transfer, x.revenue_total,
+    lines.push([x.report_date, x.point_name, x.cash, x.kaspi_qr, x.transfer, x.card, x.revenue_total,
     x.cash_handed, x.podotchet, x.diff_qr === null ? '' : x.diff_qr,
     x.diff_transfer === null ? '' : x.diff_transfer,
     x.diff_cash === null ? '' : x.diff_cash].join(';'));
@@ -1038,6 +1053,6 @@ window.addEventListener('DOMContentLoaded', function () {
     }
   })();
   $('dcsv').onclick = exportCsv;
-  var ids = ['cash', 'kaspi_qr', 'transfer', 'qr_statement', 'tr_statement', 'cash_open', 'cash_handed', 'cash_counted'];
+  var ids = ['cash', 'kaspi_qr', 'transfer', 'card', 'qr_statement', 'tr_statement', 'cash_open', 'cash_handed', 'cash_counted'];
   for (var i = 0; i < ids.length; i++) { $(ids[i]).oninput = recalc; }
 });

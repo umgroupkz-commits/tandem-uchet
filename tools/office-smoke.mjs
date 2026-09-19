@@ -911,6 +911,91 @@ SECTIONS.sales = async (ctx) => {
   check("продажи и себестоимость: кладовщик своего склада видит свою точку", r.ok && (r.points || []).some((x) => x.point_id === "zz_test"), r);
 };
 
+// Касса (миграция 0033): чек в течение дня → строки и деньги дневного отчёта → документ «Продажа».
+// Служебная выключенная точка «zz_kassa» (режим checks); день — сегодняшний, всё убирает test_cleanup.
+SECTIONS.kassa = async (ctx) => {
+  const t = ctx.token;
+  const pin = process.env.TANDEM_OWNER_PIN || "";
+  if (!pin) { console.log("  пропуск: нужен TANDEM_OWNER_PIN (чек пробивается кодом)"); return; }
+  const near = (a, b, e = 0.001) => Math.abs(Number(a) - Number(b)) < e;
+  const day = new Date().toISOString().slice(0, 10);
+  const uid = () => crypto.randomUUID();
+  let r = await call("office_store_save", { token: t, name: "ZZ_TEST_склад кассы", point_id: "zz_kassa", is_default: true }); const S = r.id;
+  r = await call("office_counteragent_save", { token: t, name: "ZZ_TEST_поставщик кассы", kind: "supplier" }); const SUP = r.id;
+  r = await call("office_item_save", { token: t, name: "ZZ_TEST_мука кассы", item_type: "goods", unit_id: "кг" }); const muka = r.code;
+  r = await call("office_item_save", { token: t, name: "ZZ_TEST_сок кассы", item_type: "goods", unit_id: "шт", for_sale: true, price: 300 }); const sok = r.code;
+  r = await call("office_item_save", { token: t, name: "ZZ_TEST_беляш кассы", item_type: "dish", unit_id: "шт", for_sale: true, price: 400 }); const bel = r.code;
+  r = await call("office_chart_save", { token: t, code: bel, date_from: "2020-01-01", output_amount: 1, lines: [{ ingredient_code: muka, brutto: 0.1, netto: 0.1, output: 0.1 }] });
+  check("касса: подготовка — склад точки, позиции, карта", S && SUP && muka && sok && bel && r.ok, r);
+  r = await call("office_doc_save", { token: t, doc_type: "invoice_in", doc_date: "2020-02-01", store_to: S, counteragent_id: SUP,
+    lines: [{ item_code: muka, qty: 10, price: 100 }, { item_code: sok, qty: 20, price: 150 }] });
+  await call("office_doc_post", { token: t, id: r.id });
+  const bal = async (code) => { const b = await call("office_stock_balances", { token: t, store_id: S, only_nonzero: false });
+    const row = (b.rows || []).find((x) => x.item_code === code); return row ? Number(row.qty) : 0; };
+  const K = (action, p) => call(action, { pin, point_id: "zz_kassa", ...p });
+  const sales = async () => ((await call("office_doc_sales_list", { token: t, date_from: day, date_to: day, point_id: "zz_kassa" })).rows || [])[0] || {};
+
+  // 1. Первый чек: номер 1, сумма по ценам базы, отчёт дня и продажа появились сразу.
+  const u1 = uid();
+  r = await K("check_save", { uid: u1, date: day, seller: "ZZ_TEST_продавец", pay_kind: "cash", lines: [{ item_code: bel, qty: 2 }, { item_code: sok, qty: 1 }] });
+  check("касса: чек №1 принят, сумма по ценам базы (2×400 + 300)", r.ok && r.check.no === 1 && near(r.check.total, 1100), r);
+  let s = await sales();
+  check("касса: продажа проведена сразу — ПД, 1100, мука и сок списаны", s.state === "posted" && near(s.sale_sum, 1100) && near(s.money, 1100)
+    && near(await bal(muka), 9.8) && near(await bal(sok), 19), { s, muka: await bal(muka), sok: await bal(sok) });
+  // 2. Досылка того же чека (обрыв связи) второго чека не создаёт.
+  r = await K("check_save", { uid: u1, date: day, pay_kind: "cash", lines: [{ item_code: bel, qty: 2 }, { item_code: sok, qty: 1 }] });
+  let l = await K("check_list", { date: day });
+  check("касса: повторная досылка — чек один, остатки те же", r.ok && r.check.no === 1 && l.checks.length === 1 && near(await bal(sok), 19), l.totals);
+  // 3. Второй чек: другая оплата и скидка на строку — в отчёте одна строка на позицию, цена средняя, рядом цена прейскуранта.
+  const u2 = uid();
+  r = await K("check_save", { uid: u2, date: day, pay_kind: "kaspi_qr", lines: [{ item_code: sok, qty: 2, price: 250 }] });
+  l = await K("check_list", { date: day });
+  check("касса: чек №2, итоги по каналам оплаты", r.ok && r.check.no === 2 && near(l.totals.cash, 1100) && near(l.totals.kaspi_qr, 500) && l.totals.count === 2, { r, totals: l.totals });
+  r = await call("get_report", { pin, point_id: "zz_kassa", date: day });
+  const sokLines = (r.sales || []).filter((x) => x.item_code === sok);
+  check("касса: отчёт дня собран из чеков — деньги по каналам, скидка видна в строке",
+    r.ok && near(r.report.cash, 1100) && near(r.report.kaspi_qr, 500) && near(r.report.revenue_total, 1600) && Number(r.report.checks_count) === 2
+    && sokLines.length === 1 && near(sokLines[0].qty, 3) && near(sokLines[0].price, 266.67) && near(sokLines[0].price_list, 300), { rep: r.report, sokLines });
+  // 4. Исправление чека: оплата картой, сока больше — деньги и склад пересчитаны, карта входит в выручку.
+  r = await K("check_save", { uid: u2, date: day, pay_kind: "card", lines: [{ item_code: sok, qty: 3, price: 250 }] });
+  s = await sales();
+  r = await call("get_report", { pin, point_id: "zz_kassa", date: day });
+  check("касса: исправленный чек — карта в выручке, склад пересчитан", near(r.report.card, 750) && near(r.report.kaspi_qr, 0) && near(r.report.revenue_total, 1850)
+    && near(s.money, 1850) && near(await bal(sok), 16), { rep: r.report, s, sok: await bal(sok) });
+  // 5. Отмена чека возвращает товар и деньги.
+  r = await K("check_void", { uid: u2, reason: "ZZ_TEST_ошибка" });
+  l = await K("check_list", { date: day });
+  check("касса: отмена чека — деньги и остаток вернулись, чек остался в списке отменённым", r.ok && near(l.totals.total, 1100) && near(await bal(sok), 19)
+    && l.checks.some((c) => c.uid === u2 && c.status === "void"), l.totals);
+  r = await K("check_save", { uid: u2, date: day, pay_kind: "cash", lines: [{ item_code: sok, qty: 1 }] });
+  check("касса: отменённый чек исправить нельзя", r.ok === false, r);
+  // 6. Отказы: нет в продаже, ноль, чужая дата, без оплаты, точка без кассы, неверный код.
+  r = await K("check_save", { uid: uid(), date: day, pay_kind: "cash", lines: [{ item_code: muka, qty: 1 }] });
+  check("касса: сырьё (не в продаже) пробить нельзя", r.ok === false && /нет в продаже/.test(r.error), r);
+  r = await K("check_save", { uid: uid(), date: day, pay_kind: "cash", lines: [{ item_code: sok, qty: 0 }] });
+  check("касса: нулевое количество — отказ", r.ok === false, r);
+  r = await K("check_save", { uid: uid(), date: "2020-03-01", pay_kind: "cash", lines: [{ item_code: sok, qty: 1 }] });
+  check("касса: чек давней датой — отказ", r.ok === false && /Дата/.test(r.error), r);
+  r = await K("check_save", { uid: uid(), date: day, pay_kind: "bonus", lines: [{ item_code: sok, qty: 1 }] });
+  check("касса: неизвестный способ оплаты — отказ", r.ok === false, r);
+  r = await call("check_save", { pin, point_id: "zz_test", uid: uid(), date: day, pay_kind: "cash", lines: [{ item_code: sok, qty: 1 }] });
+  check("касса: у точки без режима кассы чеки не принимаются", r.ok === false && /не включена/.test(r.error), r);
+  r = await call("check_list", { pin: "0000", point_id: "zz_kassa", date: day });
+  check("касса: без кода точки чеков не видно", r.ok === false && r.error === "Нет доступа", r);
+  // 7. Закрытие смены: форма присылает свои деньги и продажи — сервер берёт их из чеков.
+  r = await call("save_report", { pin, point_id: "zz_kassa", date: day, shift_by: "ZZ_TEST_продавец", cash: 99999, kaspi_qr: 5,
+    cash_open: 1000, cash_counted: 2100, comment: "ZZ_TEST_касса", sales: [{ item_code: sok, item_name: "подлог", qty: 50, price: 1 }] });
+  check("касса: закрытие смены — деньги и продажи из чеков, а не из формы; наличные сошлись",
+    r.ok && near(r.report.cash, 1100) && near(r.report.kaspi_qr, 0) && near(r.report.sales_amount, 1100) && near(r.report.diff_cash, 0) && r.report.closed_at, r.report);
+  check("касса: после закрытия склад тот же", near(await bal(sok), 19) && near(await bal(muka), 9.8), { sok: await bal(sok) });
+  // 8. Чек после закрытия смены принимается — продажа не теряется, отчёт пересобран.
+  r = await K("check_save", { uid: uid(), date: day, pay_kind: "transfer", lines: [{ item_code: sok, qty: 1 }] });
+  s = await sales();
+  check("касса: чек после закрытия смены учтён", r.ok && r.check.no === 3 && near(s.money, 1400) && near(await bal(sok), 18), s);
+  r = await call("dashboard", { pin, from: day, to: day });
+  check("касса: сводка собственника видит канал «карта» и отчёт кассы", r.ok && "card" in r.channels && (r.rows || []).some((x) => x.point_id === "zz_kassa" && near(x.revenue_total, 1400)), r.channels);
+};
+
 // Единый вход (миграция 0029): служебный ключ и счётчик неверных кодов. Идёт последним:
 // раздел сам запирает вход по коду для служебной точки, замок снимает уборка теста.
 SECTIONS.gate = async () => {

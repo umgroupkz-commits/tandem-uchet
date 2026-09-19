@@ -4,7 +4,8 @@
 //
 // Запуск:  node tools/ui-smoke.mjs
 // Переменные: TANDEM_SITE_URL (по умолчанию сайт на GitHub Pages), TANDEM_ADMIN_LOGIN (admin),
-//   TANDEM_ADMIN_PIN — без него проверяются только экраны без входа; CHROME_PATH — путь к браузеру.
+//   TANDEM_ADMIN_PIN — без него проверяются только экраны без входа; CHROME_PATH — путь к браузеру;
+//   TANDEM_KASSA_PIN (+ TANDEM_KASSA_POINT, по умолчанию ucheb_kassa) — вход в кассу: чек набирается, но не пробивается.
 import { spawn } from "child_process";
 import fs from "fs"; import os from "os"; import path from "path";
 
@@ -68,7 +69,31 @@ try {
   check("памятки: роль из адреса выбрана, шапка на месте", await js("return document.querySelector('nav button[aria-selected=true]').textContent === 'Технолог' && window.scrollY === 0"));
   await clickText("nav button", "Собственник");
   check("памятки: переключение роли", await js("return [...document.querySelectorAll('section')].filter((s) => !s.hidden).map((s) => s.id).join() === 'r-owner'"));
+  await go("help.html#kassa");
+  check("памятки: памятка продавца кассы", await js("return document.querySelector('nav button[aria-selected=true]').textContent === 'Касса' && !document.getElementById('r-kassa').hidden"));
+  await go("kassa.html");
+  check("касса: на входе есть точка с кассой", await until("[...document.getElementById('lpoint').options].some((o) => o.value)"), await js("return document.getElementById('lerr').textContent"));
   check("экраны без входа: ошибок в консоли нет", pageErrors.length === 0, pageErrors);
+
+  const KPIN = process.env.TANDEM_KASSA_PIN || "", KPOINT = process.env.TANDEM_KASSA_POINT || "ucheb_kassa";
+  if (!KPIN) console.log("\n== касса пропущена: задайте TANDEM_KASSA_PIN");
+  else {
+    console.log("\n== касса (чек набирается, но не пробивается)");
+    await js(`document.getElementById('lpoint').value = ${JSON.stringify(KPOINT)}; document.getElementById('lpin').value = ${JSON.stringify(KPIN)}; document.getElementById('lseller').value = 'Автотест'; document.getElementById('lbtn').click();`);
+    check("касса: вход и меню точки", await until("document.querySelectorAll('#tiles .tile').length > 5"), await js("return document.getElementById('lerr').textContent + ' ' + document.getElementById('tiles').innerText.slice(0, 120)"));
+    await js("document.querySelector('#tiles .tile').click(); document.querySelector('#tiles .tile').click();");
+    check("касса: позиция попала в чек, сумма посчитана, оплата доступна",
+      await js("return document.querySelectorAll('#rlines .rline').length === 1 && /[1-9]/.test(document.getElementById('rsum').textContent) && !document.querySelector('#pay button').disabled"), await js("return document.getElementById('receipt').innerText.slice(0, 200)"));
+    await js("document.getElementById('tab-shift').click();");
+    check("касса: вкладка «Смена» показывает итоги", await until("document.querySelectorAll('#shift .kpi').length === 6"), await js("return document.getElementById('shift').innerText.slice(0, 160)"));
+    await send("Emulation.setDeviceMetricsOverride", { width: 375, height: 812, deviceScaleFactor: 2, mobile: true });
+    await js("document.getElementById('tab-sale').click();");
+    check("касса на телефоне: страница не шире экрана, чек спрятан в нижнюю панель", await js("return document.documentElement.scrollWidth <= 380 && getComputedStyle(document.getElementById('cartbar')).display !== 'none'"), await js("return document.documentElement.scrollWidth"));
+    await send("Emulation.clearDeviceMetricsOverride");
+    // Чек не пробит: чистим корзину, иначе страница спросит подтверждение ухода.
+    await js("window.confirm = () => true; document.getElementById('rclear').click();");
+    check("касса: ошибок в консоли нет", pageErrors.length === 0, pageErrors);
+  }
 
   if (!PIN) console.log("\n== бэк-офис пропущен: задайте TANDEM_ADMIN_PIN");
   else {

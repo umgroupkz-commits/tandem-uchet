@@ -1,5 +1,5 @@
-import { api, session, setSession, can, BUILD } from "./api.js?v=10";
-import { toast } from "./ui.js?v=10";
+import { api, session, setSession, can, BUILD } from "./api.js?v=11";
+import { toast } from "./ui.js?v=11";
 
 const SECTIONS = [
   { id: "nomenclature", title: "Номенклатура" },
