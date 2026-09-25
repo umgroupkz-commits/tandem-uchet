@@ -2,7 +2,7 @@
 // попадает в дневной отчёт точки и на склад (миграция 0033). Связь на точках нестабильная, поэтому
 // чек сначала кладётся в очередь планшета (localStorage) и досылается в фоне; сервер узнаёт
 // повторную досылку по uid и второй чек не создаёт.
-import { el, fmt, toast, today, debounce } from "../office/ui.js?v=14";
+import { el, fmt, toast, today, debounce } from "../office/ui.js?v=15";
 
 const API = window.TANDEM_API_URL || "https://qeehxcnnuzuwskznhdyg.supabase.co/functions/v1/uchet";
 const $ = (id) => document.getElementById(id);
@@ -229,6 +229,25 @@ function pay(kind) {
   flush();
 }
 
+// Наличные: сколько дал покупатель и сколько сдачи. Можно пропустить — сдача ни на что не влияет,
+// в учёт идёт сумма чека.
+function askCash() {
+  if (!S.cart.length) return;
+  const total = cartTotal(), box = $("cashbox"), inp = $("cashgot");
+  const round = (n, s) => Math.ceil(n / s) * s;
+  const opts = [...new Set([total, round(total, 500), round(total, 1000), round(total, 5000), round(total, 10000)])].filter((v) => v >= total).slice(0, 4);
+  $("cashsum").textContent = money(total); inp.value = "";
+  const quick = $("cashquick"); quick.innerHTML = "";
+  for (const v of opts) quick.append(el("button", { type: "button", onclick: () => { inp.value = v; show(); } }, v === total ? "Без сдачи" : fmt(v)));
+  const show = () => { const got = num(inp.value); const ch = got - total;
+    $("cashchange").textContent = !(got > 0) ? "—" : ch < 0 ? "не хватает " + money(-ch) : money(ch);
+    $("cashchange").className = ch < 0 && got > 0 ? "bad" : ""; $("cashok").disabled = got > 0 && ch < 0; };
+  inp.oninput = show; show();
+  $("cashok").onclick = () => { box.hidden = true; pay("cash"); };
+  $("cashcancel").onclick = () => { box.hidden = true; };
+  box.hidden = false; setTimeout(() => inp.focus(), 0);
+}
+
 // ---------------------------------------------------------------- очередь и досылка
 let retryTimer = null;
 async function flush() {
@@ -339,7 +358,7 @@ $("rclear").onclick = clearCart;
 $("rclose").onclick = () => sheet(false);
 $("scrim").onclick = () => sheet(false);
 $("cartbar").onclick = () => sheet(true);
-for (const b of $("pay").querySelectorAll("button")) b.onclick = () => pay(b.dataset.pay);
+for (const b of $("pay").querySelectorAll("button")) b.onclick = () => (b.dataset.pay === "cash" ? askCash() : pay(b.dataset.pay));
 $("sellerbtn").onclick = () => {
   const v = window.prompt("Кто сейчас за кассой?", S.seller);
   if (v && v.trim()) { S.seller = v.trim(); store.set("tandem_kassa_seller", S.seller); $("sellerbtn").textContent = "Продавец: " + S.seller; }

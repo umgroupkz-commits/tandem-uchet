@@ -84,6 +84,11 @@ try {
     await js("document.querySelector('#tiles .tile').click(); document.querySelector('#tiles .tile').click();");
     check("касса: позиция попала в чек, сумма посчитана, оплата доступна",
       await js("return document.querySelectorAll('#rlines .rline').length === 1 && /[1-9]/.test(document.getElementById('rsum').textContent) && !document.querySelector('#pay button').disabled"), await js("return document.getElementById('receipt').innerText.slice(0, 200)"));
+    await js("document.querySelector('#pay button[data-pay=cash]').click();");
+    const cash = await js("const sum = parseFloat(document.getElementById('rsum').textContent.replace(/[^0-9,]/g, '').replace(',', '.')); const i = document.getElementById('cashgot'); i.value = String(sum + 250); i.dispatchEvent(new Event('input')); return { open: !document.getElementById('cashbox').hidden, change: document.getElementById('cashchange').textContent };");
+    check("касса: наличные — окно сдачи, сдача посчитана", cash && cash.open && /^250/.test(cash.change.replace(/s/g, "")), cash);
+    if (process.env.TANDEM_SHOTS) { const sh = await send("Page.captureScreenshot", { format: "png" }); fs.writeFileSync(path.join(process.env.TANDEM_SHOTS, "kassa-cash.png"), Buffer.from(sh.result.data, "base64")); }
+    await js("document.getElementById('cashcancel').click();");
     await js("document.getElementById('tab-shift').click();");
     check("касса: вкладка «Смена» показывает итоги", await until("document.querySelectorAll('#shift .kpi').length === 6"), await js("return document.getElementById('shift').innerText.slice(0, 160)"));
     await send("Emulation.setDeviceMetricsOverride", { width: 375, height: 812, deviceScaleFactor: 2, mobile: true });

@@ -5,12 +5,12 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="theme-color" content="#1F3864">
 <title>Тандем KZ — касса</title>
-<link rel="stylesheet" href="kassa.css?v=14">
+<link rel="stylesheet" href="kassa.css?v=15">
 </head>
 <body>
 <div id="login" class="login" hidden>
   <h1>Касса · Тандем KZ</h1>
-  <p class="sub">Вход для продавца · сборка 14</p>
+  <p class="sub">Вход для продавца · сборка 15</p>
   <label for="lpoint">Точка</label>
   <select id="lpoint"><option value="">Загружаю точки…</option></select>
   <label for="lpin">Код точки</label>
@@ -66,9 +66,19 @@
 
   <button id="cartbar" class="cartbar" hidden></button>
   <div id="scrim" class="scrim" hidden></div>
+  <div id="cashbox" class="cashbox" hidden role="dialog" aria-label="Оплата наличными">
+    <div class="cashcard">
+      <div class="cashrow"><span>К оплате</span><b id="cashsum"></b></div>
+      <label for="cashgot">Дал покупатель, ₸</label>
+      <input id="cashgot" inputmode="decimal" autocomplete="off">
+      <div class="cashquick" id="cashquick"></div>
+      <div class="cashrow big"><span>Сдача</span><b id="cashchange">—</b></div>
+      <div class="cashbtns"><button id="cashcancel" type="button">Назад</button><button id="cashok" class="primary" type="button">Пробить чек</button></div>
+    </div>
+  </div>
 </div>
 <div id="toast" class="toast" hidden></div>
-<script src="config.js?v=14"></script>
-<script type="module" src="js/kassa/app.js?v=14"></script>
+<script src="config.js?v=15"></script>
+<script type="module" src="js/kassa/app.js?v=15"></script>
 </body>
 </html>

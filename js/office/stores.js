@@ -1,5 +1,5 @@
-import { api, can } from "./api.js?v=14";
-import { el, toast, modal } from "./ui.js?v=14";
+import { api, can } from "./api.js?v=15";
+import { el, toast, modal } from "./ui.js?v=15";
 
 let root, data, pts;
 // Режимы экрана точки: как продавец сдаёт продажи.

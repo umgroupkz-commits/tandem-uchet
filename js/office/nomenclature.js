@@ -1,6 +1,6 @@
-import { api, can } from "./api.js?v=14";
-import { el, fmt, toast, debounce, modal } from "./ui.js?v=14";
-import { loadXlsx } from "./stock.js?v=14";
+import { api, can } from "./api.js?v=15";
+import { el, fmt, toast, debounce, modal } from "./ui.js?v=15";
+import { loadXlsx } from "./stock.js?v=15";
 
 const TYPES = { goods: "товар", dish: "блюдо", prepared: "полуфабрикат", service: "услуга" };
 let groups = [], state = { q: "", group_id: "", item_type: "", active: "true", page: 1 };
