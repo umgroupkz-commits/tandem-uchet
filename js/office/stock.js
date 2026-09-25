@@ -1,5 +1,5 @@
-import { api, session } from "./api.js?v=15";
-import { el, fmt, toast, debounce, modal, confirmDlg, today, isoDate } from "./ui.js?v=15";
+import { api, session } from "./api.js?v=16";
+import { el, fmt, toast, debounce, modal, confirmDlg, today, isoDate } from "./ui.js?v=16";
 
 const TYPES = { invoice_in: "Приход", transfer: "Перемещение", writeoff: "Списание", production: "Производство", inventory: "Инвентаризация", sale: "Продажа" };
 // Продажу заводит отчёт точки, а не человек: в «+ Новый документ» её нет.
@@ -37,11 +37,13 @@ function drawShell() {
     canSales() ? el("button", { class: state.tab === "sales" ? "" : "ghost", onclick: () => { state.tab = "sales"; drawShell(); loadSales(); } }, "Продажи") : null,
     el("button", { class: state.tab === "turn" ? "" : "ghost", onclick: () => { state.tab = "turn"; drawShell(); loadTurnover(); } }, "Ведомость"),
     canSales() ? el("button", { class: state.tab === "c1" ? "" : "ghost", onclick: () => { state.tab = "c1"; drawShell(); loadC1(); } }, "Расход для 1С") : null,
+    canSales() ? el("button", { class: state.tab === "rep" ? "" : "ghost", onclick: () => { state.tab = "rep"; drawShell(); loadReports(); } }, "Отчёты") : null,
     el("button", { class: state.tab === "ready" ? "" : "ghost", onclick: () => { state.tab = "ready"; drawShell(); loadReady(); } }, "Готовность")));
   if (state.tab === "bal") { root.append(el("div", { id: "bal-root" })); return; }
   if (state.tab === "sales") { root.append(el("div", { id: "sales-root" })); return; }
   if (state.tab === "turn") { root.append(el("div", { id: "turn-root" })); return; }
   if (state.tab === "c1") { root.append(el("div", { id: "c1-root" })); return; }
+  if (state.tab === "rep") { root.append(el("div", { id: "rep-root" })); return; }
   if (state.tab === "ready") { root.append(el("div", { id: "ready-root" })); return; }
   // Роли без единого doc:*:edit (пока таких нет, но право снимается настройкой) видят
   // журнал и остатки, но пустого выпадающего списка «+ Новый документ…» им не показываем.
@@ -604,6 +606,84 @@ function linkC1(x) {
     send(code, String(k.value).replace(",", "."));
   };
   if (clear) clear.onclick = () => send("", "");
+}
+
+// ---------- отчёты как в iiko: прибыль по точкам, закупки, продажи по блюдам ----------
+const rep = { kind: "pnl", store_id: "", point_id: "", date_from: turn.date_from, date_to: turn.date_to };
+function csvDownload(name, head, rows) {
+  const q = (v) => /[;"\n]/.test(String(v ?? "")) ? '"' + String(v).replace(/"/g, '""') + '"' : String(v ?? "");
+  const n = (v) => typeof v === "number" ? String(v).replace(".", ",") : v;
+  const text = [head, ...rows].map((r) => r.map((v) => q(n(v))).join(";")).join("\r\n");
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob(["﻿" + text], { type: "text/csv;charset=utf-8" }));
+  a.download = `${name} ${rep.date_from}—${rep.date_to}.csv`; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+}
+async function loadReports() {
+  const host = document.getElementById("rep-root"); if (!host) return;
+  host.innerHTML = "";
+  const KINDS = { pnl: "Прибыль по точкам", purchases: "Закупки", dishes: "Продажи по блюдам" };
+  const csvBtn = el("button", { class: "ghost" }, "Скачать CSV");
+  host.append(el("div", { class: "tools" },
+    sel(KINDS, rep.kind, (v) => { rep.kind = v; loadReports(); }),
+    rep.kind === "purchases" ? sel({ "": myIds.length ? "мои склады" : "все склады", ...opts(mine(stores)) }, rep.store_id, (v) => { rep.store_id = v; loadReports(); }) : null,
+    el("input", { type: "date", title: "с", value: rep.date_from, onchange: (e) => { rep.date_from = e.target.value; loadReports(); } }),
+    el("span", { class: "dim" }, "—"),
+    el("input", { type: "date", title: "по", value: rep.date_to, onchange: (e) => { rep.date_to = e.target.value; loadReports(); } }),
+    csvBtn));
+  const wait = el("div", { class: "dim" }, "Считаю…"); host.append(wait);
+  const period = { date_from: rep.date_from, date_to: rep.date_to };
+  const th = (h, i) => el("th", { class: i ? "num" : "" }, h);
+  const t = el("table");
+  if (rep.kind === "pnl") {
+    const r = await api("stock_pnl_report", period); wait.remove();
+    if (!r.ok) { host.append(el("div", { class: "err" }, r.message)); return; }
+    t.append(el("tr", {}, ...["Точка", "Выручка", "Себестоимость проданного", "Валовая прибыль", "Фудкост", "Списания", "Инвентаризация ±", "Итог по продуктам"].map(th)));
+    const tot = { revenue: 0, cost: 0, writeoff: 0, inventory: 0 };
+    const res = (x) => x.revenue - x.cost - x.writeoff + x.inventory;
+    for (const x of r.rows) {
+      for (const k of Object.keys(tot)) tot[k] += Number(x[k]);
+      t.append(el("tr", {}, el("td", {}, x.point_name), el("td", { class: "num" }, fmt(x.revenue)), el("td", { class: "num" }, fmt(x.cost)),
+        el("td", { class: "num" }, fmt(x.revenue - x.cost)), el("td", { class: "num" }, x.revenue ? fmt(Math.round(x.cost / x.revenue * 1000) / 10) + " %" : ""),
+        el("td", { class: "num" }, fmt(x.writeoff)), el("td", { class: "num" + (x.inventory < 0 ? " bad" : "") }, fmt(x.inventory)),
+        el("td", { class: "num", style: "font-weight:700" }, fmt(res(x)))));
+    }
+    if (!r.rows.length) t.append(el("tr", {}, el("td", { colspan: 8, class: "dim" }, "За период проведённых продаж, списаний и инвентаризаций нет")));
+    else t.append(el("tr", { style: "font-weight:700" }, el("td", {}, "Итого"), el("td", { class: "num" }, fmt(tot.revenue)), el("td", { class: "num" }, fmt(tot.cost)),
+      el("td", { class: "num" }, fmt(tot.revenue - tot.cost)), el("td", { class: "num" }, tot.revenue ? fmt(Math.round(tot.cost / tot.revenue * 1000) / 10) + " %" : ""),
+      el("td", { class: "num" }, fmt(tot.writeoff)), el("td", { class: "num" }, fmt(tot.inventory)), el("td", { class: "num" }, fmt(res(tot)))));
+    host.append(el("div", { class: "card", style: "padding:0;overflow:auto" }, t),
+      el("div", { class: "dim", style: "margin-top:8px" }, "Только продукты: выручка и себестоимость проданного, списания (порча, проработка, питание персонала) и итог инвентаризаций со складов точки — недостача с минусом. Зарплата, аренда и прочие расходы появятся с разделом «Финансы»."));
+    csvBtn.onclick = () => csvDownload("прибыль по точкам", ["Точка", "Выручка", "Себестоимость", "Валовая прибыль", "Списания", "Инвентаризация", "Итог"],
+      r.rows.map((x) => [x.point_name, x.revenue, x.cost, x.revenue - x.cost, x.writeoff, x.inventory, res(x)]));
+  } else if (rep.kind === "purchases") {
+    const r = await api("stock_purchases_report", { ...period, store_id: rep.store_id || null }); wait.remove();
+    if (!r.ok) { host.append(el("div", { class: "err" }, r.message)); return; }
+    const st = el("table");
+    st.append(el("tr", {}, ...["Поставщик", "Приходов", "Товаров", "Сумма, ₸"].map(th)));
+    for (const x of r.suppliers) st.append(el("tr", {}, el("td", {}, x.name), el("td", { class: "num" }, String(x.docs)), el("td", { class: "num" }, String(x.items)), el("td", { class: "num" }, fmt(x.sum))));
+    if (!r.suppliers.length) st.append(el("tr", {}, el("td", { colspan: 4, class: "dim" }, "За период проведённых приходов нет")));
+    t.append(el("tr", {}, ...["Товар", "Ед.", "Количество", "Сумма, ₸", "Средняя цена", "Мин. цена", "Макс. цена", "Поставщиков"].map((h, i) => el("th", { class: i > 1 ? "num" : "" }, h))));
+    for (const x of r.items) t.append(el("tr", {}, el("td", {}, x.name), el("td", {}, x.unit_id || ""), el("td", { class: "num" }, fmt(x.qty)), el("td", { class: "num" }, fmt(x.sum)),
+      el("td", { class: "num" }, fmt(x.avg_price)), el("td", { class: "num" }, fmt(x.min_price)),
+      el("td", { class: "num" + (x.max_price > x.min_price * 1.1 ? " bad" : "") }, fmt(x.max_price)), el("td", { class: "num" }, String(x.suppliers))));
+    host.append(el("h3", { style: "margin:0 0 8px" }, "По поставщикам"), el("div", { class: "card", style: "padding:0;overflow:auto" }, st),
+      el("h3", { style: "margin:16px 0 8px" }, "По товарам"), el("div", { class: "card", style: "padding:0;overflow:auto" }, t),
+      el("div", { class: "dim", style: "margin-top:8px" }, "Проведённые приходы за период. Красным — максимальная цена выше минимальной больше чем на 10 %: стоит спросить поставщика."));
+    csvBtn.onclick = () => csvDownload("закупки", ["Товар", "Ед.", "Количество", "Сумма", "Средняя цена", "Мин. цена", "Макс. цена", "Поставщиков"],
+      r.items.map((x) => [x.name, x.unit_id || "", x.qty, x.sum, x.avg_price, x.min_price, x.max_price, x.suppliers]));
+  } else {
+    const r = await api("doc_sales_report", period); wait.remove();
+    if (!r.ok) { host.append(el("div", { class: "err" }, r.message)); return; }
+    t.append(el("tr", {}, ...["Блюдо / товар", "Кол-во", "Выручка", "Себестоимость", "Прибыль", "Фудкост"].map(th)));
+    for (const x of r.items) t.append(el("tr", {}, el("td", {}, x.name), el("td", { class: "num" }, fmt(x.qty) + " " + (x.unit_id || "")),
+      el("td", { class: "num" }, fmt(x.revenue)), el("td", { class: "num" }, fmt(x.cost)), el("td", { class: "num" }, fmt(x.margin)),
+      el("td", { class: "num" }, x.foodcost_pct == null ? "" : el("span", { class: "tag " + (x.foodcost_pct > 35 ? "bad" : "ok") }, fmt(x.foodcost_pct) + " %"))));
+    if (!r.items.length) t.append(el("tr", {}, el("td", { colspan: 6, class: "dim" }, "За период проведённых продаж нет")));
+    host.append(el("div", { class: "card", style: "padding:0;overflow:auto" }, t),
+      el("div", { class: "dim", style: "margin-top:8px" }, "Все проданные позиции по всем точкам за период, по выручке. Фудкост выше 35 % — красным."));
+    csvBtn.onclick = () => csvDownload("продажи по блюдам", ["Позиция", "Ед.", "Кол-во", "Выручка", "Себестоимость", "Прибыль", "Фудкост, %"],
+      r.items.map((x) => [x.name, x.unit_id || "", x.qty, x.revenue, x.cost, x.margin, x.foodcost_pct ?? ""]));
+  }
 }
 
 // ---------- готовность: что в справочниках и документах помешает учёту ----------

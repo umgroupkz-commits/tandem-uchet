@@ -1050,6 +1050,14 @@ SECTIONS.kassa = async (ctx) => {
   r = await call("office_stock_1c_link_save", { token: t, item_code: sok, code_1c: "", k_1c: "" });
   const again = await call("office_stock_1c_report", { token: t, store_id: S, date_from: day, date_to: day });
   check("1С: связь снимается", r.ok && !(again.rows || []).find((x) => x.item_code === sok).code_1c, again.rows);
+
+  // Отчёты (миграция 0037): закупки склада кассы и прибыль точки за сегодня.
+  r = await call("office_stock_purchases_report", { token: t, store_id: S, date_from: "2020-02-01", date_to: "2020-02-01" });
+  const sup = (r.suppliers || [])[0] || {}, ps = (r.items || []).find((x) => x.item_code === sok) || {};
+  check("отчёты: закупки — поставщик 4000 ₸, сок 20 шт по 150", r.ok && r.suppliers.length === 1 && near(sup.sum, 4000) && sup.docs === 1 && near(ps.qty, 20) && near(ps.avg_price, 150), r);
+  r = await call("office_stock_pnl_report", { token: t, date_from: day, date_to: day });
+  const pk = (r.rows || []).find((x) => x.point_id === "zz_kassa") || {};
+  check("отчёты: прибыль точки — выручка 1400, себестоимость 2 сока и 0,2 кг муки = 320", r.ok && near(pk.revenue, 1400) && near(pk.cost, 320) && near(pk.writeoff, 0), pk);
 };
 
 // Единый вход (миграция 0029): служебный ключ и счётчик неверных кодов. Идёт последним:

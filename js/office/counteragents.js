@@ -1,5 +1,5 @@
-import { api, can } from "./api.js?v=15";
-import { el, toast, debounce, modal } from "./ui.js?v=15";
+import { api, can } from "./api.js?v=16";
+import { el, toast, debounce, modal } from "./ui.js?v=16";
 
 const KINDS = { supplier: "поставщик", customer: "покупатель", employee: "сотрудник", other: "прочее" };
 let root, state = { q: "", kind: "", page: 1 }, table, pager;

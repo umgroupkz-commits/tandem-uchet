@@ -1,7 +1,7 @@
 -- Полный снимок схемы учёта Тандем KZ (схема tandem + функции public.tandem_*).
 -- Снят из боевой базы каталогом PostgreSQL 2026-09-18 запросом db/schema/snapshot-query.sql
 -- и собран tools/build-schema-snapshot.mjs. Данных не содержит.
--- Миграции 0033 (касса, чеки, канал «карта») 0034 (расход для 1С) 0035 (точки) и 0036 (прейскурант) внесены в снимок тем же содержанием без полного снятия каталога;
+-- Миграции 0033 (касса, чеки, канал «карта») 0034 (расход для 1С) 0035 (точки) 0036 (прейскурант) и 0037 (отчёты) внесены в снимок тем же содержанием без полного снятия каталога;
 -- тела функций сверены с базой по md5. Следующее полное снятие перезапишет файл целиком.
 -- Назначение: поднять пустую базу на собственном сервере одной командой
 --   psql -v ON_ERROR_STOP=1 -f db/schema/tandem_full.sql
@@ -2935,6 +2935,68 @@ begin
   end if;
 
   if action = 'stock_quality_report' then return tandem.quality_report(v_user); end if;
+
+  -- Закупки за период: по поставщикам и по товарам (проведённые приходы). Цена — средняя за период,
+  -- мин/макс показывают разброс цен у поставщиков.
+  if action = 'stock_purchases_report' then
+    if not tandem.office_can(v_user.role, 'doc:invoice_in', 'view') then
+      return tandem.err('forbidden', 'Нет права смотреть приходы'); end if;
+    v_d1 := coalesce(nullif(payload->>'date_from','')::date, date_trunc('month', current_date)::date);
+    v_d2 := coalesce(nullif(payload->>'date_to','')::date, current_date);
+    if v_d2 < v_d1 then return tandem.err('validation', 'Дата «по» раньше даты «с»'); end if;
+    return (with l as (
+        select d.id as doc_id, d.counteragent_id, l.item_code, l.qty, coalesce(l.sum, l.qty * coalesce(l.price, 0)) as s
+          from tandem.documents d join tandem.document_lines l on l.document_id = d.id and l.line_kind = 'item'
+         where d.doc_type = 'invoice_in' and d.status = 'posted' and d.doc_date between v_d1 and v_d2
+           and (v_store is null or d.store_to = v_store)
+           and tandem.user_store_ok(v_user.id, d.store_to)
+      )
+      select jsonb_build_object('ok', true, 'date_from', v_d1, 'date_to', v_d2,
+        'suppliers', (select coalesce(jsonb_agg(jsonb_build_object('counteragent_id', x.counteragent_id,
+            'name', coalesce(c.name, 'без поставщика'), 'docs', x.docs, 'items', x.items, 'sum', round(x.s, 2)) order by x.s desc), '[]'::jsonb)
+          from (select counteragent_id, count(distinct doc_id) docs, count(distinct item_code) items, sum(s) s from l group by counteragent_id) x
+          left join tandem.counteragents c on c.id = x.counteragent_id),
+        'items', (select coalesce(jsonb_agg(jsonb_build_object('item_code', x.item_code, 'name', i.name, 'unit_id', i.unit_id,
+            'qty', round(x.q, 4), 'sum', round(x.s, 2), 'avg_price', case when x.q <> 0 then round(x.s / x.q, 2) end,
+            'min_price', round(x.pmin, 2), 'max_price', round(x.pmax, 2), 'suppliers', x.sup) order by x.s desc), '[]'::jsonb)
+          from (select l.item_code, sum(l.qty) q, sum(l.s) s, min(l.s / nullif(l.qty, 0)) pmin, max(l.s / nullif(l.qty, 0)) pmax,
+                       count(distinct l.counteragent_id) sup from l group by l.item_code) x
+          join tandem.items i on i.code = x.item_code)));
+  end if;
+
+  -- Прибыль по точкам за период, как «Отчёт о прибылях и убытках» iiko в части продуктов: выручка и
+  -- себестоимость проданного, списания (порча, проработка, питание персонала) и итог инвентаризаций
+  -- (недостача с минусом) по складам точки. Склады без точки (цех, общий склад) — отдельной строкой.
+  if action = 'stock_pnl_report' then
+    if not tandem.office_can(v_user.role, 'doc:sale', 'view') then
+      return tandem.err('forbidden', 'Нет права смотреть продажи'); end if;
+    v_d1 := coalesce(nullif(payload->>'date_from','')::date, date_trunc('month', current_date)::date);
+    v_d2 := coalesce(nullif(payload->>'date_to','')::date, current_date);
+    if v_d2 < v_d1 then return tandem.err('validation', 'Дата «по» раньше даты «с»'); end if;
+    return (with rev as (
+        select s.point_id, sum(l.sum) v
+          from tandem.documents d join tandem.document_lines l on l.document_id = d.id and l.line_kind = 'item'
+          join tandem.stores s on s.id = d.store_from
+         where d.doc_type = 'sale' and d.status = 'posted' and d.doc_date between v_d1 and v_d2
+           and tandem.user_store_ok(v_user.id, d.store_from)
+         group by s.point_id
+      ), mv as (
+        select s.point_id, d.doc_type, sum(m.qty * m.unit_cost) v
+          from tandem.stock_moves m join tandem.documents d on d.id = m.document_id
+          join tandem.stores s on s.id = m.store_id
+         where d.doc_type in ('sale', 'writeoff', 'inventory') and m.move_date between v_d1 and v_d2
+           and tandem.user_store_ok(v_user.id, m.store_id)
+         group by s.point_id, d.doc_type
+      ), k as (select point_id from rev union select point_id from mv)
+      select jsonb_build_object('ok', true, 'date_from', v_d1, 'date_to', v_d2, 'rows', (select coalesce(jsonb_agg(jsonb_build_object(
+          'point_id', k.point_id, 'point_name', coalesce(p.name, 'Склады без точки'),
+          'revenue', round(coalesce(r.v, 0), 2),
+          'cost', round(-coalesce((select v from mv where mv.point_id is not distinct from k.point_id and doc_type = 'sale'), 0), 2),
+          'writeoff', round(-coalesce((select v from mv where mv.point_id is not distinct from k.point_id and doc_type = 'writeoff'), 0), 2),
+          'inventory', round(coalesce((select v from mv where mv.point_id is not distinct from k.point_id and doc_type = 'inventory'), 0), 2))
+          order by p.sort_order nulls last, p.name), '[]'::jsonb)
+        from k left join tandem.points p on p.id = k.point_id left join rev r on r.point_id is not distinct from k.point_id)));
+  end if;
 
   -- Расход для 1С: сколько продуктов ушло на проданное за период, в позициях и единицах 1С —
   -- основа акта списания «на основании продаж». Берётся расход проведённых продаж и актов

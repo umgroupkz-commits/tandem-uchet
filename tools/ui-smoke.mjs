@@ -113,9 +113,15 @@ try {
       await clickText("#menu button", title);
       check("раздел «" + title + "» открылся", await until(`document.querySelector(${JSON.stringify(probe)}) && !/Раздел не открылся|Загрузка…/.test(document.getElementById('main').innerText)`), await js("return document.getElementById('main').innerText.slice(0, 120)"));
     }
-    for (const [tab, probe] of Object.entries({ "Остатки": "#bal-root table", "Продажи": "#sales-root table", "Ведомость": "#turn-root table", "Расход для 1С": "#c1-root table", "Готовность": "#ready-root details", "Документы": "#main table" })) {
+    for (const [tab, probe] of Object.entries({ "Остатки": "#bal-root table", "Продажи": "#sales-root table", "Ведомость": "#turn-root table", "Расход для 1С": "#c1-root table", "Отчёты": "#rep-root table", "Готовность": "#ready-root details", "Документы": "#main table" })) {
       await clickText("#main .tabs button", tab);
       check("склад → «" + tab + "»", await until(`document.querySelector(${JSON.stringify(probe)})`), await js("return document.getElementById('main').innerText.slice(0, 120)"));
+    }
+    await clickText("#main .tabs button", "Отчёты");
+    for (const kind of ["purchases", "dishes"]) {
+      await until("document.querySelector('#rep-root select')");
+      await js(`const s = document.querySelector("#rep-root select"); s.value = "${kind}"; s.dispatchEvent(new Event("change"));`);
+      check("отчёты: " + kind + " открылся", await until("document.querySelector('#rep-root table') && !/Считаю/.test(document.getElementById('rep-root').innerText)"), await js("return document.getElementById('rep-root').innerText.slice(0, 120)"));
     }
     await clickText("#main .tabs button", "Готовность");
     const checks = await until("document.querySelectorAll('#ready-root details').length");
