@@ -120,6 +120,20 @@ try {
     await js("document.querySelector('#main table tr.row').click()");
     check("точка открывается: режимы и группы меню", await until("document.querySelectorAll('.cats input').length > 10 && [...document.querySelectorAll('select option')].some((o) => o.textContent.startsWith('касса'))"), null);
     await js("[...document.querySelectorAll('button')].find((b) => b.offsetParent && b.textContent === 'Отмена').click()");
+    // Прейскурант: файл подкладывается в окно загрузки, проверяется разбор; цены не загружаются.
+    const PL = process.env.TANDEM_PRICELIST_FILE || "";
+    if (PL) {
+      await clickText("#menu button", "Номенклатура");
+      await until("[...document.querySelectorAll('button')].some((b) => b.textContent === 'Загрузить прейскурант')");
+      await clickText("button", "Загрузить прейскурант");
+      await until("document.querySelector('input[type=file][accept=\".xlsx,.xls\"]')");
+      const doc = await send("DOM.getDocument", {});
+      const q = await send("DOM.querySelector", { nodeId: doc.result.root.nodeId, selector: "input[type=file][accept=\".xlsx,.xls\"]" });
+      await send("DOM.setFileInputFiles", { nodeId: q.result.nodeId, files: [PL] });
+      check("прейскурант: файл разобран, подразделения и точки показаны", await until("[...document.querySelectorAll('button')].some((b) => b.textContent === 'Загрузить цены') && document.querySelectorAll('.modal table tr, table tr').length > 3", 20000),
+        await js("return (document.querySelector('.err') || {}).textContent"));
+      await js("[...document.querySelectorAll('button')].filter((b) => b.offsetParent && b.textContent === 'Закрыть').pop().click()");
+    }
     await clickText("#menu button", "Техкарты");
     await until("document.querySelector('#main table tr.row')");
     await js("document.querySelector('#main table tr.row').click()");

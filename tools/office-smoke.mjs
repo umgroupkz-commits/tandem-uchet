@@ -227,6 +227,14 @@ SECTIONS.nomenclature = async (ctx) => {
   r = await call("office_item_prices_save", { token: t, code, prices: [{ point_id: "eneshka", price: null }] });
   r = await call("office_item_get", { token: t, code });
   check("цена точки: снята", r.ok && (r.points.find((p) => p.point_id === "eneshka").price === null), r.points);
+  // Прейскурант кнопкой (миграция 0036): пара по артикулу ZZ1, чужой артикул — в «без пары», служебная точка — отказ.
+  r = await call("office_item_prices_import", { token: t, rows: [{ pt: "eneshka", a: "ZZ1", p: 777 }, { pt: "eneshka", a: "ZZ_нет_артикула", p: 5 }] });
+  check("прейскурант: цена по артикулу загружена, чужой артикул посчитан", r.ok && r.loaded === 1 && r.unmatched === 1 && r.unmatched_sample.includes("ZZ_нет_артикула"), r);
+  r = await call("office_item_get", { token: t, code });
+  check("прейскурант: цена точки в карточке", r.ok && Number((r.points.find((p) => p.point_id === "eneshka") || {}).price) === 777, r.points);
+  r = await call("office_item_prices_import", { token: t, rows: [{ pt: "zz_test", a: "ZZ1", p: 1 }] });
+  check("прейскурант: служебная точка — отказ", r.ok === false && r.error === "validation", r);
+  await call("office_item_prices_save", { token: t, code, prices: [{ point_id: "eneshka", price: null }] });
   r = await call("office_item_get", { token: t, code: "нет-такого" });
   check("карточка: not_found", r.ok === false && r.error === "not_found", r);
   r = await call("office_item_save", { token: t, name: "x", item_type: "фигня", unit_id: "кг" });

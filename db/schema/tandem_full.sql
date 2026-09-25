@@ -1,7 +1,7 @@
 -- Полный снимок схемы учёта Тандем KZ (схема tandem + функции public.tandem_*).
 -- Снят из боевой базы каталогом PostgreSQL 2026-09-18 запросом db/schema/snapshot-query.sql
 -- и собран tools/build-schema-snapshot.mjs. Данных не содержит.
--- Миграции 0033 (касса, чеки, канал «карта») 0034 (расход для 1С) и 0035 (точки) внесены в снимок тем же содержанием без полного снятия каталога;
+-- Миграции 0033 (касса, чеки, канал «карта») 0034 (расход для 1С) 0035 (точки) и 0036 (прейскурант) внесены в снимок тем же содержанием без полного снятия каталога;
 -- тела функций сверены с базой по md5. Следующее полное снятие перезапишет файл целиком.
 -- Назначение: поднять пустую базу на собственном сервере одной командой
 --   psql -v ON_ERROR_STOP=1 -f db/schema/tandem_full.sql
@@ -2758,6 +2758,41 @@ begin
       where nullif(x->>'price','') is not null
     on conflict (point_id, item_code) do update set price = excluded.price, source = 'office';
     return jsonb_build_object('ok', true);
+  end if;
+
+  -- Загрузка цен из «Сводного прейскуранта» iiko кнопкой в бэк-офисе (раньше — скрипт со служебным
+  -- ключом). Разбор Excel и выбор точек для каждого подразделения — в браузере; сюда приходят строки
+  -- {pt: точка, a: артикул, p: цена}. Пара — по артикулу позиции; цена точки перезаписывается.
+  if action = 'item_prices_import' then
+    if jsonb_typeof(payload->'rows') is distinct from 'array' then
+      return tandem.err('validation', 'Нет строк цен'); end if;
+    if exists (select 1 from jsonb_array_elements(payload->'rows') x
+                where not exists (select 1 from tandem.points p where p.id = x->>'pt' and p.id not like 'zz\_%')) then
+      return tandem.err('validation', 'В строках есть неизвестная точка'); end if;
+    declare
+      v_loaded int; v_unm int; v_sample jsonb;
+    begin
+      create temp table if not exists _price_in (point_id text, artikul text, price numeric) on commit drop;
+      truncate _price_in;
+      insert into _price_in select x->>'pt', btrim(x->>'a'), (x->>'p')::numeric
+        from jsonb_array_elements(payload->'rows') x
+       where (x->>'p')::numeric > 0 and nullif(btrim(x->>'a'), '') is not null;
+      with matched as (
+        select distinct on (n.point_id, i.code) n.point_id, i.code, n.price
+          from _price_in n join tandem.items i on i.artikul = n.artikul and i.active
+         order by n.point_id, i.code
+      ), done as (
+        insert into tandem.item_prices (point_id, item_code, price, source)
+        select point_id, code, price, 'pricelist' from matched
+        on conflict (point_id, item_code) do update set price = excluded.price, source = excluded.source
+        returning 1
+      ) select count(*) into v_loaded from done;
+      select count(distinct artikul) into v_unm from _price_in n
+       where not exists (select 1 from tandem.items i where i.artikul = n.artikul and i.active);
+      select coalesce(jsonb_agg(a), '[]'::jsonb) into v_sample from (select distinct n.artikul a from _price_in n
+       where not exists (select 1 from tandem.items i where i.artikul = n.artikul and i.active) order by 1 limit 20) s;
+      return jsonb_build_object('ok', true, 'loaded', v_loaded, 'unmatched', v_unm, 'unmatched_sample', v_sample);
+    end;
   end if;
 
   return tandem.err('unknown_action', 'Неизвестное действие: ' || action);

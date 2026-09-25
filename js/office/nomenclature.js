@@ -1,5 +1,6 @@
-import { api, can } from "./api.js?v=13";
-import { el, fmt, toast, debounce, modal } from "./ui.js?v=13";
+import { api, can } from "./api.js?v=14";
+import { el, fmt, toast, debounce, modal } from "./ui.js?v=14";
+import { loadXlsx } from "./stock.js?v=14";
 
 const TYPES = { goods: "товар", dish: "блюдо", prepared: "полуфабрикат", service: "услуга" };
 let groups = [], state = { q: "", group_id: "", item_type: "", active: "true", page: 1 };
@@ -16,6 +17,7 @@ export async function mount(r) {
     select({ "": "все типы", ...TYPES }, state.item_type, (v) => { state.item_type = v; state.page = 1; load(); }),
     select({ "true": "активные", "false": "выключенные", "": "все" }, state.active, (v) => { state.active = v; state.page = 1; load(); }),
     can("nomenclature", "edit") ? el("button", { onclick: () => editItem(null) }, "+ Позиция") : null,
+    can("nomenclature", "edit") ? el("button", { class: "ghost", onclick: importPrices }, "Загрузить прейскурант") : null,
   );
   table = el("table");
   pager = el("div", { class: "pager" });
@@ -176,4 +178,65 @@ async function editGroup(g) {
       const gl = await api("groups_list", {}); groups = gl.groups || []; drawTree(); load();
     } }, "Сохранить"), el("button", { class: "ghost", onclick: m.close }, "Отмена")));
   name.focus();
+}
+
+// ---------- цены по точкам из «Сводного прейскуранта» iiko ----------
+// Файл разбирается здесь: строка заголовка «Блюдо … Артикул», по подразделению — первая колонка
+// «Цена, тг.». Для каждого подразделения человек отмечает, каким точкам взять его цены; подсказки —
+// по названию (сопоставление, подтверждённое Андреем 19.09.2026).
+const DEP_HINTS = [[/ЕНЕШКА/i, ["eneshka"]], [/^Буфеты/i, ["univer_b", "kmk"]], [/Тандем Университет/i, ["univer_s"]], [/^Актау/i, ["aktau"]]];
+function importPrices() {
+  const m = modal("Загрузить прейскурант");
+  const file = el("input", { type: "file", accept: ".xlsx,.xls" });
+  const body = el("div");
+  const err = el("div", { class: "err" });
+  m.root.append(el("div", { class: "dim" }, "Файл из iiko: «Сводный прейскурант» в Excel. Цены сопоставляются с позициями по артикулу и заменяют текущие цены выбранных точек."),
+    el("label", {}, "Файл"), file, body, err, el("div", { class: "actions" }, el("button", { class: "ghost", onclick: m.close }, "Закрыть")));
+  file.onchange = async () => {
+    err.textContent = ""; body.innerHTML = "";
+    const f = file.files[0]; if (!f) return;
+    let a, points;
+    try {
+      await loadXlsx();
+      const wb = window.XLSX.read(await f.arrayBuffer(), { type: "array" });
+      a = window.XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, defval: "" });
+      const pr = await api("store_points_list", {}); points = pr.ok ? pr.points.filter((x) => x.active) : [];
+    } catch (e) { err.textContent = "Файл не прочитался: " + e.message; return; }
+    const h = a.findIndex((r) => String(r[0]).trim() === "Блюдо" && /Артикул/i.test(String(r[2])));
+    if (h < 0) { err.textContent = "Это не «Сводный прейскурант»: не нашёл строку заголовка «Блюдо … Артикул»."; return; }
+    const date = (String(a[0][0]).match(/\d{2}\.\d{2}\.\d{4}/) || [""])[0];
+    const num = (v) => { const t = String(v).replace(/\s/g, "").replace(",", "."); return /^\d+(\.\d+)?$/.test(t) ? Number(t) : null; };
+    const deps = [];
+    a[h].forEach((v, c) => { if (c >= 3 && String(v).trim()) deps.push({ name: String(v).trim(), col: c,
+      pick: new Set((DEP_HINTS.find(([re]) => re.test(String(v))) || [null, []])[1]) }); });
+    const rows = a.slice(h + 3).filter((r) => String(r[2]).trim() && !/^Группа:/.test(String(r[0])));
+    for (const d of deps) d.count = rows.filter((r) => num(r[d.col]) > 0).length;
+    const t = el("table");
+    t.append(el("tr", {}, el("th", {}, "Подразделение в прейскуранте"), el("th", { class: "num" }, "Цен"), el("th", {}, "Взять цены для точек")));
+    for (const d of deps) t.append(el("tr", {}, el("td", {}, d.name), el("td", { class: "num" }, String(d.count)),
+      el("td", {}, ...points.map((pt) => el("label", { class: "chk", style: "display:inline-flex;margin-right:10px;font-weight:400" },
+        el("input", { type: "checkbox", checked: d.pick.has(pt.id), onchange: (e) => { e.target.checked ? d.pick.add(pt.id) : d.pick.delete(pt.id); } }), " " + pt.name)))));
+    const go = el("button", {}, "Загрузить цены");
+    body.append(el("div", { class: "dim", style: "margin:10px 0" }, (date ? "Прейскурант на " + date + ". " : "") + "Позиций в файле: " + rows.length + ". Точка может брать цены только из одного подразделения."),
+      el("div", { class: "card", style: "padding:0;overflow:auto" }, t), el("div", { class: "actions" }, go));
+    go.onclick = async () => {
+      err.textContent = "";
+      const owner = new Map();
+      for (const d of deps) for (const pt of d.pick) { if (owner.has(pt)) { err.textContent = "Точка «" + (points.find((x) => x.id === pt) || {}).name + "» отмечена у двух подразделений."; return; } owner.set(pt, d); }
+      const data = [];
+      for (const [pt, d] of owner) for (const r of rows) { const pv = num(r[d.col]); if (pv > 0) data.push({ pt, a: String(r[2]).trim(), p: pv }); }
+      if (!data.length) { err.textContent = "Не отмечено ни одной точки."; return; }
+      go.disabled = true; go.textContent = "Загружаю…";
+      let loaded = 0, unmatched = 0, sample = [];
+      for (let i = 0; i < data.length; i += 1000) {
+        const r = await api("item_prices_import", { rows: data.slice(i, i + 1000) });
+        if (!r.ok) { err.textContent = r.message; go.disabled = false; go.textContent = "Загрузить цены"; return; }
+        loaded += r.loaded; unmatched = Math.max(unmatched, r.unmatched); sample = sample.length ? sample : r.unmatched_sample;
+      }
+      body.innerHTML = "";
+      body.append(el("div", { class: "okbox", style: "margin-top:10px" }, "Загружено цен: " + loaded + " для " + owner.size + " точек."),
+        unmatched ? el("div", { class: "dim", style: "margin-top:8px" }, "Артикулов без позиции в учёте: " + unmatched + (sample.length ? " (например: " + sample.slice(0, 10).join(", ") + ")" : "") + ". Их цены не загружены — у позиции в номенклатуре нет такого артикула.") : null);
+      load();
+    };
+  };
 }

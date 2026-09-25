@@ -1,5 +1,5 @@
-import { api } from "./api.js?v=13";
-import { el, toast, modal } from "./ui.js?v=13";
+import { api } from "./api.js?v=14";
+import { el, toast, modal } from "./ui.js?v=14";
 
 const ROLES = { admin: "администратор", owner: "собственник", accountant: "бухгалтер", technologist: "технолог", storekeeper: "кладовщик" };
 let root, stores = [];
