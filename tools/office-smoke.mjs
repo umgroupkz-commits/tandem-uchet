@@ -288,6 +288,35 @@ SECTIONS.stores = async (ctx) => {
     { было: tpWas && tpWas.id, стало: tpNow && tpNow.id });
 };
 
+// Раздел «Точки» (миграция 0035). Настоящие точки тест не меняет: сохраняет учебную точку теми же
+// значениями и проверяет отказы. Служебные zz_* в списке не видны и не правятся.
+SECTIONS.points = async (ctx) => {
+  const t = ctx.token;
+  let r = await call("office_store_points_list", { token: t });
+  check("точки: список, группы меню, юрлица", r.ok && r.points.length > 0 && r.categories.length > 0 && Array.isArray(r.legal_entities), r.ok ? r.points.length : r);
+  check("точки: служебные zz_* и коды входа не отдаются", r.ok && !r.points.some((x) => x.id.startsWith("zz_")) && r.points.every((x) => !("pin" in x) && "has_pin" in x), r.points && r.points[0]);
+  const u = (r.points || []).find((x) => x.id === "ucheb");
+  if (!u) { check("точки: учебная точка есть", false, null); return; }
+  const same = { id: u.id, name: u.name, mode: u.mode, legal_entity: u.legal_entity || "", active: u.active, item_categories: u.item_categories };
+  r = await call("office_store_point_save", { token: t, ...same });
+  const again = ((await call("office_store_points_list", { token: t })).points || []).find((x) => x.id === "ucheb");
+  check("точки: сохранение теми же значениями ничего не меняет", r.ok && again && again.name === u.name && again.mode === u.mode
+    && JSON.stringify(again.item_categories) === JSON.stringify(u.item_categories), { r, again });
+  r = await call("office_store_point_save", { token: t, ...same, mode: "cash_register" });
+  check("точки: неизвестный режим — отказ", r.ok === false && r.error === "validation", r);
+  r = await call("office_store_point_save", { token: t, ...same, pin: "12ab" });
+  check("точки: код не из цифр — отказ", r.ok === false && r.error === "validation", r);
+  const owner = process.env.TANDEM_OWNER_PIN || "";
+  if (owner) {
+    r = await call("office_store_point_save", { token: t, ...same, pin: owner });
+    check("точки: код собственника точке не дать", r.ok === false && /занят/.test(r.message || ""), r);
+  }
+  r = await call("office_store_point_save", { token: t, id: "zz_test", name: "x", mode: "position" });
+  check("точки: служебную точку не правят", r.ok === false && r.error === "validation", r);
+  r = await call("office_store_point_save", { token: t, id: "Новая точка", name: "x", mode: "position", pin: "98765432" });
+  check("точки: код новой точки только латиницей", r.ok === false && r.error === "validation", r);
+};
+
 SECTIONS.counteragents = async (ctx) => {
   const t = ctx.token;
   let r = await call("office_counteragent_save", { token: t, name: "ZZ_TEST_ИП Ромашка", kind: "supplier", bin: "990101300123", phone: "+7 700 000 00 00" });

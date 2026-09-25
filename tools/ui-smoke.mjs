@@ -115,6 +115,11 @@ try {
     await clickText("#main .tabs button", "Готовность");
     const checks = await until("document.querySelectorAll('#ready-root details').length");
     check("готовность: все проверки отрисованы", checks >= 8, checks);
+    await clickText("#menu button", "Склады");
+    check("склады: таблица точек продаж", await until("[...document.querySelectorAll('#main h3')].some((h) => h.textContent === 'Точки продаж') && document.querySelectorAll('#main table').length === 2"), await js("return document.getElementById('main').innerText.slice(0, 160)"));
+    await js("document.querySelector('#main table tr.row').click()");
+    check("точка открывается: режимы и группы меню", await until("document.querySelectorAll('.cats input').length > 10 && [...document.querySelectorAll('select option')].some((o) => o.textContent.startsWith('касса'))"), null);
+    await js("[...document.querySelectorAll('button')].find((b) => b.offsetParent && b.textContent === 'Отмена').click()");
     await clickText("#menu button", "Техкарты");
     await until("document.querySelector('#main table tr.row')");
     await js("document.querySelector('#main table tr.row').click()");

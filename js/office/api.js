@@ -1,5 +1,5 @@
 // Вызовы бэк-офиса: токен сессии в payload, хранение сессии в localStorage.
-export const BUILD = 12;
+export const BUILD = 13;
 const API = (typeof window !== "undefined" && window.TANDEM_API_URL) || "https://qeehxcnnuzuwskznhdyg.supabase.co/functions/v1/uchet";   // адрес меняется в config.js
 const KEY = "tandem_office";
 let S = null;

@@ -1,7 +1,7 @@
 -- Полный снимок схемы учёта Тандем KZ (схема tandem + функции public.tandem_*).
 -- Снят из боевой базы каталогом PostgreSQL 2026-09-18 запросом db/schema/snapshot-query.sql
 -- и собран tools/build-schema-snapshot.mjs. Данных не содержит.
--- Миграции 0033 (касса, чеки, канал «карта») и 0034 (расход для 1С) внесены в снимок тем же содержанием без полного снятия каталога;
+-- Миграции 0033 (касса, чеки, канал «карта») 0034 (расход для 1С) и 0035 (точки) внесены в снимок тем же содержанием без полного снятия каталога;
 -- тела функций сверены с базой по md5. Следующее полное снятие перезапишет файл целиком.
 -- Назначение: поднять пустую базу на собственном сервере одной командой
 --   psql -v ON_ERROR_STOP=1 -f db/schema/tandem_full.sql
@@ -3362,6 +3362,55 @@ begin
       update tandem.points set default_store_id = null where default_store_id = v_id;
     end if;
     return jsonb_build_object('ok', true, 'id', v_id);
+  end if;
+
+  -- Точки продаж: режим экрана точки, код входа, юрлицо, группы меню. Служебные точки теста (zz_*)
+  -- не показываются и не правятся. Код точки не отдаётся — только признак «задан»; новый код задаётся явно.
+  if action = 'store_points_list' then
+    return jsonb_build_object('ok', true,
+      'points', (select coalesce(jsonb_agg(jsonb_build_object(
+          'id', p.id, 'name', p.name, 'mode', p.mode, 'legal_entity', p.legal_entity, 'active', p.active,
+          'sort_order', p.sort_order, 'item_categories', coalesce(to_jsonb(p.item_categories), '[]'::jsonb),
+          'store_name', s.name, 'has_pin', coalesce(p.pin, '') <> '') order by p.sort_order, p.name), '[]'::jsonb)
+        from tandem.points p left join tandem.stores s on s.id = p.default_store_id
+       where p.id not like 'zz\_%'),
+      'categories', (select coalesce(jsonb_agg(c order by c), '[]'::jsonb)
+        from (select distinct category c from tandem.items where active and for_sale and category is not null) x),
+      'legal_entities', (select coalesce(jsonb_agg(distinct legal_entity), '[]'::jsonb) from tandem.points where legal_entity is not null));
+  end if;
+
+  if action = 'store_point_save' then
+    v_point := btrim(coalesce(payload->>'id', ''));
+    v_name := btrim(coalesce(payload->>'name', ''));
+    if v_point = '' or v_point like 'zz\_%' then return tandem.err('validation', 'Не указана точка'); end if;
+    if v_name = '' then return tandem.err('validation', 'Название точки обязательно'); end if;
+    if coalesce(payload->>'mode', '') not in ('position', 'takeout', 'import', 'manual', 'checks') then
+      return tandem.err('validation', 'Неизвестный режим точки'); end if;
+    if nullif(payload->>'pin', '') is not null then
+      if payload->>'pin' !~ '^[0-9]{4,8}$' then
+        return tandem.err('validation', 'Код точки — от 4 до 8 цифр'); end if;
+      -- Вход на экран точки сначала сверяет код собственника и водителя: совпадение с ними открыло бы
+      -- чужую роль. Совпадение с кодом другой точки путает людей.
+      if payload->>'pin' in (select value from tandem.settings where key in ('owner_pin', 'driver_pin'))
+         or exists (select 1 from tandem.points where pin = payload->>'pin' and id <> v_point) then
+        return tandem.err('validation', 'Этот код уже занят — придумайте другой'); end if;
+    end if;
+    if not exists (select 1 from tandem.points where id = v_point) then
+      if v_point !~ '^[a-z][a-z0-9_]{1,30}$' then
+        return tandem.err('validation', 'Код новой точки — латиница, цифры и подчёркивание, например eneshka2'); end if;
+      if nullif(payload->>'pin', '') is null then return tandem.err('validation', 'Для новой точки задайте код входа'); end if;
+      insert into tandem.points (id, name, mode, pin, legal_entity, active, sort_order)
+        values (v_point, v_name, payload->>'mode', payload->>'pin', nullif(btrim(coalesce(payload->>'legal_entity', '')), ''),
+                coalesce((payload->>'active')::boolean, true), coalesce((select max(sort_order) from tandem.points where id not like 'zz\_%'), 0) + 10);
+    end if;
+    update tandem.points set name = v_name, mode = payload->>'mode',
+           legal_entity = nullif(btrim(coalesce(payload->>'legal_entity', '')), ''),
+           active = coalesce((payload->>'active')::boolean, active),
+           item_categories = case when jsonb_typeof(payload->'item_categories') = 'array'
+                                  then array(select jsonb_array_elements_text(payload->'item_categories')) else item_categories end,
+           pin = coalesce(nullif(payload->>'pin', ''), pin)
+     where id = v_point;
+    return jsonb_build_object('ok', true, 'id', v_point);
   end if;
 
   return tandem.err('unknown_action', 'Неизвестное действие: ' || action);
