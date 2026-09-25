@@ -1,7 +1,7 @@
 -- Полный снимок схемы учёта Тандем KZ (схема tandem + функции public.tandem_*).
 -- Снят из боевой базы каталогом PostgreSQL 2026-09-18 запросом db/schema/snapshot-query.sql
 -- и собран tools/build-schema-snapshot.mjs. Данных не содержит.
--- Миграция 0033 (касса, чеки, канал «карта») внесена в снимок тем же содержанием без полного снятия каталога;
+-- Миграции 0033 (касса, чеки, канал «карта») и 0034 (расход для 1С) внесены в снимок тем же содержанием без полного снятия каталога;
 -- тела функций сверены с базой по md5. Следующее полное снятие перезапишет файл целиком.
 -- Назначение: поднять пустую базу на собственном сервере одной командой
 --   psql -v ON_ERROR_STOP=1 -f db/schema/tandem_full.sql
@@ -59,6 +59,13 @@ create table if not exists tandem.charts (
   created_at timestamp with time zone default now() not null,
   updated_by uuid,
   updated_at timestamp with time zone default now() not null
+);
+
+create table if not exists tandem.catalog_1c (
+  code text not null,
+  name text not null,
+  unit text,
+  account text
 );
 
 create table if not exists tandem.check_lines (
@@ -222,7 +229,9 @@ create table if not exists tandem.items (
   for_sale boolean default false not null,
   cost_price numeric,
   cost_date date,
-  cost_source text
+  cost_source text,
+  code_1c text,
+  k_1c numeric
 );
 
 create table if not exists tandem.pin_failures (
@@ -376,6 +385,7 @@ alter table tandem.charts add constraint charts_source_check CHECK ((source = AN
 alter table tandem.counteragents add constraint counteragents_iiko_id_key UNIQUE (iiko_id);
 alter table tandem.counteragents add constraint counteragents_kind_check CHECK ((kind = ANY (ARRAY['supplier'::text, 'customer'::text, 'employee'::text, 'other'::text])));
 alter table tandem.counteragents add constraint counteragents_pkey PRIMARY KEY (id);
+alter table tandem.catalog_1c add constraint catalog_1c_pkey PRIMARY KEY (code);
 alter table tandem.check_lines add constraint check_lines_pkey PRIMARY KEY (id);
 alter table tandem.check_lines add constraint check_lines_price_check CHECK ((price >= (0)::numeric));
 alter table tandem.check_lines add constraint check_lines_qty_check CHECK ((qty > (0)::numeric));
@@ -490,6 +500,7 @@ alter table tandem.takeout_lines add constraint takeout_lines_item_code_fkey FOR
 alter table tandem.takeout_lines add constraint takeout_lines_report_id_fkey FOREIGN KEY (report_id) REFERENCES tandem.daily_reports(id) ON DELETE CASCADE;
 alter table tandem.user_stores add constraint user_stores_store_id_fkey FOREIGN KEY (store_id) REFERENCES tandem.stores(id) ON DELETE CASCADE;
 alter table tandem.user_stores add constraint user_stores_user_id_fkey FOREIGN KEY (user_id) REFERENCES tandem.users(id) ON DELETE CASCADE;
+alter table tandem.items add constraint items_code_1c_fkey FOREIGN KEY (code_1c) REFERENCES tandem.catalog_1c(code);
 alter table tandem.check_lines add constraint check_lines_check_id_fkey FOREIGN KEY (check_id) REFERENCES tandem.checks(id) ON DELETE CASCADE;
 alter table tandem.check_lines add constraint check_lines_item_code_fkey FOREIGN KEY (item_code) REFERENCES tandem.items(code);
 alter table tandem.checks add constraint checks_point_id_fkey FOREIGN KEY (point_id) REFERENCES tandem.points(id);
@@ -2890,6 +2901,85 @@ begin
 
   if action = 'stock_quality_report' then return tandem.quality_report(v_user); end if;
 
+  -- Расход для 1С: сколько продуктов ушло на проданное за период, в позициях и единицах 1С —
+  -- основа акта списания «на основании продаж». Берётся расход проведённых продаж и актов
+  -- производства, кроме полуфабрикатов (их в 1С нет: 1С видит сырьё, из которого они сделаны).
+  -- Сумма — по себестоимости движений нашего склада.
+  if action = 'stock_1c_report' then
+    if not tandem.office_can(v_user.role, 'doc:sale', 'view') then
+      return tandem.err('forbidden', 'Нет права смотреть продажи'); end if;
+    v_d1 := coalesce(nullif(payload->>'date_from','')::date, date_trunc('month', current_date)::date);
+    v_d2 := coalesce(nullif(payload->>'date_to','')::date, current_date);
+    if v_d2 < v_d1 then return tandem.err('validation', 'Дата «по» раньше даты «с»'); end if;
+    return jsonb_build_object('ok', true, 'date_from', v_d1, 'date_to', v_d2, 'rows', (
+      with u as (
+        select m.item_code, -sum(m.qty) as qty, -sum(m.qty * m.unit_cost) as s
+          from tandem.stock_moves m
+          join tandem.documents d on d.id = m.document_id
+          join tandem.items i on i.code = m.item_code
+         where d.doc_type in ('sale', 'production') and d.status = 'posted' and m.qty < 0
+           and i.item_type <> 'prepared'
+           and m.move_date between v_d1 and v_d2
+           and (v_store is null or m.store_id = v_store)
+           and tandem.user_store_ok(v_user.id, m.store_id)
+         group by m.item_code
+      )
+      select coalesce(jsonb_agg(jsonb_build_object(
+          'item_code', u.item_code, 'name', i.name, 'unit_id', i.unit_id,
+          'qty', round(u.qty, 4), 'sum', round(u.s, 2),
+          'code_1c', i.code_1c, 'name_1c', c.name, 'unit_1c', c.unit, 'account_1c', c.account, 'k_1c', i.k_1c,
+          'qty_1c', case when i.code_1c is not null and i.k_1c is not null then round(u.qty * i.k_1c, 3) end)
+          order by c.name nulls last, i.name), '[]'::jsonb)
+        from u join tandem.items i on i.code = u.item_code
+        left join tandem.catalog_1c c on c.code = i.code_1c
+       where round(u.qty, 4) <> 0));
+  end if;
+
+  -- Справочник позиций 1С — для выбора соответствия.
+  if action = 'stock_1c_catalog_list' then
+    return jsonb_build_object('ok', true, 'rows', (
+      select coalesce(jsonb_agg(jsonb_build_object('code', code, 'name', name, 'unit', unit, 'account', account) order by name), '[]'::jsonb)
+        from tandem.catalog_1c));
+  end if;
+
+  -- Загрузка справочника 1С (строки материальной ведомости) и, по желанию, соответствий по названию
+  -- позиции учёта. Существующие соответствия не перезаписываются — их правят по одной.
+  if action = 'stock_1c_catalog_save' then
+    if not tandem.office_can(v_user.role, 'doc:sale', 'edit') then
+      return tandem.err('forbidden', 'Нет права менять справочник 1С'); end if;
+    insert into tandem.catalog_1c (code, name, unit, account)
+      select btrim(x->>'code'), btrim(x->>'name'), nullif(btrim(x->>'unit'), ''), nullif(btrim(x->>'account'), '')
+        from jsonb_array_elements(coalesce(payload->'rows', '[]'::jsonb)) x
+       where nullif(btrim(x->>'code'), '') is not null and nullif(btrim(x->>'name'), '') is not null
+      on conflict (code) do update set name = excluded.name, unit = excluded.unit, account = excluded.account;
+    with l as (select lower(regexp_replace(btrim(x->>'name'), '[[:space:]]+', ' ', 'g')) as n, x->>'code' as code, (x->>'k')::numeric as k
+                 from jsonb_array_elements(coalesce(payload->'links', '[]'::jsonb)) x
+                where (x->>'k')::numeric > 0 and exists (select 1 from tandem.catalog_1c c where c.code = x->>'code'))
+    update tandem.items i set code_1c = l.code, k_1c = l.k
+      from l where lower(regexp_replace(btrim(i.name), '[[:space:]]+', ' ', 'g')) = l.n and i.active and i.code_1c is null;
+    return jsonb_build_object('ok', true, 'catalog', (select count(*) from tandem.catalog_1c),
+      'linked', (select count(*) from tandem.items where code_1c is not null));
+  end if;
+
+  -- Соответствие позиции учёта и позиции 1С: код 1С и сколько единиц 1С в одной нашей единице.
+  -- Пустой код снимает соответствие.
+  if action = 'stock_1c_link_save' then
+    if not tandem.office_can(v_user.role, 'doc:sale', 'edit') then
+      return tandem.err('forbidden', 'Нет права менять соответствия 1С'); end if;
+    if not exists (select 1 from tandem.items where code = payload->>'item_code') then
+      return tandem.err('not_found', 'Позиция не найдена'); end if;
+    if nullif(payload->>'code_1c', '') is not null then
+      if not exists (select 1 from tandem.catalog_1c where code = payload->>'code_1c') then
+        return tandem.err('validation', 'Такой позиции в справочнике 1С нет'); end if;
+      if coalesce(nullif(payload->>'k_1c', '')::numeric, 0) <= 0 then
+        return tandem.err('validation', 'Коэффициент — число больше нуля: сколько единиц 1С в одной нашей'); end if;
+    end if;
+    update tandem.items set code_1c = nullif(payload->>'code_1c', ''),
+           k_1c = case when nullif(payload->>'code_1c', '') is null then null else (payload->>'k_1c')::numeric end
+     where code = payload->>'item_code';
+    return jsonb_build_object('ok', true);
+  end if;
+
   return tandem.err('unknown_action', 'Неизвестное действие: ' || action);
 end $function$
 ;
@@ -3981,6 +4071,7 @@ alter table tandem.cash_expenses enable row level security;
 alter table tandem.chart_lines enable row level security;
 alter table tandem.charts enable row level security;
 alter table tandem.counteragents enable row level security;
+alter table tandem.catalog_1c enable row level security;
 alter table tandem.check_lines enable row level security;
 alter table tandem.checks enable row level security;
 alter table tandem.daily_reports enable row level security;

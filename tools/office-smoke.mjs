@@ -994,6 +994,25 @@ SECTIONS.kassa = async (ctx) => {
   check("касса: чек после закрытия смены учтён", r.ok && r.check.no === 3 && near(s.money, 1400) && near(await bal(sok), 18), s);
   r = await call("dashboard", { pin, from: day, to: day });
   check("касса: сводка собственника видит канал «карта» и отчёт кассы", r.ok && "card" in r.channels && (r.rows || []).some((x) => x.point_id === "zz_kassa" && near(x.revenue_total, 1400)), r.channels);
+
+  // Расход для 1С (миграция 0034): тот же склад — продано 2 сока, беляши списали 0,2 кг муки по карте.
+  const cat = await call("office_stock_1c_catalog_list", { token: t });
+  const code1c = cat.ok && cat.rows.length ? cat.rows[0].code : null;
+  check("1С: справочник позиций 1С отдаётся", !!code1c, cat.ok ? cat.rows.length : cat);
+  r = await call("office_stock_1c_link_save", { token: t, item_code: sok, code_1c: code1c, k_1c: 0 });
+  check("1С: нулевой коэффициент — отказ", r.ok === false && r.error === "validation", r);
+  r = await call("office_stock_1c_link_save", { token: t, item_code: sok, code_1c: "ZZ_нет_такого", k_1c: 1 });
+  check("1С: код не из справочника — отказ", r.ok === false && r.error === "validation", r);
+  r = await call("office_stock_1c_link_save", { token: t, item_code: sok, code_1c: code1c, k_1c: 2 });
+  check("1С: соответствие сохранено", r.ok, r);
+  r = await call("office_stock_1c_report", { token: t, store_id: S, date_from: day, date_to: day });
+  const rs = (r.rows || []).find((x) => x.item_code === sok), rm = (r.rows || []).find((x) => x.item_code === muka);
+  check("1С: расход сока 2 шт → 4 ед. 1С, мука 0,2 кг без позиции 1С", r.ok && rs && near(rs.qty, 2) && near(rs.qty_1c, 4) && rs.code_1c === code1c
+    && rm && near(rm.qty, 0.2) && !rm.code_1c && rm.qty_1c === null, { rs, rm });
+  check("1С: сумма по себестоимости склада (сок 2 × 150)", rs && near(rs.sum, 300), rs);
+  r = await call("office_stock_1c_link_save", { token: t, item_code: sok, code_1c: "", k_1c: "" });
+  const again = await call("office_stock_1c_report", { token: t, store_id: S, date_from: day, date_to: day });
+  check("1С: связь снимается", r.ok && !(again.rows || []).find((x) => x.item_code === sok).code_1c, again.rows);
 };
 
 // Единый вход (миграция 0029): служебный ключ и счётчик неверных кодов. Идёт последним:

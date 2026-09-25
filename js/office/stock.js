@@ -1,5 +1,5 @@
-import { api, session } from "./api.js?v=11";
-import { el, fmt, toast, debounce, modal, confirmDlg, today, isoDate } from "./ui.js?v=11";
+import { api, session } from "./api.js?v=12";
+import { el, fmt, toast, debounce, modal, confirmDlg, today, isoDate } from "./ui.js?v=12";
 
 const TYPES = { invoice_in: "Приход", transfer: "Перемещение", writeoff: "Списание", production: "Производство", inventory: "Инвентаризация", sale: "Продажа" };
 // Продажу заводит отчёт точки, а не человек: в «+ Новый документ» её нет.
@@ -36,10 +36,12 @@ function drawShell() {
     el("button", { class: state.tab === "bal" ? "" : "ghost", onclick: () => { state.tab = "bal"; drawShell(); loadBalances(); } }, "Остатки"),
     canSales() ? el("button", { class: state.tab === "sales" ? "" : "ghost", onclick: () => { state.tab = "sales"; drawShell(); loadSales(); } }, "Продажи") : null,
     el("button", { class: state.tab === "turn" ? "" : "ghost", onclick: () => { state.tab = "turn"; drawShell(); loadTurnover(); } }, "Ведомость"),
+    canSales() ? el("button", { class: state.tab === "c1" ? "" : "ghost", onclick: () => { state.tab = "c1"; drawShell(); loadC1(); } }, "Расход для 1С") : null,
     el("button", { class: state.tab === "ready" ? "" : "ghost", onclick: () => { state.tab = "ready"; drawShell(); loadReady(); } }, "Готовность")));
   if (state.tab === "bal") { root.append(el("div", { id: "bal-root" })); return; }
   if (state.tab === "sales") { root.append(el("div", { id: "sales-root" })); return; }
   if (state.tab === "turn") { root.append(el("div", { id: "turn-root" })); return; }
+  if (state.tab === "c1") { root.append(el("div", { id: "c1-root" })); return; }
   if (state.tab === "ready") { root.append(el("div", { id: "ready-root" })); return; }
   // Роли без единого doc:*:edit (пока таких нет, но право снимается настройкой) видят
   // журнал и остатки, но пустого выпадающего списка «+ Новый документ…» им не показываем.
@@ -510,6 +512,98 @@ async function loadTurnover() {
     a.href = URL.createObjectURL(new Blob(["\ufeff" + lines], { type: "text/csv;charset=utf-8" }));
     a.download = `ведомость ${turn.date_from}—${turn.date_to}.csv`; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
   };
+}
+
+// ---------- расход для 1С: основа акта списания «на основании продаж» ----------
+// Бухгалтер списывает в 1С продукты, ушедшие на проданное. Номенклатура 1С своя, поэтому у позиции
+// учёта хранится код 1С и сколько единиц 1С в одной нашей (кофе 3в1: пакетик = 1/25 блока).
+const c1 = { store_id: "", date_from: turn.date_from, date_to: turn.date_to, catalog: null };
+async function loadC1() {
+  const host = document.getElementById("c1-root"); if (!host) return;
+  host.innerHTML = "";
+  const storeSel = sel({ "": myIds.length ? "мои склады вместе" : "все склады вместе", ...opts(mine(stores)) }, c1.store_id, (v) => { c1.store_id = v; loadC1(); });
+  const csvBtn = el("button", { class: "ghost" }, "Скачать для 1С (CSV)");
+  host.append(el("div", { class: "tools" }, storeSel,
+    el("input", { type: "date", title: "с", value: c1.date_from, onchange: (e) => { c1.date_from = e.target.value; loadC1(); } }),
+    el("span", { class: "dim" }, "—"),
+    el("input", { type: "date", title: "по", value: c1.date_to, onchange: (e) => { c1.date_to = e.target.value; loadC1(); } }),
+    csvBtn));
+  const wait = el("div", { class: "dim" }, "Считаю…"); host.append(wait);
+  const [r, cat] = await Promise.all([api("stock_1c_report", { store_id: c1.store_id || null, date_from: c1.date_from, date_to: c1.date_to }),
+    c1.catalog ? { ok: true, rows: c1.catalog } : api("stock_1c_catalog_list", {})]);
+  wait.remove();
+  if (!r.ok) { host.append(el("div", { class: "err" }, r.message)); return; }
+  if (cat.ok) c1.catalog = cat.rows;
+  const byCode = new Map();
+  for (const x of r.rows.filter((x) => x.code_1c && x.qty_1c !== null)) {
+    const g = byCode.get(x.code_1c) || { code: x.code_1c, name: x.name_1c, unit: x.unit_1c, account: x.account_1c, qty: 0, sum: 0, src: [] };
+    g.qty += Number(x.qty_1c); g.sum += Number(x.sum); g.src.push(x); byCode.set(x.code_1c, g);
+  }
+  const groups = [...byCode.values()].sort((a, b) => a.name.localeCompare(b.name, "ru"));
+  const free = r.rows.filter((x) => !x.code_1c || x.qty_1c === null);
+  const canEdit = perms().includes("doc:sale:edit");
+  const t = el("table");
+  t.append(el("tr", {}, el("th", {}, "Код 1С"), el("th", {}, "Номенклатура 1С"), el("th", {}, "Счёт"), el("th", {}, "Ед."),
+    el("th", { class: "num" }, "Списать"), el("th", { class: "num" }, "Себестоимость, ₸"), el("th", {}, "Из позиций учёта")));
+  let total = 0;
+  for (const g of groups) {
+    total += g.sum;
+    t.append(el("tr", {}, el("td", {}, g.code), el("td", {}, g.name), el("td", {}, g.account || ""), el("td", {}, g.unit || ""),
+      el("td", { class: "num" }, fmt(Math.round(g.qty * 1000) / 1000)), el("td", { class: "num" }, fmt(g.sum)),
+      el("td", { class: "dim" }, ...g.src.map((x, j) => el("span", {}, j ? "; " : "",
+        canEdit ? el("a", { href: "#", onclick: (e) => { e.preventDefault(); linkC1(x); } }, x.name) : x.name,
+        ` ${fmt(x.qty)} ${x.unit_id || ""}`)))));
+  }
+  if (!groups.length) t.append(el("tr", {}, el("td", { colspan: 7, class: "dim" }, "За период расхода по позициям с кодом 1С нет")));
+  host.append(el("div", { class: "card", style: "padding:0;overflow:auto" }, t),
+    el("div", { class: "tot" }, el("span", {}, `Позиций 1С: ${groups.length}`), el("span", {}, `${fmt(total)} ₸`)),
+    el("div", { class: "dim", style: "margin-top:8px" }, "Расход проведённых продаж и актов производства, кроме полуфабрикатов: 1С знает сырьё, из которого они сделаны. Себестоимость — по нашему складу; в акте 1С сумму поставит сама 1С по своим ценам."));
+  if (free.length) {
+    const ft = el("table");
+    ft.append(el("tr", {}, el("th", {}, "Позиция учёта"), el("th", {}, "Ед."), el("th", { class: "num" }, "Расход"), el("th", { class: "num" }, "₸"), canEdit ? el("th", {}, "") : null));
+    for (const x of free) ft.append(el("tr", {}, el("td", {}, x.name), el("td", {}, x.unit_id || ""), el("td", { class: "num" }, fmt(x.qty)), el("td", { class: "num" }, fmt(x.sum)),
+      canEdit ? el("td", {}, el("button", { class: "ghost", onclick: () => linkC1(x) }, "Указать позицию 1С")) : null));
+    host.append(el("h3", { style: "margin-top:18px" }, `Без позиции 1С: ${free.length}`),
+      el("div", { class: "dim" }, "Эти продукты расходовались, но не связаны с 1С — в список на списание не попали. Если такого товара в 1С нет (не было прихода по документам), списать его в 1С нельзя."),
+      el("div", { class: "card", style: "padding:0;overflow:auto;margin-top:8px" }, ft));
+  }
+  csvBtn.onclick = () => {
+    const q = (v) => /[;"\n]/.test(String(v)) ? '"' + String(v).replace(/"/g, '""') + '"' : String(v);
+    const lines = [["Код 1С", "Номенклатура 1С", "Счёт", "Ед.", "Количество", "Себестоимость учёта, ₸"],
+      ...groups.map((g) => [g.code, g.name, g.account || "", g.unit || "", String(Math.round(g.qty * 1000) / 1000).replace(".", ","), String(g.sum).replace(".", ",")])]
+      .map((row) => row.map(q).join(";")).join("\r\n");
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob(["﻿" + lines], { type: "text/csv;charset=utf-8" }));
+    a.download = `расход для 1С ${c1.date_from}—${c1.date_to}.csv`; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  };
+}
+function linkC1(x) {
+  const m = modal("Позиция 1С для «" + x.name + "»");
+  const label = (c) => c.code + " · " + c.name + " · " + (c.unit || "");
+  const list = el("datalist", { id: "c1-cat" }, ...(c1.catalog || []).map((c) => el("option", { value: label(c) })));
+  const cur = (c1.catalog || []).find((c) => c.code === x.code_1c);
+  const pick = el("input", { list: "c1-cat", placeholder: "Начните вводить название из 1С", value: cur ? label(cur) : "" });
+  const k = el("input", { inputmode: "decimal", value: x.k_1c ?? "1" });
+  const err = el("div", { class: "err" });
+  const save = el("button", {}, "Сохранить");
+  const clear = x.code_1c ? el("button", { class: "ghost" }, "Снять связь") : null;
+  m.root.append(list, el("label", {}, "Позиция 1С"), pick,
+    el("label", {}, `Сколько единиц 1С в одной нашей (${x.unit_id || "ед."})`), k,
+    el("div", { class: "dim" }, "Единицы совпадают — 1. Мы считаем пакетики кофе, а 1С — блоки по 25: 0,04. Мы в кг, а в 1С банки по 400 г: 2,5."),
+    err, el("div", { class: "actions" }, save, clear));
+  const send = async (code, kv) => {
+    save.disabled = true;
+    const r = await api("stock_1c_link_save", { item_code: x.item_code, code_1c: code, k_1c: kv });
+    save.disabled = false;
+    if (!r.ok) { err.textContent = r.message; return; }
+    m.close(); toast("Сохранено"); loadC1();
+  };
+  save.onclick = () => {
+    const code = pick.value.split(" · ")[0].trim();
+    if (!(c1.catalog || []).some((c) => c.code === code)) { err.textContent = "Выберите позицию из списка 1С"; return; }
+    send(code, String(k.value).replace(",", "."));
+  };
+  if (clear) clear.onclick = () => send("", "");
 }
 
 // ---------- готовность: что в справочниках и документах помешает учёту ----------
