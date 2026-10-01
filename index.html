@@ -121,6 +121,7 @@
   .pill{display:inline-block;font-size:11.5px;padding:2px 9px;border-radius:20px;font-weight:600}
   .pill.ok{background:var(--okbg);color:var(--ok)}
   .pill.bad{background:var(--badbg);color:var(--bad)}
+  .pill.warn{background:#FCF3E1;color:#8A6412}
   .dtools{display:flex;gap:10px;align-items:end;flex-wrap:wrap;margin-bottom:14px}
   .dtools>div{flex:0 0 150px}
   .dtools button{width:auto}
@@ -135,7 +136,7 @@ input[readonly]{background:#EEF2F8;color:var(--ink2)}
   <header>
     <div>
       <h1>Тандем KZ · дневной отчёт</h1>
-      <div class="sub">Заполняется в конце смены · сборка 17</div>
+      <div class="sub">Заполняется в конце смены · сборка 19</div>
     </div>
   </header>
 
@@ -313,6 +314,12 @@ input[readonly]{background:#EEF2F8;color:var(--ink2)}
     <div class="kpi"><div class="kl">Отчётов с расхождением</div><div class="kv" id="k4">—</div></div>
   </div>
 
+  <div class="card" id="dpins-card" hidden>
+    <h2>Неверные коды за сутки</h2>
+    <div class="hint" style="margin:0 0 8px">Так выглядит подбор кода. Несколько ошибок — опечатки; десятки — повод сменить код точки (бэк-офис → Склады → Точки продаж).</div>
+    <div id="dpins"></div>
+  </div>
+
   <div class="card" id="dmissing-card" hidden>
     <h2>Не сдали отчёт за вчера</h2>
     <div id="dmissing"></div>
@@ -417,7 +424,7 @@ input[readonly]{background:#EEF2F8;color:var(--ink2)}
   </div>
 </div>
 
-<script src="config.js?v=17"></script>
-<script src="app.js?v=17"></script>
+<script src="config.js?v=19"></script>
+<script src="app.js?v=19"></script>
 </body>
 </html>

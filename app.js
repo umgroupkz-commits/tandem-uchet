@@ -867,6 +867,18 @@ function loadDash() {
       pb.appendChild(tr2);
     }
 
+    // ── Неверные коды за сутки ──
+    var pins = r.pin_failures || [];
+    $('dpins-card').hidden = !pins.length;
+    $('dpins').textContent = '';
+    pins.forEach(function (x) {
+      var s = document.createElement('span');
+      s.className = 'pill ' + (x.count >= 10 ? 'bad' : 'warn');
+      s.style.margin = '0 6px 6px 0';
+      s.textContent = x.name + ': ' + x.count + ', последняя в ' + new Date(x.last).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+      $('dpins').appendChild(s);
+    });
+
     // ── Не сдали за вчера ──
     var mis = r.missing || [];
     $('dmissing-card').hidden = !mis.length;

@@ -33,7 +33,7 @@ http.createServer(async (req, res) => {
     try { body = JSON.parse(raw || "{}"); } catch { return send(res, 400, { ok: false, error: "Некорректный запрос" }); }
     const action = String(body.action ?? "");
     const payload = body.payload && typeof body.payload === "object" ? body.payload : {};
-    if (!/^[a-z_]{1,60}$/.test(action)) return send(res, 400, { ok: false, error: "Некорректное действие" });
+    if (!/^[a-z0-9_]{1,60}$/.test(action)) return send(res, 400, { ok: false, error: "Некорректное действие" });
     try {
       send(res, 200, await gate(action, payload));
     } catch (e) {

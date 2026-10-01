@@ -116,6 +116,15 @@ try {
     check("заявка: ошибок в консоли нет", pageErrors.length === 0, pageErrors);
   }
 
+  const OPIN = process.env.TANDEM_OWNER_PIN || "";
+  if (OPIN) {
+    console.log("\n== сводка собственника");
+    await go("index.html");
+    await until("document.getElementById('opin')");
+    await js(`document.getElementById('opin').value = ${JSON.stringify(OPIN)}; document.getElementById('btn-owner').click();`);
+    check("сводка: открылась, показатели посчитаны", await until("!document.getElementById('screen-dash').hidden && /[0-9]/.test(document.getElementById('k1').textContent)"), await js("return document.body.innerText.slice(0, 160)"));
+    check("сводка: ошибок в консоли нет", pageErrors.length === 0, pageErrors);
+  }
   if (!PIN) console.log("\n== бэк-офис пропущен: задайте TANDEM_ADMIN_PIN");
   else {
     console.log("\n== бэк-офис");

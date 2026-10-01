@@ -1,5 +1,5 @@
 import { ask, el, fmt, today, toast, debounce, itemPicker, linesTable, drafts, warningsText,
-  withBusy, saveDoc, draftHint, okNum, numOf } from "./common.js?v=17";
+  withBusy, saveDoc, draftHint, okNum, numOf } from "./common.js?v=19";
 
 const SCN = "receive";
 export async function mount(root, ctx) {

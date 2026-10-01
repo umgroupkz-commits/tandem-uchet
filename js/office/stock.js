@@ -1,5 +1,5 @@
-import { api, session } from "./api.js?v=17";
-import { el, fmt, toast, debounce, modal, confirmDlg, today, isoDate } from "./ui.js?v=17";
+import { api, session } from "./api.js?v=19";
+import { el, fmt, toast, debounce, modal, confirmDlg, today, isoDate } from "./ui.js?v=19";
 
 const TYPES = { invoice_in: "Приход", transfer: "Перемещение", writeoff: "Списание", production: "Производство", inventory: "Инвентаризация", sale: "Продажа" };
 // Продажу заводит отчёт точки, а не человек: в «+ Новый документ» её нет.
@@ -572,15 +572,18 @@ async function loadOrders() {
     e.target.disabled = false;
     if (!x.ok) { toast(x.message, "bad"); return; } toast("Выпуск сохранён"); loadOrders(); } }, "Сохранить выпуск"));
   if (r.plan.length && perms().includes("doc:production:edit") && perms().includes("doc:transfer:edit")) acts.append(el("button", { onclick: async (e) => {
-    if (!r.locked && !confirmDlg("Создать черновики акта производства и перемещений на точки? После этого заявки этого дня не изменить.")) return;
+    if (!r.locked && !confirmDlg(r.open
+      ? `Приём заявок на этот день ещё открыт до ${r.cutoff}. Если создать документы сейчас, точки больше не смогут поправить заявки. Создать всё равно?`
+      : "Создать черновики акта производства и перемещений на точки? После этого заявки этого дня не изменить.")) return;
     e.target.disabled = true;
-    const x = await api("stock_orders_docs_save", { for_date: ord.date });
+    const x = await api("stock_orders_docs_save", { for_date: ord.date, force: r.open });
     e.target.disabled = false;
     if (!x.ok) { toast(x.message, "bad"); return; }
     toast(x.made ? `Создано документов: ${x.made}` : "Все документы уже созданы");
     if (x.skipped) toast("Без склада точки, перемещение не создано: " + x.skipped, "bad");
     loadOrders(); } }, r.locked ? "Досоздать документы" : "Создать производство и перемещения"));
   host.append(acts);
+  host.append(el("div", { class: "dim", style: "margin-top:8px" }, "Выпуск раскладывается по точкам пропорционально заявкам. Сначала проводится акт производства, затем перемещения. Позиции, выпущенные по плану, на точках продаются готовыми: продажа списывает саму позицию, а не ингредиенты."));
   if (r.docs.length) host.append(el("h3", { style: "margin:14px 0 6px" }, "Документы по плану"),
     el("div", {}, ...r.docs.map((d) => el("div", {}, el("a", { href: "#", onclick: (e) => { e.preventDefault(); editDoc(d.id); } }, `${TYPES[d.doc_type]} ${d.number}`),
       " — ", d.status === "draft" ? el("span", { class: "tag" }, "черновик") : el("span", { class: "tag ok" }, "проведён")))));
@@ -632,7 +635,7 @@ async function loadC1() {
   if (!groups.length) t.append(el("tr", {}, el("td", { colspan: 7, class: "dim" }, "За период расхода по позициям с кодом 1С нет")));
   host.append(el("div", { class: "card", style: "padding:0;overflow:auto" }, t),
     el("div", { class: "tot" }, el("span", {}, `Позиций 1С: ${groups.length}`), el("span", {}, `${fmt(total)} ₸`)),
-    el("div", { class: "dim", style: "margin-top:8px" }, "Расход проведённых продаж и актов производства, кроме полуфабрикатов: 1С знает сырьё, из которого они сделаны. Себестоимость — по нашему складу; в акте 1С сумму поставит сама 1С по своим ценам."));
+    el("div", { class: "dim", style: "margin-top:8px" }, "Расход проведённых продаж и актов производства, кроме полуфабрикатов и выпечки с кухни, проданной готовой: 1С знает сырьё, из которого они сделаны. Себестоимость — по нашему складу; в акте 1С сумму поставит сама 1С по своим ценам."));
   if (free.length) {
     const ft = el("table");
     ft.append(el("tr", {}, el("th", {}, "Позиция учёта"), el("th", {}, "Ед."), el("th", { class: "num" }, "Расход"), el("th", { class: "num" }, "₸"), canEdit ? el("th", {}, "") : null));
@@ -708,9 +711,15 @@ async function loadReports() {
   const th = (h, i) => el("th", { class: i ? "num" : "" }, h);
   const t = el("table");
   if (rep.kind === "pnl") {
-    const r = await api("stock_pnl_report", period); wait.remove();
+    // Прошлый период той же длины, вплотную перед выбранным: чтобы видеть, растёт точка или падает.
+    const d1 = new Date(rep.date_from + "T12:00:00"), d2 = new Date(rep.date_to + "T12:00:00");
+    const len = Math.round((d2 - d1) / 86400e3) + 1;
+    const prev = { date_from: isoDate(new Date(d1.getTime() - len * 86400e3)), date_to: isoDate(new Date(d1.getTime() - 86400e3)) };
+    const [r, rp] = await Promise.all([api("stock_pnl_report", period), api("stock_pnl_report", prev)]); wait.remove();
+    const pv = new Map(((rp.ok && rp.rows) || []).map((x) => [x.point_id ?? "", x]));
+    const delta = (now, was) => { if (!was) return ""; const p = Math.round((now - was) / Math.abs(was) * 100); return (p > 0 ? "+" : "") + p + " %"; };
     if (!r.ok) { host.append(el("div", { class: "err" }, r.message)); return; }
-    t.append(el("tr", {}, ...["Точка", "Выручка", "Себестоимость проданного", "Валовая прибыль", "Фудкост", "Списания", "Инвентаризация ±", "Итог по продуктам"].map(th)));
+    t.append(el("tr", {}, ...["Точка", "Выручка", "Себестоимость проданного", "Валовая прибыль", "Фудкост", "Списания", "Инвентаризация ±", "Итог по продуктам", "Выручка к прошлому периоду"].map(th)));
     const tot = { revenue: 0, cost: 0, writeoff: 0, inventory: 0 };
     const res = (x) => x.revenue - x.cost - x.writeoff + x.inventory;
     for (const x of r.rows) {
@@ -718,12 +727,14 @@ async function loadReports() {
       t.append(el("tr", {}, el("td", {}, x.point_name), el("td", { class: "num" }, fmt(x.revenue)), el("td", { class: "num" }, fmt(x.cost)),
         el("td", { class: "num" }, fmt(x.revenue - x.cost)), el("td", { class: "num" }, x.revenue ? fmt(Math.round(x.cost / x.revenue * 1000) / 10) + " %" : ""),
         el("td", { class: "num" }, fmt(x.writeoff)), el("td", { class: "num" + (x.inventory < 0 ? " bad" : "") }, fmt(x.inventory)),
-        el("td", { class: "num", style: "font-weight:700" }, fmt(res(x)))));
+        el("td", { class: "num", style: "font-weight:700" }, fmt(res(x))),
+        el("td", { class: "num", title: "Прошлый период: " + prev.date_from + " — " + prev.date_to }, delta(Number(x.revenue), pv.has(x.point_id ?? "") ? Number(pv.get(x.point_id ?? "").revenue) : 0))));
     }
-    if (!r.rows.length) t.append(el("tr", {}, el("td", { colspan: 8, class: "dim" }, "За период проведённых продаж, списаний и инвентаризаций нет")));
+    if (!r.rows.length) t.append(el("tr", {}, el("td", { colspan: 9, class: "dim" }, "За период проведённых продаж, списаний и инвентаризаций нет")));
     else t.append(el("tr", { style: "font-weight:700" }, el("td", {}, "Итого"), el("td", { class: "num" }, fmt(tot.revenue)), el("td", { class: "num" }, fmt(tot.cost)),
       el("td", { class: "num" }, fmt(tot.revenue - tot.cost)), el("td", { class: "num" }, tot.revenue ? fmt(Math.round(tot.cost / tot.revenue * 1000) / 10) + " %" : ""),
-      el("td", { class: "num" }, fmt(tot.writeoff)), el("td", { class: "num" }, fmt(tot.inventory)), el("td", { class: "num" }, fmt(res(tot)))));
+      el("td", { class: "num" }, fmt(tot.writeoff)), el("td", { class: "num" }, fmt(tot.inventory)), el("td", { class: "num" }, fmt(res(tot))),
+      el("td", { class: "num" }, delta(tot.revenue, [...pv.values()].reduce((a, x) => a + Number(x.revenue), 0)))));
     host.append(el("div", { class: "card", style: "padding:0;overflow:auto" }, t),
       el("div", { class: "dim", style: "margin-top:8px" }, "Только продукты: выручка и себестоимость проданного, списания (порча, проработка, питание персонала) и итог инвентаризаций со складов точки — недостача с минусом. Зарплата, аренда и прочие расходы появятся с разделом «Финансы»."));
     csvBtn.onclick = () => csvDownload("прибыль по точкам", ["Точка", "Выручка", "Себестоимость", "Валовая прибыль", "Списания", "Инвентаризация", "Итог"],

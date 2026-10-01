@@ -1030,6 +1030,7 @@ SECTIONS.kassa = async (ctx) => {
   s = await sales();
   check("касса: чек после закрытия смены учтён", r.ok && r.check.no === 3 && near(s.money, 1400) && near(await bal(sok), 18), s);
   r = await call("dashboard", { pin, from: day, to: day });
+  check("сводка: неверные коды за сутки отдаются списком", r.ok && Array.isArray(r.pin_failures), r.pin_failures);
   check("касса: сводка собственника видит канал «карта» и отчёт кассы", r.ok && "card" in r.channels && (r.rows || []).some((x) => x.point_id === "zz_kassa" && near(x.revenue_total, 1400)), r.channels);
 
   // Расход для 1С (миграция 0034): тот же склад — продано 2 сока, беляши списали 0,2 кг муки по карте.
@@ -1102,24 +1103,38 @@ SECTIONS.orders = async (ctx) => {
     check("заявки: сводный план — 15 пирожков, по точкам 10 и 5", r.ok && near(pl.qty, 15) && near(pl.by_point.zz_test, 10) && near(pl.by_point.zz_kassa, 5) && pl.has_chart, pl);
     r = await call("office_stock_orders_fact_save", { token: t, for_date: d, rows: [{ item_code: pir, fact: 14 }] });
     check("заявки: факт выпуска сохранён", r.ok && near(((r.plan || []).find((x) => x.item_code === pir) || {}).fact, 14), r.plan);
+    r = await call("office_stock_orders_fact_save", { token: t, for_date: d, rows: [{ item_code: pir, fact: "NaN" }] });
+    check("заявки: выпуск не числом — отказ", r.ok === false && r.error === "validation", r);
+    r = await call("office_stock_orders_fact_save", { token: t, for_date: d, rows: [{ item_code: pir, fact: 14 }, { item_code: pir, fact: 1 }] });
+    check("заявки: повтор позиции в выпуске — отказ", r.ok === false && r.error === "validation", r);
     r = await call("office_stock_orders_docs_save", { token: t, for_date: d });
+    check("заявки: до отсечки документы не создаются без подтверждения", r.ok === false && /ещё открыт/.test(r.message), r);
+    r = await call("office_stock_orders_docs_save", { token: t, for_date: d, force: true });
     check("заявки: из плана созданы акт производства и два перемещения", r.ok && r.made === 3, r);
-    r = await call("office_stock_orders_docs_save", { token: t, for_date: d });
+    r = await call("office_stock_orders_docs_save", { token: t, for_date: d, force: true });
     check("заявки: повторное создание документов не дублирует", r.ok && r.made === 0, r);
     const rep = await call("office_stock_orders_report", { token: t, for_date: d });
     check("заявки: день закрыт для правок, документы видны", rep.ok && rep.locked && rep.docs.length === 3 && rep.docs.every((x) => x.status === "draft"), rep.docs);
     r = await O("zz_test", [{ item_code: pir, qty: 11 }]);
     check("заявки: после передачи в производство заявку не изменить", r.ok === false && /передан/.test(r.error), r);
-    const prod = rep.docs.find((x) => x.doc_type === "production"), toP = rep.docs.find((x) => x.source_id.endsWith("/zz_test"));
+    const prod = rep.docs.find((x) => x.doc_type === "production"), toP = rep.docs.find((x) => x.source_id.endsWith("/zz_test")),
+      toQ = rep.docs.find((x) => x.source_id.endsWith("/zz_kassa"));
+    // Выпуск 14 на заявки 10 и 5 раскладывается пропорционально: 9,33 → 9 и 4,67 → 5.
+    const gq = async (id) => ((await call("office_doc_get", { token: t, id })).doc.lines.find((l) => l.item_code === pir) || {}).qty;
+    check("заявки: выпуск 14 разложен по точкам — 9 и 5", near(await gq(toP.id), 9) && near(await gq(toQ.id), 5), { p: await gq(toP.id), q: await gq(toQ.id) });
+    r = await call("office_doc_post", { token: t, id: toP.id });
+    check("заявки: перемещение раньше акта производства не проводится", r.ok === false && /производства/.test(r.message || ""), r);
     r = await call("office_doc_post", { token: t, id: prod.id });
     check("заявки: акт производства проведён — 14 пирожков, мука 10 − 1,4", r.ok && near(await bal(K, pir), 14) && near(await bal(K, muka), 8.6), { r, pir: await bal(K, pir), muka: await bal(K, muka) });
     r = await call("office_doc_post", { token: t, id: toP.id });
-    check("заявки: перемещение на точку проведено — у точки 10 пирожков", r.ok && near(await bal(P, pir), 10) && near(await bal(K, pir), 4), r);
-    // Продажа 12 пирожков: 10 с остатка точки как есть, на нехватку 2 — мука по карте.
+    check("заявки: перемещение на точку проведено — у точки 9 пирожков, на кухне 5", r.ok && near(await bal(P, pir), 9) && near(await bal(K, pir), 5), r);
+    // Пирожок выпущен по плану — продаётся готовым: 12 проданных списывают 12 пирожков (минус 3), муку не трогают.
     r = await call("save_report", { pin, point_id: "zz_test", date: d, comment: "ZZ_TEST_заявки", cash: 2400,
       sales: [{ item_code: pir, item_name: "пирожок", qty: 12, price: 200 }] });
-    check("заявки: продажа сначала берёт готовое с остатка, на нехватку — по карте", r.ok && near(await bal(P, pir), 0) && near(await bal(P, muka), -0.2),
+    check("заявки: выпущенное по плану продаётся готовым — списан сам пирожок, мука не тронута", r.ok && near(await bal(P, pir), -3) && near(await bal(P, muka), 0),
       { r: r.ok, pir: await bal(P, pir), muka: await bal(P, muka) });
+    r = await call("office_stock_1c_report", { token: t, store_id: P, date_from: d, date_to: d });
+    check("заявки: проданное готовым не попадает в «Расход для 1С»", r.ok && !(r.rows || []).some((x) => x.item_code === pir), r.rows);
   } finally {
     await call("office_stock_orders_settings_save", { token: t, store_id: before.store_id || "", cutoff: before.cutoff || "20:00" });
   }
