@@ -1060,6 +1060,71 @@ SECTIONS.kassa = async (ctx) => {
   check("отчёты: прибыль точки — выручка 1400, себестоимость 2 сока и 0,2 кг муки = 320", r.ok && near(pk.revenue, 1400) && near(pk.cost, 320) && near(pk.writeoff, 0), pk);
 };
 
+// Заявки и план выпечки (миграция 0038): заявки служебных точек на послезавтра, план, факт выпуска,
+// документы из плана, продажа готового с остатка точки. Настройки заявок сохраняются и возвращаются.
+SECTIONS.orders = async (ctx) => {
+  const t = ctx.token;
+  const pin = process.env.TANDEM_OWNER_PIN || "";
+  if (!pin) { console.log("  пропуск: нужен TANDEM_OWNER_PIN (заявка подаётся кодом)"); return; }
+  const near = (a, b, e = 0.001) => Math.abs(Number(a) - Number(b)) < e;
+  const d = new Date(Date.now() + 5 * 3600e3 + 2 * 86400e3).toISOString().slice(0, 10);   // послезавтра по Казахстану
+  const before = await call("office_stock_orders_report", { token: t, for_date: d });
+  check("заявки: отчёт дня открывается", before.ok && before.open === true, before);
+  let r = await call("office_store_save", { token: t, name: "ZZ_TEST_кухня заявок" }); const K = r.id;
+  r = await call("office_store_save", { token: t, name: "ZZ_TEST_склад точки заявок", point_id: "zz_test", is_default: true }); const P = r.id;
+  r = await call("office_store_save", { token: t, name: "ZZ_TEST_склад кассы заявок", point_id: "zz_kassa", is_default: true }); const Q = r.id;
+  r = await call("office_counteragent_save", { token: t, name: "ZZ_TEST_поставщик заявок", kind: "supplier" }); const SUP = r.id;
+  r = await call("office_item_save", { token: t, name: "ZZ_TEST_мука заявок", item_type: "goods", unit_id: "кг" }); const muka = r.code;
+  r = await call("office_item_save", { token: t, name: "ZZ_TEST_пирожок заявок", item_type: "dish", unit_id: "шт", for_sale: true, price: 200 }); const pir = r.code;
+  r = await call("office_chart_save", { token: t, code: pir, date_from: "2020-01-01", output_amount: 1, lines: [{ ingredient_code: muka, brutto: 0.1, netto: 0.1, output: 0.1 }] });
+  check("заявки: подготовка — кухня, склады точек, мука, пирожок с картой", K && P && Q && muka && pir && r.ok, r);
+  r = await call("office_doc_save", { token: t, doc_type: "invoice_in", doc_date: "2020-02-01", store_to: K, counteragent_id: SUP, lines: [{ item_code: muka, qty: 10, price: 100 }] });
+  await call("office_doc_post", { token: t, id: r.id });
+  const bal = async (store, code) => { const b = await call("office_stock_balances", { token: t, store_id: store, only_nonzero: false });
+    const row = (b.rows || []).find((x) => x.item_code === code); return row ? Number(row.qty) : 0; };
+  try {
+    r = await call("office_stock_orders_settings_save", { token: t, store_id: K, cutoff: "25:00" });
+    check("заявки: неверное время отсечки — отказ", r.ok === false && r.error === "validation", r);
+    r = await call("office_stock_orders_settings_save", { token: t, store_id: K, cutoff: before.cutoff || "20:00" });
+    check("заявки: склад кухни выбран", r.ok, r);
+    const O = (point, lines) => call("order_save", { pin, point_id: point, for_date: d, sent_by: "ZZ_TEST", lines });
+    r = await O("zz_test", [{ item_code: pir, qty: 1.5 }]);
+    check("заявки: полтора пирожка — отказ, штучное целым", r.ok === false && /целым/.test(r.error), r);
+    r = await O("zz_test", [{ item_code: muka, qty: 1 }]);
+    check("заявки: сырьё (не в продаже) заказать нельзя", r.ok === false && /нет в продаже/.test(r.error), r);
+    r = await call("order_save", { pin, point_id: "zz_test", for_date: "2020-01-01", lines: [{ item_code: pir, qty: 1 }] });
+    check("заявки: на прошедший день — приём закрыт", r.ok === false && /закрыт/.test(r.error), r);
+    r = await O("zz_test", [{ item_code: pir, qty: 10 }]);
+    check("заявки: заявка точки принята и читается", r.ok && r.order && r.order.lines.length === 1 && near(r.order.lines[0].qty, 10), r);
+    r = await O("zz_kassa", [{ item_code: pir, qty: 5 }]);
+    r = await call("office_stock_orders_report", { token: t, for_date: d });
+    const pl = (r.plan || []).find((x) => x.item_code === pir) || {};
+    check("заявки: сводный план — 15 пирожков, по точкам 10 и 5", r.ok && near(pl.qty, 15) && near(pl.by_point.zz_test, 10) && near(pl.by_point.zz_kassa, 5) && pl.has_chart, pl);
+    r = await call("office_stock_orders_fact_save", { token: t, for_date: d, rows: [{ item_code: pir, fact: 14 }] });
+    check("заявки: факт выпуска сохранён", r.ok && near(((r.plan || []).find((x) => x.item_code === pir) || {}).fact, 14), r.plan);
+    r = await call("office_stock_orders_docs_save", { token: t, for_date: d });
+    check("заявки: из плана созданы акт производства и два перемещения", r.ok && r.made === 3, r);
+    r = await call("office_stock_orders_docs_save", { token: t, for_date: d });
+    check("заявки: повторное создание документов не дублирует", r.ok && r.made === 0, r);
+    const rep = await call("office_stock_orders_report", { token: t, for_date: d });
+    check("заявки: день закрыт для правок, документы видны", rep.ok && rep.locked && rep.docs.length === 3 && rep.docs.every((x) => x.status === "draft"), rep.docs);
+    r = await O("zz_test", [{ item_code: pir, qty: 11 }]);
+    check("заявки: после передачи в производство заявку не изменить", r.ok === false && /передан/.test(r.error), r);
+    const prod = rep.docs.find((x) => x.doc_type === "production"), toP = rep.docs.find((x) => x.source_id.endsWith("/zz_test"));
+    r = await call("office_doc_post", { token: t, id: prod.id });
+    check("заявки: акт производства проведён — 14 пирожков, мука 10 − 1,4", r.ok && near(await bal(K, pir), 14) && near(await bal(K, muka), 8.6), { r, pir: await bal(K, pir), muka: await bal(K, muka) });
+    r = await call("office_doc_post", { token: t, id: toP.id });
+    check("заявки: перемещение на точку проведено — у точки 10 пирожков", r.ok && near(await bal(P, pir), 10) && near(await bal(K, pir), 4), r);
+    // Продажа 12 пирожков: 10 с остатка точки как есть, на нехватку 2 — мука по карте.
+    r = await call("save_report", { pin, point_id: "zz_test", date: d, comment: "ZZ_TEST_заявки", cash: 2400,
+      sales: [{ item_code: pir, item_name: "пирожок", qty: 12, price: 200 }] });
+    check("заявки: продажа сначала берёт готовое с остатка, на нехватку — по карте", r.ok && near(await bal(P, pir), 0) && near(await bal(P, muka), -0.2),
+      { r: r.ok, pir: await bal(P, pir), muka: await bal(P, muka) });
+  } finally {
+    await call("office_stock_orders_settings_save", { token: t, store_id: before.store_id || "", cutoff: before.cutoff || "20:00" });
+  }
+};
+
 // Единый вход (миграция 0029): служебный ключ и счётчик неверных кодов. Идёт последним:
 // раздел сам запирает вход по коду для служебной точки, замок снимает уборка теста.
 SECTIONS.gate = async () => {

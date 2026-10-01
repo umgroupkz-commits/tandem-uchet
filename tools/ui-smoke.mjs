@@ -98,6 +98,22 @@ try {
     // Чек не пробит: чистим корзину, иначе страница спросит подтверждение ухода.
     await js("window.confirm = () => true; document.getElementById('rclear').click();");
     check("касса: ошибок в консоли нет", pageErrors.length === 0, pageErrors);
+
+    // Заявка на кухню (order.html): вход тем же кодом точки, день и поиск — без отправки заявки.
+    await send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
+    await go("order.html");
+    await until("[...document.getElementById('lpoint').options].some((o) => o.value === " + JSON.stringify(KPOINT) + ")");
+    await js(`document.getElementById('lpoint').value = ${JSON.stringify(KPOINT)}; document.getElementById('lpin').value = ${JSON.stringify(KPIN)}; document.getElementById('lwho').value = 'Автотест'; document.getElementById('lbtn').click();`);
+    check("заявка: вход, выбор дня и статус приёма", await until("document.querySelectorAll('.day button').length === 2 && document.querySelector('.status')"), await js("return document.body.innerText.slice(0, 200)"));
+    const open = await js("return document.querySelector('.status').classList.contains('open')");
+    if (open) {
+      await js("const i = document.querySelector('#main input'); i.value = 'а'; i.dispatchEvent(new Event('input'));");
+      check("заявка: поиск по меню точки находит позиции", await until("document.querySelectorAll('.sres .sitem').length > 0"), null);
+    }
+    check("заявка на телефоне: страница не шире экрана", await js("return document.documentElement.scrollWidth <= 395"), await js("return document.documentElement.scrollWidth"));
+    if (process.env.TANDEM_SHOTS) { const sh = await send("Page.captureScreenshot", { format: "png" }); fs.writeFileSync(path.join(process.env.TANDEM_SHOTS, "order.png"), Buffer.from(sh.result.data, "base64")); }
+    await send("Emulation.clearDeviceMetricsOverride");
+    check("заявка: ошибок в консоли нет", pageErrors.length === 0, pageErrors);
   }
 
   if (!PIN) console.log("\n== бэк-офис пропущен: задайте TANDEM_ADMIN_PIN");
@@ -113,7 +129,7 @@ try {
       await clickText("#menu button", title);
       check("раздел «" + title + "» открылся", await until(`document.querySelector(${JSON.stringify(probe)}) && !/Раздел не открылся|Загрузка…/.test(document.getElementById('main').innerText)`), await js("return document.getElementById('main').innerText.slice(0, 120)"));
     }
-    for (const [tab, probe] of Object.entries({ "Остатки": "#bal-root table", "Продажи": "#sales-root table", "Ведомость": "#turn-root table", "Расход для 1С": "#c1-root table", "Отчёты": "#rep-root table", "Готовность": "#ready-root details", "Документы": "#main table" })) {
+    for (const [tab, probe] of Object.entries({ "Остатки": "#bal-root table", "Продажи": "#sales-root table", "Ведомость": "#turn-root table", "Заявки": "#ord-root table", "Расход для 1С": "#c1-root table", "Отчёты": "#rep-root table", "Готовность": "#ready-root details", "Документы": "#main table" })) {
       await clickText("#main .tabs button", tab);
       check("склад → «" + tab + "»", await until(`document.querySelector(${JSON.stringify(probe)})`), await js("return document.getElementById('main').innerText.slice(0, 120)"));
     }

@@ -1,5 +1,5 @@
-import { api, session } from "./api.js?v=16";
-import { el, fmt, toast, debounce, modal, confirmDlg, today, isoDate } from "./ui.js?v=16";
+import { api, session } from "./api.js?v=17";
+import { el, fmt, toast, debounce, modal, confirmDlg, today, isoDate } from "./ui.js?v=17";
 
 const TYPES = { invoice_in: "Приход", transfer: "Перемещение", writeoff: "Списание", production: "Производство", inventory: "Инвентаризация", sale: "Продажа" };
 // Продажу заводит отчёт точки, а не человек: в «+ Новый документ» её нет.
@@ -36,6 +36,7 @@ function drawShell() {
     el("button", { class: state.tab === "bal" ? "" : "ghost", onclick: () => { state.tab = "bal"; drawShell(); loadBalances(); } }, "Остатки"),
     canSales() ? el("button", { class: state.tab === "sales" ? "" : "ghost", onclick: () => { state.tab = "sales"; drawShell(); loadSales(); } }, "Продажи") : null,
     el("button", { class: state.tab === "turn" ? "" : "ghost", onclick: () => { state.tab = "turn"; drawShell(); loadTurnover(); } }, "Ведомость"),
+    perms().includes("doc:transfer:view") ? el("button", { class: state.tab === "ord" ? "" : "ghost", onclick: () => { state.tab = "ord"; drawShell(); loadOrders(); } }, "Заявки") : null,
     canSales() ? el("button", { class: state.tab === "c1" ? "" : "ghost", onclick: () => { state.tab = "c1"; drawShell(); loadC1(); } }, "Расход для 1С") : null,
     canSales() ? el("button", { class: state.tab === "rep" ? "" : "ghost", onclick: () => { state.tab = "rep"; drawShell(); loadReports(); } }, "Отчёты") : null,
     el("button", { class: state.tab === "ready" ? "" : "ghost", onclick: () => { state.tab = "ready"; drawShell(); loadReady(); } }, "Готовность")));
@@ -43,6 +44,7 @@ function drawShell() {
   if (state.tab === "sales") { root.append(el("div", { id: "sales-root" })); return; }
   if (state.tab === "turn") { root.append(el("div", { id: "turn-root" })); return; }
   if (state.tab === "c1") { root.append(el("div", { id: "c1-root" })); return; }
+  if (state.tab === "ord") { root.append(el("div", { id: "ord-root" })); return; }
   if (state.tab === "rep") { root.append(el("div", { id: "rep-root" })); return; }
   if (state.tab === "ready") { root.append(el("div", { id: "ready-root" })); return; }
   // Роли без единого doc:*:edit (пока таких нет, но право снимается настройкой) видят
@@ -514,6 +516,77 @@ async function loadTurnover() {
     a.href = URL.createObjectURL(new Blob(["\ufeff" + lines], { type: "text/csv;charset=utf-8" }));
     a.download = `ведомость ${turn.date_from}—${turn.date_to}.csv`; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
   };
+}
+
+// ---------- заявки точек и сводный план выпечки (миграция 0038) ----------
+// Точки подают заявки на завтра со страницы order.html до отсечки. Здесь — сводный план дня: сколько
+// заказано по позициям и точкам, факт выпуска (отмечает пекарь), и одной кнопкой черновики акта
+// производства на склад кухни и перемещений на склады точек.
+const ord = { date: isoDate(new Date(Date.now() + 86400e3)) };
+async function loadOrders() {
+  const host = document.getElementById("ord-root"); if (!host) return;
+  host.innerHTML = "";
+  host.append(el("div", { class: "tools" },
+    el("input", { type: "date", value: ord.date, onchange: (e) => { ord.date = e.target.value; loadOrders(); } }),
+    el("button", { class: "ghost", onclick: () => { ord.date = isoDate(new Date(Date.now() + 86400e3)); loadOrders(); } }, "Завтра"),
+    el("button", { class: "ghost", onclick: () => window.print() }, "Печать плана"),
+    el("a", { class: "link", href: "order.html", target: "_blank" }, "Страница заявки для точек")));
+  const wait = el("div", { class: "dim" }, "Загружаю…"); host.append(wait);
+  const r = await api("stock_orders_report", { for_date: ord.date });
+  wait.remove();
+  if (!r.ok) { host.append(el("div", { class: "err" }, r.message)); return; }
+  const kitchen = stores.find((s) => s.id === r.store_id);
+  // Настройки: склад кухни и отсечка — только у тех, кто правит склады.
+  if (perms().includes("stores:edit")) {
+    const ks = sel({ "": "— склад кухни не выбран —", ...opts(active()) }, r.store_id || "", () => {});
+    const cut = el("input", { value: r.cutoff, style: "width:80px", title: "Время отсечки заявок" });
+    host.append(el("details", { style: "margin-bottom:10px" }, el("summary", {}, `Настройки: склад кухни — ${kitchen ? kitchen.name : "не выбран"}, отсечка ${r.cutoff}`),
+      el("div", { class: "tools", style: "margin-top:8px" }, el("span", {}, "Склад кухни"), ks, el("span", {}, "Отсечка"), cut,
+        el("button", { onclick: async () => { const x = await api("stock_orders_settings_save", { store_id: ks.value, cutoff: cut.value.trim() });
+          if (!x.ok) { toast(x.message, "bad"); return; } toast("Сохранено"); loadOrders(); } }, "Сохранить"))));
+  }
+  host.append(el("div", { class: "dim", style: "margin-bottom:8px" },
+    r.locked ? "План передан в производство: документы созданы, заявки этого дня закрыты для правок."
+      : r.open ? `Приём заявок на этот день открыт до ${r.cutoff} накануне — план ещё может измениться.` : "Приём заявок на этот день закрыт — можно печатать план и отмечать выпуск."));
+  const pts = r.orders.map((o) => o.point_id);
+  const t = el("table");
+  t.append(el("tr", {}, el("th", {}, "Позиция"), el("th", {}, "Ед."), el("th", { class: "num" }, "Заявлено"), el("th", { class: "num" }, "Выпуск"),
+    el("th", { class: "num" }, "Расхождение"), ...r.orders.map((o) => el("th", { class: "num" }, o.point_name))));
+  const facts = new Map();
+  const canFact = perms().includes("doc:production:edit") && !r.locked;
+  for (const x of r.plan) {
+    const inp = el("input", { inputmode: "decimal", value: x.fact ?? "", disabled: !canFact, style: "width:80px;text-align:right" });
+    facts.set(x.item_code, inp);
+    const diff = x.fact == null ? "" : fmt(Number(x.fact) - Number(x.qty));
+    t.append(el("tr", {}, el("td", {}, x.name, x.has_chart ? null : el("span", { class: "tag bad", title: "Без техкарты в акт производства не попадёт" }, " нет техкарты")),
+      el("td", {}, x.unit || ""), el("td", { class: "num", style: "font-weight:700" }, fmt(x.qty)), el("td", { class: "num" }, inp),
+      el("td", { class: "num" + (x.fact != null && Number(x.fact) < Number(x.qty) ? " bad" : "") }, diff),
+      ...pts.map((p) => el("td", { class: "num" }, x.by_point[p] != null ? fmt(x.by_point[p]) : ""))));
+  }
+  if (!r.plan.length) t.append(el("tr", {}, el("td", { colspan: 5, class: "dim" }, "На этот день заявок нет")));
+  host.append(el("div", { class: "card", style: "padding:0;overflow:auto" }, t));
+  const acts = el("div", { class: "actions" });
+  if (canFact && r.plan.length) acts.append(el("button", { class: "ghost", onclick: async (e) => {
+    e.target.disabled = true;
+    const x = await api("stock_orders_fact_save", { for_date: ord.date, rows: r.plan.map((p) => ({ item_code: p.item_code, fact: String(facts.get(p.item_code).value).replace(",", ".").trim() })) });
+    e.target.disabled = false;
+    if (!x.ok) { toast(x.message, "bad"); return; } toast("Выпуск сохранён"); loadOrders(); } }, "Сохранить выпуск"));
+  if (r.plan.length && perms().includes("doc:production:edit") && perms().includes("doc:transfer:edit")) acts.append(el("button", { onclick: async (e) => {
+    if (!r.locked && !confirmDlg("Создать черновики акта производства и перемещений на точки? После этого заявки этого дня не изменить.")) return;
+    e.target.disabled = true;
+    const x = await api("stock_orders_docs_save", { for_date: ord.date });
+    e.target.disabled = false;
+    if (!x.ok) { toast(x.message, "bad"); return; }
+    toast(x.made ? `Создано документов: ${x.made}` : "Все документы уже созданы");
+    if (x.skipped) toast("Без склада точки, перемещение не создано: " + x.skipped, "bad");
+    loadOrders(); } }, r.locked ? "Досоздать документы" : "Создать производство и перемещения"));
+  host.append(acts);
+  if (r.docs.length) host.append(el("h3", { style: "margin:14px 0 6px" }, "Документы по плану"),
+    el("div", {}, ...r.docs.map((d) => el("div", {}, el("a", { href: "#", onclick: (e) => { e.preventDefault(); editDoc(d.id); } }, `${TYPES[d.doc_type]} ${d.number}`),
+      " — ", d.status === "draft" ? el("span", { class: "tag" }, "черновик") : el("span", { class: "tag ok" }, "проведён")))));
+  if (r.orders.length) host.append(el("h3", { style: "margin:14px 0 6px" }, "Кто подал"),
+    el("div", {}, ...r.orders.map((o) => el("div", { class: "dim" }, `${o.point_name}: ${o.lines} поз., ${o.sent_by || "—"}, ${new Date(o.updated_at).toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}`,
+      o.has_store ? null : el("span", { class: "tag bad" }, " у точки нет склада")))));
 }
 
 // ---------- расход для 1С: основа акта списания «на основании продаж» ----------

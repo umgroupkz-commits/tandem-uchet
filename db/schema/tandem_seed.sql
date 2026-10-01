@@ -105,3 +105,4 @@ on conflict (id) do nothing;
 insert into tandem.points (id, name, legal_entity, mode, sort_order, pin, active, note)
 values ('zz_kassa', 'ZZ_TEST_касса', null, 'checks', 999, md5(random()::text), false, 'Служебная касса дымового теста (миграция 0033). Не включать.')
 on conflict (id) do nothing;
+insert into tandem.settings (key, value) values ('orders_cutoff', '20:00') on conflict (key) do nothing;   -- заявки точек, 0038
