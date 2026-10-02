@@ -1,6 +1,6 @@
 -- Полный снимок схемы учёта Тандем KZ (схема tandem + функции public.tandem_*).
--- Снят каталогом PostgreSQL 2026-10-02 запросом db/schema/snapshot-query.sql со стенда, идентичного боевой базе после 0044–0047
--- (тела всех 93 функций сверены по md5 с живой базой, колонки совпадают) и собран tools/build-schema-snapshot.mjs. Данных не содержит.
+-- Снят каталогом PostgreSQL 2026-10-02 запросом db/schema/snapshot-query.sql со стенда, идентичного боевой базе после 0048
+-- (тела всех 100 функций сверены по md5 с живой базой, колонки совпадают) и собран tools/build-schema-snapshot.mjs. Данных не содержит.
 -- Назначение: поднять пустую базу на собственном сервере одной командой
 --   psql -v ON_ERROR_STOP=1 -f db/schema/tandem_full.sql
 -- затем db/schema/tandem_seed.sql. Проверяется подъёмом в Docker и дымовым тестом (server/README.md).
@@ -251,7 +251,8 @@ create table if not exists tandem.items (
   cost_date date,
   cost_source text,
   code_1c text,
-  k_1c numeric
+  k_1c numeric,
+  training boolean default false not null
 );
 
 create table if not exists tandem.order_lines (
@@ -294,7 +295,8 @@ create table if not exists tandem.points (
   note text,
   item_scopes text[] default '{}'::text[],
   item_categories text[],
-  default_store_id uuid
+  default_store_id uuid,
+  training boolean default false not null
 );
 
 create table if not exists tandem.realization_clients (
@@ -419,7 +421,8 @@ create table if not exists tandem.users (
   active boolean default true not null,
   created_at timestamp with time zone default now() not null,
   failed_attempts integer default 0 not null,
-  locked_until timestamp with time zone
+  locked_until timestamp with time zone,
+  training boolean default false not null
 );
 
 
@@ -615,9 +618,16 @@ declare
   v_prev_first timestamptz;   -- save_report: первая сдача до этого сохранения
   v_before     jsonb;         -- save_report: содержимое отчёта до сохранения
   v_own        boolean;       -- items: у точки загружены свои цены (K2)
+  v_train      boolean;       -- 0048: учебный код сводки (settings.training_owner_pin)
+  v_tp         text[];        -- 0048: учебные точки (points.training) — всё, что открывает учебный код сводки
 begin
   select value into v_owner_pin  from tandem.settings where key = 'owner_pin';
   select value into v_driver_pin from tandem.settings where key = 'driver_pin';
+  -- 0048: учебный код сводки работает как код собственника, но только по учебным точкам: в ответах нет
+  -- настоящих точек, их отчёты, смены и заявки ему закрыты.
+  v_train := coalesce(v_pin <> '' and v_pin = (select value from tandem.settings where key = 'training_owner_pin')
+                      and v_pin is distinct from v_owner_pin and v_pin is distinct from v_driver_pin, false);
+  if v_train then v_tp := array(select id from tandem.points where training); end if;
 
   if action = 'points' then
     return (select coalesce(jsonb_agg(jsonb_build_object(
@@ -632,6 +642,9 @@ begin
     if v_pin = v_driver_pin then
       return jsonb_build_object('ok', true, 'role', 'driver');
     end if;
+    if v_train then
+      return jsonb_build_object('ok', true, 'role', 'owner', 'training', true);
+    end if;
     if exists (select 1 from tandem.points where id = v_point and pin = v_pin and active) then
       return jsonb_build_object('ok', true, 'role', 'point',
         'point', (select jsonb_build_object('id',id,'name',name,'mode',mode)
@@ -641,7 +654,11 @@ begin
   end if;
 
   if action in ('items','get_report','save_report','aliases','check_save','check_void','check_list','order_get','order_save') then
-    if v_pin is distinct from v_owner_pin
+    -- 0048: учебный код сводки — только учебные точки
+    if v_train and not coalesce(v_point = any(v_tp), false) then
+      return jsonb_build_object('ok', false, 'error', 'Учебный код сводки открывает только учебные точки', 'code', 'forbidden');
+    end if;
+    if v_pin is distinct from v_owner_pin and not v_train
        and not exists (select 1 from tandem.points where id = v_point and pin = v_pin and active) then
       return jsonb_build_object('ok', false, 'error', 'Нет доступа');
     end if;
@@ -673,6 +690,8 @@ begin
         left join tandem.item_rank   r  on r.item_code  = i.code and r.point_id  = v_point
         left join tandem.item_prices pp on pp.item_code = i.code and pp.point_id = v_point
         where i.active and i.for_sale
+          -- 0048: учебные позиции (заведены учебными учётками) — только в меню учебных точек
+          and (not i.training or exists (select 1 from tandem.points tp where tp.id = v_point and tp.training))
           and (
             case
               when v_cats is not null and cardinality(v_cats) > 0 then i.category = any(v_cats)
@@ -911,8 +930,12 @@ begin
   -- Собственник снимает закрытие, касса исправляет или отменяет чек (правка видна в voids как «было →
   -- стало»), затем закрывает смену снова.
   if action = 'reopen_shift' then
-    if v_pin is distinct from v_owner_pin then
+    if v_pin is distinct from v_owner_pin and not v_train then
       return jsonb_build_object('ok', false, 'error', 'Нет доступа');
+    end if;
+    -- 0048: учебный код сводки открывает смену только учебной точки
+    if v_train and not coalesce(v_point = any(v_tp), false) then
+      return jsonb_build_object('ok', false, 'error', 'Учебный код сводки открывает только учебные точки', 'code', 'forbidden');
     end if;
     v_date := tandem.to_date(payload->>'date');
     if v_date is null then return jsonb_build_object('ok', false, 'error', 'Неверная дата отчёта'); end if;
@@ -924,9 +947,10 @@ begin
   end if;
 
   if action = 'dashboard' then
-    if v_pin is distinct from v_owner_pin then
+    if v_pin is distinct from v_owner_pin and not v_train then
       return jsonb_build_object('ok', false, 'error', 'Нет доступа');
     end if;
+    -- 0048: по учебному коду сводки каждый раздел ниже отбирает только учебные точки (v_tp), развоз — пуст
     -- Даты периода фронт шлёт местные; по умолчанию — местные же, не дата сервера (UTC).
     v_from := coalesce(tandem.to_date(payload->>'from'), v_today - 30);
     v_to   := coalesce(tandem.to_date(payload->>'to'), v_today);
@@ -937,29 +961,30 @@ begin
       'rows', (select coalesce(jsonb_agg(to_jsonb(v) || coalesce(tandem.report_marks(v.id), '{}'::jsonb)
                                          order by v.report_date desc, v.point_name), '[]'::jsonb)
                from tandem.v_daily v
-               where v.report_date between v_from and v_to),
+               where v.report_date between v_from and v_to and (not v_train or v.point_id = any(v_tp))),
       -- P5 (owner15): first_report — дата первого отчёта точки; дни до неё — не «не сдано», а «ещё не работала»
       'points', (select coalesce(jsonb_agg(jsonb_build_object('id',p.id,'name',p.name,'mode',p.mode,
                    'first_report', (select min(d.report_date) from tandem.daily_reports d where d.point_id = p.id))
                    order by p.sort_order),'[]'::jsonb)
-                 from tandem.points p where p.active),
+                 from tandem.points p where p.active and (not v_train or p.id = any(v_tp))),
       -- P1 (owner4): чеки кассы по точкам за период — число активных чеков, сумма, средний чек
       'checks', (select coalesce(jsonb_agg(jsonb_build_object('point_id', t.point_id, 'point_name', t.name,
                    'checks', t.n, 'total', t.s, 'avg', round(t.s / t.n, 2)) order by t.sort_order, t.name), '[]'::jsonb)
                  from (select c.point_id, p.name, p.sort_order, count(*) as n, sum(c.total) as s
                          from tandem.checks c join tandem.points p on p.id = c.point_id
                         where c.check_date between v_from and v_to and c.status = 'active'
+                          and (not v_train or c.point_id = any(v_tp))
                         group by c.point_id, p.name, p.sort_order) t),
       -- Выручка по каналам и юрлицам за период
       'channels', (select jsonb_build_object(
           'cash', coalesce(sum(d.cash),0), 'kaspi_qr', coalesce(sum(d.kaspi_qr),0),
           'transfer', coalesce(sum(d.transfer),0), 'card', coalesce(sum(d.card),0))
-        from tandem.daily_reports d where d.report_date between v_from and v_to),
+        from tandem.daily_reports d where d.report_date between v_from and v_to and (not v_train or d.point_id = any(v_tp))),
       'by_legal', (select coalesce(jsonb_agg(jsonb_build_object(
           'legal', t.legal_entity, 'revenue', t.rev) order by t.rev desc), '[]'::jsonb)
         from (select p.legal_entity, sum(d.cash + d.kaspi_qr + d.transfer + d.card) rev
               from tandem.daily_reports d join tandem.points p on p.id = d.point_id
-              where d.report_date between v_from and v_to
+              where d.report_date between v_from and v_to and (not v_train or d.point_id = any(v_tp))
               group by p.legal_entity) t),
       -- Что продано: топ-20 позиций по сумме (продажи + заборный лист)
       'top_items', (select coalesce(jsonb_agg(jsonb_build_object(
@@ -971,13 +996,13 @@ begin
                    s.qty * greatest(coalesce(s.price_list, s.price, 0) - coalesce(s.price,0), 0) disc
             from tandem.sale_lines s
             join tandem.daily_reports d on d.id = s.report_id
-            where d.report_date between v_from and v_to
+            where d.report_date between v_from and v_to and (not v_train or d.point_id = any(v_tp))
             union all
             select t.item_name, (t.issued - t.returned) q,
                    (t.issued - t.returned) * coalesce(t.price,0) amt, 0
             from tandem.takeout_lines t
             join tandem.daily_reports d on d.id = t.report_id
-            where d.report_date between v_from and v_to
+            where d.report_date between v_from and v_to and (not v_train or d.point_id = any(v_tp))
           ) u group by item_name order by amt desc limit 20
         ) t),
       -- Кто не сдал отчёт за вчера — по местной дате: ночью до 05:00 «вчера» по UTC — это позавчера.
@@ -985,7 +1010,7 @@ begin
       -- начала работать в программе — в первые дни все точки шумели бы в «не сдали».
       'missing', (select coalesce(jsonb_agg(jsonb_build_object('id', p.id, 'name', p.name) order by p.sort_order), '[]'::jsonb)
         from tandem.points p
-        where p.active
+        where p.active and (not v_train or p.id = any(v_tp))
           and exists (select 1 from tandem.daily_reports d0 where d0.point_id = p.id and d0.report_date <= v_today - 1)
           and not exists (
           select 1 from tandem.daily_reports d
@@ -1002,6 +1027,7 @@ begin
                   c.updated_at as t_at
                 from tandem.checks c join tandem.points p on p.id = c.point_id
                where c.check_date between v_from and v_to and (c.status = 'void' or c.edited)
+                 and (not v_train or c.point_id = any(v_tp))
                order by c.updated_at desc limit 300) x),
       -- Расход сырья по техкартам за период: топ-15
       -- P2 (owner7): unit_id — единица ингредиента (брутто в карте — в ней же); экран писал «кг» всем.
@@ -1014,11 +1040,11 @@ begin
           select ing.name as ingredient_name, ing.unit_id, sum(cl.brutto / ch.output_amount * u.q) total from (
             select s.item_code, s.qty q, d.report_date rd
             from tandem.sale_lines s join tandem.daily_reports d on d.id = s.report_id
-            where d.report_date between v_from and v_to and s.item_code is not null
+            where d.report_date between v_from and v_to and s.item_code is not null and (not v_train or d.point_id = any(v_tp))
             union all
             select t.item_code, (t.issued - t.returned), d.report_date
             from tandem.takeout_lines t join tandem.daily_reports d on d.id = t.report_id
-            where d.report_date between v_from and v_to and t.item_code is not null
+            where d.report_date between v_from and v_to and t.item_code is not null and (not v_train or d.point_id = any(v_tp))
           ) u
           join tandem.charts ch on ch.id = tandem.active_chart(u.item_code, u.rd)
           join tandem.chart_lines cl on cl.chart_id = ch.id
@@ -1034,9 +1060,11 @@ begin
             -- owner16: «общий замок» было непонятно — пишем, что он делает (порог — в tandem_gate: 10 за 5 минут)
             when f.key = 'master' then 'все неверные коды точек, собственника и водителя вместе: после 10 ошибок за 5 минут вход собственника и водителя закрывается на 5 минут'
             when f.key like 'office:%' then 'бэк-офис, логин «' || substr(f.key, 8) || '»'
+            when f.key = 'training' then 'код обучения (страница обучения)'   -- 0048
             else f.key end))
           order by f.n desc), '[]'::jsonb)
         from (select key, count(*) n, max(at) last from tandem.pin_failures where at > now() - interval '24 hours'
+                 and (not v_train or key = any(v_tp) or key = 'training')   -- 0048: учебной сводке — только учебное
                group by key order by count(*) desc limit 30) f
         left join tandem.points p on p.id = f.key),
       -- Долги по реализации
@@ -1045,7 +1073,7 @@ begin
         from (select client_id, sum(delivered - paid - returned) debt
               from tandem.realization_ledger group by client_id) t
         join tandem.realization_clients c on c.id = t.client_id
-        where t.debt <> 0));
+        where t.debt <> 0 and not v_train));   -- 0048: развоз — настоящие клиенты, учебной сводке не показывается
   end if;
 
   return jsonb_build_object('ok', false, 'error', 'Неизвестное действие: ' || action);
@@ -1072,9 +1100,13 @@ AS $function$
 declare
   v_owner text;
   v_cats  text[];
+  v_train text;   -- 0048: учебный код сводки — как код собственника, но только у учебной точки
 begin
   select value into v_owner from tandem.settings where key = 'owner_pin';
+  select value into v_train from tandem.settings where key = 'training_owner_pin';
   if p_pin is distinct from v_owner
+     and not coalesce(p_pin <> '' and p_pin = v_train
+                      and exists (select 1 from tandem.points where id = p_point and training), false)
      and not exists (select 1 from tandem.points where id = p_point and pin = p_pin and active) then
     return jsonb_build_object('ok', false, 'error', 'Нет доступа');
   end if;
@@ -1090,6 +1122,8 @@ begin
       join tandem.items ing on ing.code = cl.ingredient_code
       where c.id = tandem.active_chart(c.item_code, current_date)
         and (v_cats is null or cardinality(v_cats) = 0 or i.category = any(v_cats))
+        -- 0048: учебные позиции — только у учебных точек, как в меню (tandem_api, items)
+        and (not i.training or exists (select 1 from tandem.points tp where tp.id = p_point and tp.training))
       group by c.item_code
     ) t));
 end $function$
@@ -1114,6 +1148,7 @@ declare
   v_svc_ok   boolean := false;   -- служебное действие с верным ключом
   v_point_ok boolean := false;   -- верный код присланной активной точки
   v_staff    boolean := false;   -- верный код собственника или водителя
+  v_train_ok boolean := false;   -- 0048: верный учебный код сводки (training_owner_pin)
 begin
   if action like 'office\_%' then
     -- Токен текущей сессии — в настройку транзакции: триггер смены PIN закроет все сессии
@@ -1139,6 +1174,10 @@ begin
     if action in ('office_feedback_save', 'office_feedback_list', 'office_feedback_done') then
       return tandem.feedback_office(substr(action, 8), payload);
     end if;
+    -- 0048: учебные учётные записи настраивает администратор (функция раздела, как у замечаний).
+    if action in ('office_training_setup', 'office_training_get') then
+      return tandem.training_office(substr(action, 8), payload);
+    end if;
     return public.tandem_office(substr(action, 8), payload);
   end if;
 
@@ -1146,6 +1185,12 @@ begin
   -- все точки без выбора точки.
   if action = 'points' then
     return public.tandem_api(action, payload);
+  end if;
+
+  -- 0048: страница обучения — учебные входы по коду обучения. Кода точки нет, счётчики точек не трогаются:
+  -- у кода обучения свой ключ 'training' (10 неверных за 5 минут — пауза), порог по адресу — общий.
+  if action = 'training_info' then
+    return tandem.training_info(payload->>'code', v_ip);
   end if;
 
   -- Ключ счётчика — настоящая точка из запроса; всё остальное (вход собственника и водителя,
@@ -1161,7 +1206,9 @@ begin
                 and encode(digest(payload->>'service_key', 'sha256'), 'hex') = v_hash;
   elsif v_pin <> '' and v_pin not ilike 'CHANGE-ME%' then
     v_point_ok := exists (select 1 from tandem.points p where p.id = v_key and p.pin = v_pin and p.active);
-    v_staff := v_pin in (select value from tandem.settings where key in ('owner_pin', 'driver_pin'));
+    -- 0048: учебный код сводки — как код собственника: верный неудачей не считается
+    v_train_ok := v_pin in (select value from tandem.settings where key = 'training_owner_pin');
+    v_staff := v_pin in (select value from tandem.settings where key in ('owner_pin', 'driver_pin')) or v_train_ok;
   end if;
   -- 1) адрес клиента: 30 неверных за 10 минут. Верный служебный ключ и верный код присланной активной
   -- точки проходят: общий адрес (мобильный CGNAT, NAT офиса) не запирает точку и уборку дымового теста.
@@ -1212,6 +1259,9 @@ begin
   -- даже если в настройках так и остались: при переезде без смены кодов они были бы входом собственником.
   if v_pin = '' or v_pin ilike 'CHANGE-ME%' then
     v_res := jsonb_build_object('ok', false, 'error', case when action = 'login' then 'Неверный код' else 'Нет доступа' end);
+  -- 0048: развоз и сопоставления названий импорта — настоящие данные, учебный код сводки их не открывает
+  elsif v_train_ok and action in ('realization', 'save_aliases') then
+    v_res := jsonb_build_object('ok', false, 'error', 'Учебный код сводки открывает только учебные точки', 'code', 'forbidden');
   else
     v_res := case action
       when 'charts'       then public.tandem_charts(v_pin, coalesce(payload->>'point_id',''))
@@ -1224,7 +1274,8 @@ begin
 
   -- Неверный код узнаём по ответу нижележащей функции: их тела не трогаем. Две строки — ключ запроса
   -- и общий 'master' (то же время и адрес: уборка теста снимает их парой).
-  if v_pin <> '' and jsonb_typeof(v_res) = 'object' and (v_res->>'ok') = 'false'
+  -- 0048: верный учебный код сводки неудачей не считается (как код собственника).
+  if v_pin <> '' and not v_train_ok and jsonb_typeof(v_res) = 'object' and (v_res->>'ok') = 'false'
      and (v_res->>'error' in ('Неверный код', 'Нет доступа')
           or (v_res->>'error' = 'forbidden' and v_res->>'message' = 'Нет доступа')) then
     insert into tandem.pin_failures (key, ip) values (v_key, v_ip), ('master', v_ip);
@@ -1588,6 +1639,7 @@ declare
   v_need     text;
   v_attempts int;
   v_con      text;
+  v_res      jsonb;   -- 0048: отказ защиты учебной учётки / ответ номенклатуры
 begin
   if action = 'login' then
     v_pin := coalesce(payload->>'pin','');
@@ -1656,6 +1708,10 @@ begin
   end if;
 
   if action = 'change_pin' then
+    -- 0048: PIN учебной учётки показан в обучалке всем, кто учится: сменить его — запереть остальных
+    if v_user.training then
+      return tandem.err('forbidden', 'У учебной учётной записи PIN не меняется: он показан в обучалке');
+    end if;
     v_pin := coalesce(payload->>'pin','');
     if length(v_pin) < 4 or v_pin !~ '^[0-9]+$' then
       return tandem.err('validation', 'PIN — не меньше 4 цифр');
@@ -1714,9 +1770,21 @@ begin
   if not tandem.office_can(v_user.role, v_section, v_need) then
     return tandem.err('forbidden', 'Нет прав на это действие');
   end if;
+  -- 0048: учебная учётка поверх прав роли: чтение — как у роли, писать — только на учебных складах и в
+  -- учебные позиции (список — tandem.training_guard).
+  if v_user.training then
+    v_res := tandem.training_guard(action, v_need, payload, v_user);
+    if v_res is not null then return v_res; end if;
+  end if;
 
   if v_section = 'nomenclature' then
-    return tandem.office_nomenclature(action, payload, v_user);
+    v_res := tandem.office_nomenclature(action, payload, v_user);
+    -- 0048: позиция, заведённая учебной учёткой, — учебная: её правят учебные учётки, меню настоящих точек её не видит
+    if v_user.training and action = 'item_save' and nullif(payload->>'code', '') is null
+       and coalesce((v_res->>'ok')::boolean, false) then
+      update tandem.items set training = true where code = v_res->>'code';
+    end if;
+    return v_res;
   elsif v_section = 'charts' then
     return tandem.office_charts(action, payload, v_user);
   elsif v_section = 'stores' then
@@ -3237,6 +3305,15 @@ begin
                         order by created_at desc limit 300) f));
   end if;
   if action = 'feedback_done' then
+    -- 0048: учебная учётка разбирает только замечания учебных учёток (автор — «login (имя)»): настоящие
+    -- замечания тестировщиков в обучении не закрываются
+    if v_user.training
+       and exists (select 1 from tandem.feedback f where f.id = nullif(payload->>'id', '')::bigint)
+       and not exists (select 1 from tandem.feedback f join tandem.users u on u.training
+                               and left(f.author, length(u.login) + 2) = u.login || ' ('
+                        where f.id = nullif(payload->>'id', '')::bigint and f.source in ('office', 'stock')) then
+      return tandem.err('forbidden', 'Учебная учётная запись разбирает только замечания учебных учётных записей');
+    end if;
     update tandem.feedback set status = case when coalesce((payload->>'done')::boolean, true) then 'done' else 'new' end,
            done_at = case when coalesce((payload->>'done')::boolean, true) then now() end,
            done_by = case when coalesce((payload->>'done')::boolean, true) then v_user.login end,
@@ -3257,14 +3334,20 @@ CREATE OR REPLACE FUNCTION tandem.feedback_point(p_pin text, payload jsonb)
  SET search_path TO 'tandem', 'public'
 AS $function$
 declare v_point record; v_owner text; v_driver text; v_src text := coalesce(payload->>'source', 'point');
+  v_train text;   -- 0048: учебный код сводки
 begin
   select value into v_owner from tandem.settings where key = 'owner_pin';
   select value into v_driver from tandem.settings where key = 'driver_pin';
+  select value into v_train from tandem.settings where key = 'training_owner_pin';
   if v_src not in ('kassa', 'point', 'order', 'owner', 'driver') then v_src := 'point'; end if;
   if p_pin <> '' and p_pin = v_owner then
     return tandem.feedback_add(case when v_src in ('kassa', 'point', 'order') then v_src else 'owner' end, 'собственник', 'owner', payload);
   end if;
   if p_pin <> '' and p_pin = v_driver then return tandem.feedback_add('driver', 'водитель', 'driver', payload); end if;
+  -- 0048: замечание из учебной сводки — как от собственника, с пометкой «учебный»
+  if p_pin <> '' and p_pin = v_train then
+    return tandem.feedback_add(case when v_src in ('kassa', 'point', 'order') then v_src else 'owner' end, 'учебный собственник', 'owner', payload);
+  end if;
   select id, name into v_point from tandem.points where id = payload->>'point_id' and pin = p_pin and active;
   if v_point.id is null then return jsonb_build_object('ok', false, 'error', 'Нет доступа'); end if;
   return tandem.feedback_add(case when v_src in ('kassa', 'point', 'order') then v_src else 'point' end,
@@ -5661,7 +5744,8 @@ begin
         return tandem.err('validation', 'Код точки — от 4 до 8 цифр'); end if;
       -- Вход на экран точки сначала сверяет код собственника и водителя: совпадение с ними открыло бы
       -- чужую роль. Совпадение с кодом другой точки путает людей.
-      if payload->>'pin' in (select value from tandem.settings where key in ('owner_pin', 'driver_pin'))
+      -- 0048: и с учебным кодом сводки — он сверяется раньше кода точки.
+      if payload->>'pin' in (select value from tandem.settings where key in ('owner_pin', 'driver_pin', 'training_owner_pin'))
          or exists (select 1 from tandem.points where pin = payload->>'pin' and id <> v_point) then
         return tandem.err('validation', 'Этот код уже занят — придумайте другой'); end if;
     end if;
@@ -5718,12 +5802,14 @@ CREATE OR REPLACE FUNCTION tandem.office_users(action text, payload jsonb, v_use
 AS $function$
 declare
   v_id uuid; v_login text; v_name text; v_role text; v_pin text;
+  v_train boolean;   -- 0048: признак учебной учётной записи (null — ключа нет, не меняется)
 begin
   if action = 'users_list' then
     -- store_ids — все привязки, в том числе к выключенным складам: форма показывает их и отправляет обратно.
+    -- 0048: training — учебная учётная запись (метка «учебная» в списке).
     return jsonb_build_object('ok', true,
       'users', (select coalesce(jsonb_agg(jsonb_build_object('id', id, 'login', login, 'name', name, 'role', role,
-                  'active', active, 'must_change_pin', must_change_pin, 'created_at', created_at,
+                  'active', active, 'must_change_pin', must_change_pin, 'created_at', created_at, 'training', training,
                   'store_ids', tandem.user_store_ids(id))
                   order by active desc, name), '[]'::jsonb) from tandem.users),
       'roles', jsonb_build_array('admin','owner','accountant','technologist','storekeeper'),
@@ -5749,6 +5835,14 @@ begin
             or exists (select 1 from tandem.users where id = nullif(payload->>'id','')::uuid and role = 'admin')) then
       return tandem.err('forbidden', 'Учётные записи администратора меняет только администратор');
     end if;
+    -- 0048: признак учебной учётки ставит и снимает только администратор, и только если ключ пришёл.
+    -- У учебной учётки нет временного PIN: сменить его она не может, PIN показан в обучалке.
+    if payload ? 'training' then
+      if v_user.role <> 'admin' then
+        return tandem.err('forbidden', 'Учебную учётную запись отмечает только администратор');
+      end if;
+      v_train := nullif(payload->>'training', '')::boolean;
+    end if;
     -- Склады пользователя меняются, только если ключ пришёл: пустой массив снимает привязку (все склады).
     -- Проверяются до записи: отказ после сохранения оставлял пользователя созданным, а повтор упирался
     -- в «Такой логин уже есть».
@@ -5767,9 +5861,9 @@ begin
       if v_pin is null or length(v_pin) < 4 or v_pin !~ '^[0-9]+$' then
         return tandem.err('validation', 'PIN — не меньше 4 цифр');
       end if;
-      insert into tandem.users (login, name, role, pin_hash, must_change_pin, active)
-        values (v_login, v_name, v_role, crypt(v_pin, gen_salt('bf')), true,
-                coalesce((payload->>'active')::boolean, true)) returning id into v_id;
+      insert into tandem.users (login, name, role, pin_hash, must_change_pin, active, training)
+        values (v_login, v_name, v_role, crypt(v_pin, gen_salt('bf')), not coalesce(v_train, false),
+                coalesce((payload->>'active')::boolean, true), coalesce(v_train, false)) returning id into v_id;
     else
       if v_id = v_user.id and coalesce((payload->>'active')::boolean, true) = false then
         return tandem.err('validation', 'Нельзя выключить самого себя');
@@ -5781,7 +5875,9 @@ begin
         return tandem.err('validation', 'Нельзя оставить систему без администратора');
       end if;
       update tandem.users set login = v_login, name = v_name, role = v_role,
-        active = coalesce((payload->>'active')::boolean, active) where id = v_id;
+        active = coalesce((payload->>'active')::boolean, active),
+        training = coalesce(v_train, training),
+        must_change_pin = case when v_train then false else must_change_pin end where id = v_id;
       if not found then return tandem.err('not_found', 'Пользователь не найден'); end if;
       if not coalesce((payload->>'active')::boolean, true) then
         delete from tandem.sessions where user_id = v_id;
@@ -5804,11 +5900,20 @@ begin
       return tandem.err('forbidden', 'Учётные записи администратора меняет только администратор');
     end if;
     if length(v_pin) < 4 or v_pin !~ '^[0-9]+$' then return tandem.err('validation', 'PIN — не меньше 4 цифр'); end if;
-    update tandem.users set pin_hash = crypt(v_pin, gen_salt('bf')), must_change_pin = true,
-      failed_attempts = 0, locked_until = null where id = v_id;
+    -- 0048: учебной учётке временный PIN не ставится (сменить его она не может), а новый PIN сразу
+    -- показывается в обучалке
+    update tandem.users set pin_hash = crypt(v_pin, gen_salt('bf')), must_change_pin = not training,
+      failed_attempts = 0, locked_until = null where id = v_id
+      returning login, training into v_login, v_train;
     if not found then return tandem.err('not_found', 'Пользователь не найден'); end if;
     delete from tandem.sessions where user_id = v_id;
-    return jsonb_build_object('ok', true);
+    if v_train then
+      update tandem.settings set value = coalesce((
+          select jsonb_object_agg(e.k, case when e.v->>'login' = v_login then e.v || jsonb_build_object('pin', v_pin) else e.v end)
+            from jsonb_each(value::jsonb) e(k, v)), value::jsonb)::text
+       where key = 'training_creds';
+    end if;
+    return jsonb_build_object('ok', true, 'training', v_train);
   end if;
 
   return tandem.err('unknown_action', 'Неизвестное действие: ' || action);
@@ -6832,6 +6937,298 @@ begin
   end loop;
   return v_out;
 end $function$
+;
+
+CREATE OR REPLACE FUNCTION tandem.training_creds()
+ RETURNS jsonb
+ LANGUAGE plpgsql
+ STABLE
+ SET search_path TO 'tandem', 'public'
+AS $function$
+declare v_c jsonb; v_out jsonb := '{}'::jsonb; k text;
+begin
+  begin
+    v_c := (select value::jsonb from tandem.settings where key = 'training_creds');
+  exception when others then v_c := null;
+  end;
+  foreach k in array array['sklad', 'buh', 'tech', 'owner'] loop
+    v_out := v_out || jsonb_build_object(k, (
+      select jsonb_build_object('login', u.login, 'pin', v_c->k->>'pin', 'name', u.name, 'role', u.role)
+        from tandem.users u
+       where u.login = v_c->k->>'login' and u.training and u.active and coalesce(v_c->k->>'pin', '') <> ''));
+  end loop;
+  return v_out || jsonb_build_object(
+    'kassa', (select jsonb_build_object('point', p.id, 'point_name', p.name, 'pin', p.pin)
+                from tandem.points p where p.id = 'ucheb_kassa' and p.training and p.active),
+    'point', (select jsonb_build_object('point', p.id, 'point_name', p.name, 'pin', p.pin)
+                from tandem.points p where p.id = 'ucheb' and p.training and p.active),
+    'owner_code', (select value from tandem.settings where key = 'training_owner_pin'));
+end $function$
+;
+
+CREATE OR REPLACE FUNCTION tandem.training_guard(p_action text, p_need text, payload jsonb, p_user tandem.users)
+ RETURNS jsonb
+ LANGUAGE plpgsql
+ STABLE
+ SET search_path TO 'tandem', 'public'
+AS $function$
+declare
+  v_stores constant text := 'Учебная учётная запись работает только с учебными складами';
+  v_shared constant text := 'Учебная учётная запись: это действие меняет общие справочники — в обучении его только показывают';
+  v_from  uuid;
+  v_to    uuid;
+  v_have  boolean;   -- документ нашёлся
+  v_type  text;
+  v_key   text;
+  v_store uuid;
+  v_code  text;
+begin
+  if p_need = 'view' then return null; end if;
+
+  -- документы склада: все склады документа учебные — и присланные (как их запишет doc_save), и у
+  -- существующего документа (по id или по ключу формы client_key) — прежние
+  if p_action = 'doc_save' then
+    v_type := payload->>'doc_type';
+    if not tandem.training_stores_ok(array[
+         case when v_type is distinct from 'invoice_in' then nullif(payload->>'store_from', '')::uuid end,
+         case when v_type is null or v_type not in ('writeoff', 'production', 'inventory') then nullif(payload->>'store_to', '')::uuid end]) then
+      return tandem.err('forbidden', v_stores); end if;
+    v_key := nullif(btrim(coalesce(payload->>'client_key', '')), '');
+    if nullif(payload->>'id', '') is not null then
+      select store_from, store_to, true into v_from, v_to, v_have from tandem.documents where id = (payload->>'id')::uuid;
+    elsif v_key is not null then
+      select store_from, store_to, true into v_from, v_to, v_have from tandem.documents where client_key = v_key;
+    end if;
+    if coalesce(v_have, false) and not tandem.training_stores_ok(array[v_from, v_to]) then
+      return tandem.err('forbidden', v_stores); end if;
+    return null;
+  end if;
+  if p_action in ('doc_post', 'doc_unpost', 'doc_delete', 'doc_set_opening') then
+    select store_from, store_to, true into v_from, v_to, v_have from tandem.documents where id = nullif(payload->>'id', '')::uuid;
+    if coalesce(v_have, false) and not tandem.training_stores_ok(array[v_from, v_to]) then
+      return tandem.err('forbidden', v_stores); end if;
+    return null;   -- нет документа — ответит раздел
+  end if;
+
+  -- «готовым со склада»: только учебный склад
+  if p_action in ('stock_ready_save', 'stock_ready_delete') then
+    if not tandem.training_stores_ok(array[nullif(payload->>'store_id', '')::uuid]) then
+      return tandem.err('forbidden', v_stores); end if;
+    return null;
+  end if;
+  -- Дозапуск пересчёта продаж после правки «готовым» (фронт зовёт его без склада): только если все склады,
+  -- до которых он дотянется, учебные — названный склад или все закреплённые за учёткой.
+  if p_action = 'stock_ready_resync' then
+    v_store := nullif(payload->>'store_id', '')::uuid;
+    if v_store is not null then
+      if tandem.training_stores_ok(array[v_store]) then return null; end if;
+    elsif exists (select 1 from tandem.user_stores where user_id = p_user.id)
+          and not exists (select 1 from tandem.user_stores us join tandem.stores s on s.id = us.store_id
+                           where us.user_id = p_user.id and not s.training) then
+      return null;
+    end if;
+    return tandem.err('forbidden', v_stores);
+  end if;
+
+  -- выпуск по плану и документы по заявкам: склад кухни заявок учебный (см. training_orders_ok)
+  if p_action in ('stock_orders_fact_save', 'stock_orders_docs_save') then
+    if tandem.training_orders_ok(nullif(payload->>'for_date', '')::date,
+         case when p_action = 'stock_orders_docs_save' then nullif(payload->>'store_id', '')::uuid end) then
+      return null; end if;
+    return tandem.err('forbidden', v_stores);
+  end if;
+
+  -- номенклатура: новая позиция — можно (tandem_office пометит её учебной), правка — только учебной
+  if p_action = 'item_save' then
+    v_code := nullif(payload->>'code', '');
+    if v_code is null or not exists (select 1 from tandem.items where code = v_code and not training) then
+      return null; end if;
+    return tandem.err('forbidden', v_shared);
+  end if;
+  -- техкарты — только у учебной позиции
+  if p_action in ('chart_save', 'chart_new_version') then
+    if not exists (select 1 from tandem.items where code = payload->>'code' and not training) then
+      return null; end if;
+    return tandem.err('forbidden', v_shared);
+  end if;
+  if p_action = 'chart_delete' then
+    select c.item_code into v_code from tandem.charts c where c.id = nullif(payload->>'id', '')::uuid;
+    if v_code is null or not exists (select 1 from tandem.items where code = v_code and not training) then
+      return null; end if;
+    return tandem.err('forbidden', v_shared);
+  end if;
+
+  -- Всё остальное пишущее: group_save, item_prices_save, item_prices_import, counteragent_save, store_save,
+  -- store_point_save, user_save, user_reset_pin, doc_sales_sync, stock_rebuild, stock_orders_settings_save,
+  -- stock_1c_catalog_save, stock_1c_link_save и любое новое действие правки.
+  return tandem.err('forbidden', v_shared);
+end $function$
+;
+
+CREATE OR REPLACE FUNCTION tandem.training_info(p_code text, p_ip text)
+ RETURNS jsonb
+ LANGUAGE plpgsql
+ SET search_path TO 'tandem', 'public', 'extensions'
+AS $function$
+declare v_hash text; v_code text := btrim(coalesce(p_code, ''));
+begin
+  if tandem.pin_ip_blocked(p_ip) then
+    return jsonb_build_object('ok', false, 'error', 'Слишком много неверных кодов с этого адреса. Подождите 10 минут', 'code', 'throttled');
+  end if;
+  if (select count(*) from tandem.pin_failures where key = 'training' and at > now() - interval '5 minutes') >= 10 then
+    return jsonb_build_object('ok', false, 'error', 'Слишком много попыток ввести код обучения. Подождите 5 минут', 'code', 'throttled');
+  end if;
+  select value into v_hash from tandem.settings where key = 'training_code_hash';
+  if v_hash is null then
+    return jsonb_build_object('ok', false, 'error', 'Обучение не настроено — попросите администратора');
+  end if;
+  if v_code = '' then
+    return jsonb_build_object('ok', false, 'error', 'Код обучения не подошёл');
+  end if;
+  if encode(digest(v_code, 'sha256'), 'hex') is distinct from v_hash then
+    insert into tandem.pin_failures (key, ip) values ('training', p_ip);
+    delete from tandem.pin_failures where at < now() - interval '1 day';
+    return jsonb_build_object('ok', false, 'error', 'Код обучения не подошёл');
+  end if;
+  return jsonb_build_object('ok', true, 'creds', tandem.training_creds());
+end $function$
+;
+
+CREATE OR REPLACE FUNCTION tandem.training_office(action text, payload jsonb)
+ RETURNS jsonb
+ LANGUAGE plpgsql
+ SET search_path TO 'tandem', 'public', 'extensions'
+AS $function$
+declare
+  v_user    tandem.users;
+  v_code    text := btrim(coalesce(payload->>'code', ''));
+  v_kitchen uuid; v_spoint uuid; v_skassa uuid; v_all uuid[];
+  v_miss    text[] := '{}';
+  v_bad     text;
+  v_creds   jsonb := '{}'::jsonb;
+  a         record;
+  v_id      uuid;
+  v_pin     text;
+begin
+  v_user := tandem.office_session(coalesce(payload->>'token', ''));
+  if v_user.id is null then return tandem.err('unauthorized', 'Войдите заново'); end if;
+  if v_user.must_change_pin then return tandem.err('forbidden', 'Сначала смените временный PIN'); end if;
+  if v_user.role <> 'admin' or v_user.training then
+    return tandem.err('forbidden', 'Учебные учётные записи настраивает администратор'); end if;
+
+  if action = 'training_get' then
+    if not exists (select 1 from tandem.settings where key = 'training_code_hash') then
+      return jsonb_build_object('ok', true, 'configured', false); end if;
+    return jsonb_build_object('ok', true, 'configured', true, 'creds', tandem.training_creds());
+  end if;
+  if action is distinct from 'training_setup' then
+    return tandem.err('unknown_action', 'Неизвестное действие: ' || coalesce(action, '')); end if;
+
+  -- код обучения: обязателен при первой настройке, потом — только чтобы сменить
+  if v_code = '' and not exists (select 1 from tandem.settings where key = 'training_code_hash') then
+    return tandem.err('validation', 'Задайте код обучения: от 6 до 32 символов'); end if;
+  if v_code <> '' and length(v_code) not between 6 and 32 then
+    return tandem.err('validation', 'Код обучения — от 6 до 32 символов'); end if;
+
+  -- учебные склады — по признаку и названию; включённый важнее выключенного
+  select id into v_kitchen from tandem.stores
+   where training and lower(btrim(name)) = lower('Учебный склад кухни') order by active desc, id limit 1;
+  select id into v_spoint from tandem.stores
+   where training and lower(btrim(name)) = lower('Учебный склад точки') order by active desc, id limit 1;
+  select id into v_skassa from tandem.stores
+   where training and lower(btrim(name)) = lower('Учебный склад кассы') order by active desc, id limit 1;
+  if v_kitchen is null then v_miss := v_miss || 'Учебный склад кухни'::text; end if;
+  if v_spoint is null then v_miss := v_miss || 'Учебный склад точки'::text; end if;
+  if v_skassa is null then v_miss := v_miss || 'Учебный склад кассы'::text; end if;
+  if cardinality(v_miss) > 0 then
+    return tandem.err('validation', 'Нет учебного склада «' || array_to_string(v_miss, '», «')
+      || '». Заведите его в разделе «Склады» с отметкой «Учебный склад» и повторите'); end if;
+  v_all := array(select id from tandem.stores where training order by name, id);
+
+  -- логин, занятый обычной учётной записью, учебным не становится
+  select string_agg(login, ', ' order by login) into v_bad from tandem.users
+   where login in ('uch.sklad', 'uch.buh', 'uch.tech', 'uch.owner') and not training;
+  if v_bad is not null then
+    return tandem.err('validation', 'Логин занят обычной учётной записью: ' || v_bad || ' — переименуйте её и повторите'); end if;
+
+  for a in select * from (values (1, 'sklad', 'uch.sklad', 'Учебный кладовщик', 'storekeeper'),
+                                 (2, 'buh',   'uch.buh',   'Учебный бухгалтер', 'accountant'),
+                                 (3, 'tech',  'uch.tech',  'Учебный технолог',  'technologist'),
+                                 (4, 'owner', 'uch.owner', 'Учебный собственник', 'owner')) x(ord, k, login, name, role)
+            order by ord loop
+    v_pin := tandem.training_pin6();
+    -- новый PIN закрывает прежние сессии учётки (триггер users_pin_sessions), смена роли — тоже
+    insert into tandem.users (login, name, role, pin_hash, must_change_pin, active, training)
+      values (a.login, a.name, a.role, crypt(v_pin, gen_salt('bf')), false, true, true)
+      on conflict (login) do update set name = excluded.name, role = excluded.role, pin_hash = excluded.pin_hash,
+        must_change_pin = false, active = true, training = true, failed_attempts = 0, locked_until = null
+      returning id into v_id;
+    delete from tandem.user_stores where user_id = v_id;
+    insert into tandem.user_stores (user_id, store_id)
+      select v_id, s from unnest(case a.k when 'sklad' then array[v_kitchen, v_spoint]
+                                          when 'tech'  then array[v_kitchen] else v_all end) s
+      on conflict do nothing;
+    v_creds := v_creds || jsonb_build_object(a.k, jsonb_build_object('login', a.login, 'pin', v_pin, 'name', a.name));
+  end loop;
+  insert into tandem.settings (key, value) values ('training_creds', v_creds::text)
+    on conflict (key) do update set value = excluded.value;
+  if v_code <> '' then
+    insert into tandem.settings (key, value) values ('training_code_hash', encode(digest(v_code, 'sha256'), 'hex'))
+      on conflict (key) do update set value = excluded.value;
+  end if;
+  -- Учебный код сводки: создаётся один раз; новый — только если совпал с кодом собственника, водителя или точки
+  -- (вход по коду сверяет их раньше точки, совпадение открыло бы чужую роль).
+  select value into v_pin from tandem.settings where key = 'training_owner_pin';
+  if v_pin is null or v_pin !~ '^[0-9]{6}$'
+     or v_pin in (select value from tandem.settings where key in ('owner_pin', 'driver_pin'))
+     or exists (select 1 from tandem.points where pin = v_pin) then
+    loop
+      v_pin := tandem.training_pin6();
+      exit when v_pin not in (select value from tandem.settings where key in ('owner_pin', 'driver_pin'))
+            and not exists (select 1 from tandem.points where pin = v_pin);
+    end loop;
+    insert into tandem.settings (key, value) values ('training_owner_pin', v_pin)
+      on conflict (key) do update set value = excluded.value;
+  end if;
+  return jsonb_build_object('ok', true, 'configured', true, 'creds', tandem.training_creds());
+end $function$
+;
+
+CREATE OR REPLACE FUNCTION tandem.training_orders_ok(p_date date, p_store uuid)
+ RETURNS boolean
+ LANGUAGE sql
+ STABLE
+ SET search_path TO 'tandem', 'public'
+AS $function$
+  select coalesce((select s.training from tandem.stores s
+                    where s.id::text = (select value from tandem.settings where key = 'orders_store_id')), false)
+     and tandem.training_stores_ok(array[p_store])
+     and not exists (select 1 from tandem.orders o
+                       join tandem.points p on p.id = o.point_id
+                       left join tandem.stores st on st.id = p.default_store_id
+                      where o.for_date = p_date and (not p.training or not coalesce(st.training, true)))
+$function$
+;
+
+CREATE OR REPLACE FUNCTION tandem.training_pin6()
+ RETURNS text
+ LANGUAGE sql
+ SET search_path TO 'tandem', 'public', 'extensions'
+AS $function$
+  select lpad((('x' || encode(gen_random_bytes(4), 'hex'))::bit(32)::bigint % 1000000)::text, 6, '0')
+$function$
+;
+
+CREATE OR REPLACE FUNCTION tandem.training_stores_ok(p_stores uuid[])
+ RETURNS boolean
+ LANGUAGE sql
+ STABLE
+ SET search_path TO 'tandem', 'public'
+AS $function$
+  select not exists (select 1 from unnest(coalesce(p_stores, '{}'::uuid[])) x(id)
+                      where x.id is not null
+                        and not exists (select 1 from tandem.stores s where s.id = x.id and s.training))
+$function$
 ;
 
 CREATE OR REPLACE FUNCTION tandem.user_doc_ok(p_user uuid, p_from uuid, p_to uuid)
