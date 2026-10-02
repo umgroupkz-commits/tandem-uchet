@@ -375,7 +375,7 @@
     // Выключенную кнопку (экран ещё загружает данные) автопрогон не нажимает — ждёт, пока включится.
     if (st.autoplay && !cur.played && (target || (!s.target && s.action !== "fill")) && !(s.action === "click" && target && target.disabled)
         && Date.now() - cur.since > (s.delay || 500)) {
-      cur.played = true;
+      cur.played = true; cur.playedAt = Date.now();
       if (s.action === "next") { log("ok " + (i + 1)); go(i + 1); return; }
       act(s, target);
     }
@@ -387,6 +387,10 @@
     else if (s.action === "fill") ready = fieldsOk(s) && cond(s.until);
     else if (s.action === "wait") ready = cond(s.until);
     if (ready) { if (st.autoplay) log("ok " + (i + 1)); go(i + 1); return; }
+    // Список (точки, склады) мог ещё не загрузиться с сервера, когда автопрогон выбирал, — выбрать ещё раз.
+    if (st.autoplay && cur.played && (s.action === "fill" || s.action === "select") && Date.now() - cur.playedAt > 2500) {
+      cur.playedAt = Date.now(); act(s, target);
+    }
     if (st.autoplay && Date.now() - cur.since > (s.timeout || 20000)) { log("FAIL " + (i + 1) + ": шаг не завершился за " + ((s.timeout || 20000) / 1000) + " с"); stop(false); }
   }
   // Нажатие на цель ловим на всплытии до обработчиков экрана (capture): экран мог тут же перерисоваться.
