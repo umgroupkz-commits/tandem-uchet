@@ -1,5 +1,5 @@
 // Дымовой тест RPC бэк-офиса.
-// Запуск: node tools/office-smoke.mjs <auth|nomenclature|stores|counteragents|users|charts|migrate|reimport|all>
+// Запуск: node tools/office-smoke.mjs <auth|nomenclature|stores|counteragents|users|charts|training|migrate|reimport|all>
 // Переменные окружения: TANDEM_ADMIN_LOGIN (по умолчанию admin), TANDEM_ADMIN_PIN,
 //   TANDEM_OWNER_PIN — код собственника; без него не идут разделы migrate/reimport и уборка.
 // Создаёт сущности с префиксом ZZ_TEST_ (пользователи — zz_test_). В конце прогона раннер
@@ -1517,6 +1517,86 @@ SECTIONS.polish = async (ctx) => {
   check("сессии: после смены PIN текущая сессия жива", r.ok, r);
   r = await call("office_me", { token: sB.token });
   check("сессии: после смены PIN вторая сессия закрыта", r.ok === false && r.error === "unauthorized", r);
+};
+
+// Учебные учётные записи (миграция 0048). training_setup НЕ вызывается: на живой базе он сменил бы PIN
+// настоящих учебных учёток, по которым люди учатся. Защита проверяется на своей учебной учётке zz_test_train
+// (user_save с training:true), код обучения — только неверным (одна неудача с ключом 'training' остаётся
+// в счётчике на сутки: уборка её не снимает — по ключу её не отличить от чужой).
+SECTIONS.training = async (ctx) => {
+  const t = ctx.token;
+  const FS = "Учебная учётная запись работает только с учебными складами";
+  const FR = "Учебная учётная запись: это действие меняет общие справочники — в обучении его только показывают";
+  const forb = (r, msg) => r.ok === false && r.error === "forbidden" && r.message === msg;
+  let r = await call("office_training_get", { token: t });
+  check("обучение: training_get у администратора — ok, ничего не меняет", r.ok && typeof r.configured === "boolean", r);
+  const configured = !!r.configured;
+  r = await call("training_info", { code: "ZZ_TEST_не_тот_код_" + rnd6() });
+  check("обучение: неверный код обучения — отказ, учебных входов нет", r.ok === false && !r.creds
+    && r.error === (configured ? "Код обучения не подошёл" : "Обучение не настроено — попросите администратора"), r);
+  // справочники администратора: учебный и обычный склад, поставщик, позиция
+  r = await call("office_store_save", { token: t, name: "ZZ_TEST_учебный склад", training: true }); const TS = r.id;
+  check("обучение: учебный склад заведён", r.ok && r.training === true, r);
+  r = await call("office_store_save", { token: t, name: "ZZ_TEST_обычный склад" }); const RS = r.id;
+  r = await call("office_counteragent_save", { token: t, name: "ZZ_TEST_поставщик учёбы", kind: "supplier" }); const SUP = r.id;
+  r = await call("office_item_save", { token: t, name: "ZZ_TEST_сырьё учёбы", item_type: "goods", unit_id: "кг" }); const raw = r.code;
+  r = await call("office_doc_save", { token: t, doc_type: "invoice_in", store_to: RS, counteragent_id: SUP, lines: [{ item_code: raw, qty: 1, price: 10 }] });
+  const realDoc = r.id;
+  check("обучение: подготовка (склады, поставщик, позиция, черновик на обычном складе)", TS && RS && SUP && raw && realDoc, r);
+  // учебная учётка через user_save: без временного PIN, в списке — training
+  r = await call("office_user_save", { token: t, login: "zz_test_train", name: "ZZ_TEST_Учебный собственник", role: "owner", pin: TP, training: true });
+  check("обучение: user_save {training:true} — ok", r.ok && r.id, r);
+  r = await call("office_users_list", { token: t });
+  const tu = (r.users || []).find((u) => u.login === "zz_test_train");
+  check("обучение: users_list отдаёт training, временного PIN нет", tu && tu.training === true && tu.must_change_pin === false
+    && (r.users || []).find((u) => u.login === ctx.login).training === false, tu);
+  r = await call("office_login", { login: "zz_test_train", pin: TP });
+  check("обучение: учебная учётка входит и сразу работает", r.ok && r.must_change_pin === false, r);
+  const u = r.token;
+  // чтение — как у роли
+  r = await call("office_docs_list", { token: u });
+  const r2 = await call("office_items_search", { token: u, q: "ZZ_TEST" });
+  const r3 = await call("office_users_list", { token: u });
+  check("обучение: чтение как у роли (журнал, номенклатура, пользователи)", r.ok && r2.ok && r3.ok, { r: r.ok, r2: r2.ok, r3: r3.ok });
+  r = await call("office_change_pin", { token: u, old_pin: TP, pin: TP2 });
+  check("обучение: change_pin — forbidden", forb(r, "У учебной учётной записи PIN не меняется: он показан в обучалке"), r);
+  // документы: учебный склад — можно, обычный — нет
+  r = await call("office_doc_save", { token: u, doc_type: "invoice_in", store_to: TS, counteragent_id: SUP, lines: [{ item_code: raw, qty: 2, price: 50 }] });
+  check("обучение: приход на учебный склад — ok", r.ok, r);
+  r = await call("office_doc_post", { token: u, id: r.id });
+  check("обучение: проведение на учебном складе — ok", r.ok, r);
+  r = await call("office_doc_save", { token: u, doc_type: "invoice_in", store_to: RS, counteragent_id: SUP, lines: [{ item_code: raw, qty: 2, price: 50 }] });
+  check("обучение: приход на обычный склад — forbidden", forb(r, FS), r);
+  r = await call("office_doc_save", { token: u, id: realDoc, doc_type: "invoice_in", store_to: TS, counteragent_id: SUP, lines: [{ item_code: raw, qty: 9, price: 9 }] });
+  check("обучение: чужой черновик на учебный склад не перетащить — forbidden", forb(r, FS), r);
+  r = await call("office_doc_post", { token: u, id: realDoc });
+  check("обучение: проведение документа обычного склада — forbidden", forb(r, FS), r);
+  r = await call("office_doc_get", { token: t, id: realDoc });
+  check("обучение: документ обычного склада не тронут", r.ok && r.doc.status === "draft" && r.doc.store_to === RS && Number(r.doc.lines[0].qty) === 1, r.doc);
+  // номенклатура: новая позиция — можно (она учебная), чужая — нет
+  r = await call("office_item_save", { token: u, name: "ZZ_TEST_учебная позиция", item_type: "dish", unit_id: "шт" });
+  const own = r.code;
+  check("обучение: новая позиция — ok", r.ok && own, r);
+  r = await call("office_item_save", { token: u, code: own, note: "правка учебной" });
+  check("обучение: правка своей (учебной) позиции — ok", r.ok, r);
+  r = await call("office_item_save", { token: u, code: raw, note: "правка чужой" });
+  check("обучение: правка обычной позиции — forbidden", forb(r, FR), r);
+  r = await call("office_chart_save", { token: u, code: own, date_from: "2026-01-01", output_amount: 1, lines: [{ ingredient_code: raw, brutto: 0.1, netto: 0.1, output: 0.1 }] });
+  check("обучение: техкарта учебной позиции — ok", r.ok, r);
+  // общие справочники и настройки — нет
+  const shared = [["group_save", { name: "ZZ_TEST_группа учёбы" }], ["counteragent_save", { name: "ZZ_TEST_контрагент учёбы", kind: "supplier" }],
+    ["store_save", { name: "ZZ_TEST_склад учёбы", training: true }], ["user_save", { login: "zz_test_train2", name: "ZZ_TEST_x", role: "storekeeper", pin: TP }],
+    ["item_prices_save", { code: own, prices: [] }], ["stock_orders_settings_save", { store_id: TS, cutoff: "20:00" }]];
+  const bad = [];
+  for (const [a, p] of shared) { r = await call("office_" + a, { token: u, ...p }); if (!forb(r, FR)) bad.push({ a, r }); }
+  check("обучение: группы, контрагенты, склады, пользователи, цены точек, настройки заявок — forbidden", bad.length === 0, bad);
+  r = await call("office_training_get", { token: u });
+  check("обучение: учебная учётка учебные входы не видит — forbidden", r.ok === false && r.error === "forbidden", r);
+  // замечания: записать и разобрать своё — можно
+  r = await call("office_feedback_save", { token: u, message: "ZZ_TEST_замечание из обучения" });
+  check("обучение: замечание учебной учётки — ok", r.ok && r.id, r);
+  r = await call("office_feedback_done", { token: u, id: r.id });
+  check("обучение: «разобрано» по своему замечанию — ok", r.ok, r);
 };
 
 // migrate и reimport требуют TANDEM_OWNER_PIN и в "all" входят только при его наличии;

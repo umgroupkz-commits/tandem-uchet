@@ -1,5 +1,5 @@
-import { api, can } from "./api.js?v=21";
-import { el, toast, modal, errText, saveFailed, confirmDlg, fmt } from "./ui.js?v=21";
+import { api, can } from "./api.js?v=22";
+import { el, toast, modal, errText, saveFailed, confirmDlg, fmt } from "./ui.js?v=22";
 
 let root, data, pts;
 // Склады — по алфавиту, выключенные внизу: «Учебный склад кухни» стоял последним из 30 в порядке точек.
@@ -124,7 +124,7 @@ function edit(s) {
     ...data.points.map((p) => el("option", { value: p.id, selected: s && p.id === s.point_id }, p.name)));
   const def = el("input", { type: "checkbox", checked: s ? s.is_default : false, disabled: ro });
   const active = el("input", { type: "checkbox", checked: s ? s.active : true, disabled: ro });
-  // Учебный склад (сборка 21): приходы на него не меняют учётную цену позиции. Флажок — только если
+  // Учебный склад (сборка 22): приходы на него не меняют учётную цену позиции. Флажок — только если
   // сервер уже знает поле (stores_list отдаёт training): старый сервер молча не сохранил бы отметку.
   const knowsTraining = data.stores.some((x) => "training" in x);
   const training = el("input", { type: "checkbox", checked: !!(s && s.training), disabled: ro });

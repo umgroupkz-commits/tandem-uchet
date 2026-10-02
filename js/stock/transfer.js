@@ -1,5 +1,5 @@
 import { ask, el, fmtMoney, today, toast, itemPicker, linesTable, drafts, warningsText, readyNotes, confirmMinus, commentOf, stockNote,
-  withBusy, saveDoc, postDoc, showPosted, newKey, draftHint, okNum, numOf } from "./common.js?v=21";
+  withBusy, saveDoc, postDoc, showPosted, newKey, draftHint, okNum, numOf } from "./common.js?v=22";
 
 const SCN = "transfer";
 export async function mount(root, ctx) {

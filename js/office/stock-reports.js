@@ -1,10 +1,10 @@
 // Вкладки отчётов склада: продажи точек, оборотная ведомость, заявки и план выпечки, «готовым со
 // склада», расход для 1С, отчёты (прибыль, закупки, продажи по блюдам) и «Готовность». Журнал и форма
 // документа — stock.js.
-import { api, LONG_MS } from "./api.js?v=21";
-import { el, fmt, toast, debounce, modal, confirmDlg, today, isoDate, errText } from "./ui.js?v=21";
-import { fmtDate, fmtMoney } from "./inputs.js?v=21";
-import { TYPES, perms, stores, active, opts, myIds, mine, seqs, nextSeq, tabOut, sel, hooks } from "./stock-common.js?v=21";
+import { api, LONG_MS } from "./api.js?v=22";
+import { el, fmt, toast, debounce, modal, confirmDlg, today, isoDate, errText } from "./ui.js?v=22";
+import { fmtDate, fmtMoney } from "./inputs.js?v=22";
+import { TYPES, perms, stores, active, opts, myIds, mine, seqs, nextSeq, tabOut, sel, hooks } from "./stock-common.js?v=22";
 const editDoc = (id) => hooks.editDoc(id);
 
 // ---------- общее для отчётов ----------
@@ -715,7 +715,7 @@ async function upload1c(input, btn) {
     let wb;
     try {
       const buf = await file.arrayBuffer();
-      const { loadXlsx } = await import("./stock.js?v=21");
+      const { loadXlsx } = await import("./stock.js?v=22");
       await loadXlsx();
       wb = window.XLSX.read(new Uint8Array(buf), { type: "array" });
     } catch (e) { toast("Файл не прочитан: " + (e && e.message || e), "bad"); return; }

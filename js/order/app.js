@@ -1,7 +1,7 @@
 // Заявка точки на кухню на завтра (миграция 0038). Точка выбирает позиции только из своего меню,
 // до отсечки (по умолчанию 20:00 по времени Казахстана) заявку можно править; после — кухня печёт
 // по сводному плану, а заявка этого дня только читается.
-import { el, fmt, toast, debounce } from "../office/ui.js?v=21";
+import { el, fmt, toast, debounce } from "../office/ui.js?v=22";
 
 const API = window.TANDEM_API_URL || "https://qeehxcnnuzuwskznhdyg.supabase.co/functions/v1/uchet";
 const $ = (id) => document.getElementById(id);

@@ -15,8 +15,8 @@
 // docHtml/chartHtml отдают ту же разметку строкой (проверки сохраняют из неё PDF).
 // Поля новых версий сервера (artikul, posted_by_name, counteragent_bin, from_iiko…) необязательны:
 // нет поля — форма печатается без него. Числа в строках могут прийти и текстом из формы («0,5»).
-import { parseNum, fmtDate, fmtMoney } from "./inputs.js?v=21";
-import { TYPES, REASONS } from "./stock-common.js?v=21";
+import { parseNum, fmtDate, fmtMoney } from "./inputs.js?v=22";
+import { TYPES, REASONS } from "./stock-common.js?v=22";
 
 // Причины, которых может ещё не быть в общем справочнике (новые причины списания и ввод остатков).
 const MORE_REASONS = { defect: "брак", hospitality: "представительские", internal: "хозяйственные нужды", opening: "ввод начальных остатков" };

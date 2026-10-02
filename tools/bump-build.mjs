@@ -7,7 +7,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const files = ["office.html", "stock.html", "index.html", "kassa.html", "order.html",
+const files = ["office.html", "stock.html", "index.html", "kassa.html", "order.html", "test.html",
   ...["js/office", "js/stock", "js/kassa", "js/order"].flatMap((d) => fs.readdirSync(path.join(root, d)).filter((f) => f.endsWith(".js")).map((f) => d + "/" + f))];
 const api = fs.readFileSync(path.join(root, "js/office/api.js"), "utf8");
 const cur = Number((api.match(/export const BUILD = (\d+);/) || [])[1] || 0);

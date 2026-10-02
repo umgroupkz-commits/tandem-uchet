@@ -1,9 +1,9 @@
-import { api, can } from "./api.js?v=21";
-import { el, fmt, toast, debounce, modal, confirmDlg, today, isoDate, errText, uid, saveFailed } from "./ui.js?v=21";
-import { parseNum, numStr, numInput, enterNext, fmtDate, fmtDateTime, fmtMoney, itemPicker } from "./inputs.js?v=21";
+import { api, can } from "./api.js?v=22";
+import { el, fmt, toast, debounce, modal, confirmDlg, today, isoDate, errText, uid, saveFailed } from "./ui.js?v=22";
+import { parseNum, numStr, numInput, enterNext, fmtDate, fmtDateTime, fmtMoney, itemPicker } from "./inputs.js?v=22";
 import { TYPES, MANUAL, REASONS, perms, canDoc, canAnyDoc, canSales, stores, setStores, active, opts, myIds, setMyIds, mine,
-  seqs, nextSeq, tabOut, sel, hooks } from "./stock-common.js?v=21";
-import { loadSales, loadTurnover, loadOrders, loadC1, loadReports, loadReady, srResync, resetReports } from "./stock-reports.js?v=21";
+  seqs, nextSeq, tabOut, sel, hooks } from "./stock-common.js?v=22";
+import { loadSales, loadTurnover, loadOrders, loadC1, loadReports, loadReady, srResync, resetReports } from "./stock-reports.js?v=22";
 
 let root, state = { tab: "docs", doc_type: "", store_id: "", status: "", q: "", date_from: "", date_to: "", page: 1 };
 let table, pager;
@@ -120,7 +120,7 @@ function drawShell() {
   // Роли без единого doc:*:edit (пока таких нет, но право снимается настройкой) видят
   // журнал и остатки, но пустого выпадающего списка «+ Новый документ…» им не показываем.
   const newBtn = canAnyDoc()
-    ? el("select", { onchange: (e) => { if (e.target.value) { editDoc(null, e.target.value); e.target.value = ""; } } },
+    ? el("select", { id: "j-new", onchange: (e) => { if (e.target.value) { const t = e.target.value; e.target.value = ""; e.target.blur(); editDoc(null, t); } } },
         el("option", { value: "" }, "+ Новый документ…"),
         ...MANUAL.filter(canDoc).map((k) => el("option", { value: k }, TYPES[k])))
     : null;
@@ -891,7 +891,7 @@ async function editDoc(id, newType, preset) {
       if (!o) return;
     }
     let mod;
-    try { mod = await import("./print.js?v=21"); }
+    try { mod = await import("./print.js?v=22"); }
     catch (e) { toast("Печать не загрузилась: " + (e && e.message ? e.message : e), "bad"); return; }
     try {
       const res = await mod.printDoc(formDoc(), o);

@@ -5,13 +5,13 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="theme-color" content="#1F3864">
 <title>Тандем KZ — бэк-офис</title>
-<link rel="stylesheet" href="office.css?v=21">
+<link rel="stylesheet" href="office.css?v=22">
 </head>
 <body>
 <div id="login" class="login" hidden>
   <div class="card">
     <h1>Тандем KZ · бэк-офис</h1>
-    <div class="sub">Справочники, техкарты, склад · сборка 21</div>
+    <div class="sub">Справочники, техкарты, склад · сборка 22</div>
     <label for="llogin">Логин</label>
     <input id="llogin" autocomplete="username" autocapitalize="off">
     <label for="lpin">PIN</label>
@@ -69,7 +69,7 @@
     <nav id="menu"></nav>
     <div class="who"><span id="uname"></span> <span id="urole" class="role"></span>
       <a class="link" href="help.html" target="_blank" rel="noopener" style="margin-right:8px">Памятка</a>
-      <a class="link" href="test.html" target="_blank" rel="noopener" style="margin-right:8px">Задание на тестирование</a>
+      <a class="link" href="test.html" target="_blank" rel="noopener" style="margin-right:8px">Обучение</a>
       <a class="link" href="guide.html" target="_blank" rel="noopener" style="margin-right:8px">Маршрут проверки</a>
       <a class="link" href="stock.html" style="margin-right:8px">Телефон</a>
       <button class="link" id="fbbtn" title="Сообщить о проблеме или неудобстве — экран и сборка приложатся сами" hidden>✎ Замечание</button>
@@ -79,9 +79,10 @@
   <main id="main"></main>
 </div>
 <div id="toast" class="toast" hidden></div>
-<script src="config.js?v=21"></script>
+<script src="config.js?v=22"></script>
 <!-- Кнопка «Замечание»: обычный скрипт до модуля, app.js вызывает TandemFeedback.mount после входа. -->
-<script src="js/feedback.js?v=21"></script>
-<script type="module" src="js/office/app.js?v=21"></script>
+<script src="js/feedback.js?v=22"></script>
+<script src="js/tour.js?v=22"></script>
+<script type="module" src="js/office/app.js?v=22"></script>
 </body>
 </html>

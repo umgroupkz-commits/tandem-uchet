@@ -65,12 +65,16 @@ try {
   const steps = await until("document.querySelectorAll('details.step').length");
   check("маршрут проверки: шаги отрисованы", steps >= 25, steps);
   check("маршрут проверки: отчёт собирается", (await js("return document.getElementById('report').value.length")) > 200);
-  // Задание на тестирование (сборка 21): роль из адреса, шаги этапов, отчёт.
+  // Обучение (сборка 22): роль из адреса, уроки роли; без кода обучения уроки не запускаются; неверный код — отказ сервера.
   await go("test.html#sklad");
-  const tsteps = await until("document.querySelectorAll('details.step').length");
-  check("задание на тестирование: роль из адреса, шаги кладовщика", tsteps >= 10
-    && await js("return document.querySelector('#roles button.on') && document.querySelector('#roles button.on').textContent === 'Кладовщик кухни'"), tsteps);
-  check("задание на тестирование: отчёт собирается", (await js("return document.getElementById('report').value.includes('Кладовщик кухни')")));
+  const tles = await until("document.querySelectorAll('#lessons .lesson').length");
+  check("обучение: роль из адреса, уроки кладовщика", tles >= 8
+    && await js("return document.querySelector('#roles button.on b') && document.querySelector('#roles button.on b').textContent === 'Кладовщик кухни'"), tles);
+  check("обучение: уроки всех шести ролей загружены", await js("return ['sklad','buh','tech','kassa','point','owner'].every((r) => TandemTour.lessons(r).length >= 3)"),
+    await js("return ['sklad','buh','tech','kassa','point','owner'].map((r) => r + ':' + TandemTour.lessons(r).length).join(' ')"));
+  check("обучение: без кода кнопки «Начать» выключены", await js("return localStorage.getItem('tandem_training') === null && !document.getElementById('needcode').hidden && [...document.querySelectorAll('#lessons .lesson button')].every((b) => b.disabled)"));
+  await js("document.getElementById('code').value = 'zz-неверный-код'; document.getElementById('codebtn').click(); return true;");
+  check("обучение: неверный код — отказ сервера", await until("/не подошёл|не настроено/i.test(document.getElementById('codeerr').textContent)"), await js("return document.getElementById('codeerr').textContent"));
   await go("help.html#tech");
   check("памятки: роль из адреса выбрана, шапка на месте", await js("return document.querySelector('nav button[aria-selected=true]').textContent === 'Технолог' && window.scrollY === 0"));
   await clickText("nav button", "Собственник");

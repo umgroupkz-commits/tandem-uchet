@@ -1,10 +1,10 @@
 import { ask, el, fmtMoney, today, toast, itemPicker, linesTable, drafts, warningsText, readyNotes, confirmMinus, commentOf, stockNote,
-  withBusy, saveDoc, postDoc, showPosted, newKey, draftHint, okNum, numOf } from "./common.js?v=21";
+  withBusy, saveDoc, postDoc, showPosted, newKey, draftHint, okNum, numOf } from "./common.js?v=22";
 
 // Списание с телефона: порча, проработка, питание персонала — то, что кладовщик видит
 // первым. Устроено как перемещение: черновик на телефоне, предпросмотр остатков, проведение.
 const SCN = "writeoff";
-// Статьи списания — те же, что в бэк-офисе (сборка 21 добавила брак, представительские и хозяйственные
+// Статьи списания — те же, что в бэк-офисе (сборка 22 добавила брак, представительские и хозяйственные
 // нужды: в iiko их списывали отдельными статьями). Порядок — как в бэк-офисе, «прочее» последним.
 const REASONS = { spoilage: "порча", defect: "брак", tasting: "проработка", staff_meals: "питание персонала",
   hospitality: "представительские", internal: "хозяйственные нужды", other: "прочее" };
