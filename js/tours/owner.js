@@ -371,7 +371,7 @@ TandemTour.register({
       action: "next", target: { text: "Склады", sel: "#main h3", exact: true } },
     { title: "Метка «учебный»",
       text: "Учебный склад — для обучения: приходы на него не меняют учётные цены. Учебная учётка работает только с такими складами.",
-      action: "next", target: { text: "учебный", sel: "#main > .card:last-child .tag", exact: true } },
+      action: "next", target: { text: "учебный", sel: "#main > div > .card:last-child .tag", exact: true } },
     { title: "Карточка склада",
       text: "Нажмите на «Учебный склад кухни».",
       action: "click", target: { text: "Учебный склад кухни", sel: "#main tr" }, until: { text: "Учебный склад кухни", sel: ".overlay h1" } },

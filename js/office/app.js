@@ -73,15 +73,22 @@ async function doChangePin() {
 }
 
 // o.tab — вкладка, на которой открыть раздел (сейчас — «Склад»: setTab из stock.js).
+// Каждый раздел рисуется в свой контейнер: если человек успел открыть другой раздел, пока прежний ещё
+// грузился (стартовый экран роли после входа), запоздалый раздел пишет в отцепленный контейнер и не
+// перекрывает открытый.
+let openSeq = 0;
 async function open(id, o = {}) {
+  const seq = ++openSeq;
   current = id;
   for (const b of $("menu").children) b.classList.toggle("on", b.dataset.id === id);
-  const main = $("main");
+  const main = document.createElement("div");
+  $("main").replaceChildren(main);
   main.innerHTML = '<div class="dim">Загрузка…</div>';
   try {
     // «Замечания» живут здесь же, в оболочке: отдельного модуля раздела у них нет.
     if (id === "feedback") { main.innerHTML = ""; await mountFeedback(main); try { localStorage.setItem("tandem_office_section", id); } catch {} return; }
     const mod = await import(`./${id}.js?v=${BUILD}`);
+    if (seq !== openSeq) return;
     main.innerHTML = "";
     // Вкладку ставим до mount, чтобы раздел сразу грузил её, а не журнал. Если setTab сам рисует
     // и без смонтированного раздела упал — повторяем после mount.
@@ -105,7 +112,7 @@ async function open(id, o = {}) {
     main.innerHTML = "";
     main.append(Object.assign(document.createElement("div"), { className: "err", textContent: "Раздел не открылся: " + e.message }));
   }
-  try { localStorage.setItem("tandem_office_section", id); } catch {}
+  if (seq === openSeq) try { localStorage.setItem("tandem_office_section", id); } catch {}
 }
 
 // Вход заново на обычном экране входа — когда продолжать без новой сессии нечего.
