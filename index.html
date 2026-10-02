@@ -59,14 +59,30 @@
   .tp{text-align:right;font-weight:700;font-variant-numeric:tabular-nums;font-size:14px}
   .tp.bad{color:var(--bad)}
   .tp b{display:block;font-size:11px;font-weight:700;color:var(--accent2)}
-  .srow{display:grid;grid-template-columns:1fr 30px 54px 30px 74px 30px;gap:5px;align-items:center;
+  /* строка продажи по позициям: название · −, кол-во, + · цена · сумма · ×; на узком экране — в две строки
+     (название сверху), иначе названию не остаётся места. Шапка подписывает «Кол-во», «Цена» и «Сумма». */
+  .srow{display:grid;grid-template-columns:minmax(0,1fr) 30px 54px 30px 74px 76px 34px;
+    grid-template-areas:"n m q p pr s x";gap:5px;align-items:center;
     padding:6px 0;border-bottom:1px solid var(--line)}
+  .srow .sn{grid-area:n}.srow .minus{grid-area:m}.srow .sqty{grid-area:q}.srow .plus{grid-area:p}
+  .srow .sp{grid-area:pr}.srow .ssum{grid-area:s}.srow .x{grid-area:x}
+  .srow.th{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);
+    font-weight:700;padding:0 0 6px}
+  .srow.th .hq{grid-column:m-start/p-end;text-align:center}
+  .srow.th .hp{grid-area:pr;text-align:center}
+  .srow.th .sn,.srow.th .ssum{font-size:11px;font-weight:700;color:var(--muted)}
+  @media (max-width:479px){
+    .srow{grid-template-columns:30px 54px 30px 74px minmax(0,1fr) 34px;
+      grid-template-areas:"n n n n n n" "m q p pr s x";row-gap:4px}
+    .srow.th{grid-template-areas:"m q p pr s x"}
+    .srow.th .sn{display:none}
+  }
   .sn{font-size:13.5px;line-height:1.25}
   .sn i{display:block;font-style:normal;font-size:11px;color:var(--muted)}
   .srow input{padding:8px 4px;font-size:14px;text-align:center}
   .srow .pm{width:30px;padding:8px 0;font-size:17px;font-weight:700;background:#fff;
     color:var(--accent);line-height:1}
-  .ssum{text-align:right;font-weight:700;font-size:14px;font-variant-numeric:tabular-nums}
+  .ssum{text-align:right;font-weight:700;font-size:14px;font-variant-numeric:tabular-nums;white-space:nowrap}
   /* поиск по номенклатуре */
   .sbox{position:relative}
   .sbox input{font-size:16px}
@@ -130,6 +146,8 @@
   .dper.on{background:var(--accent);color:#fff}
 input[readonly]{background:#EEF2F8;color:var(--ink2)}
 .kassalink{display:inline-flex;align-items:center;min-height:44px;margin-top:8px;color:var(--accent2);font-weight:600}
+/* кнопки замечания (js/feedback.js): общее button{width:100%} растягивало плавающую кнопку на всю ширину */
+button.tfb-btn,#tfb-ov button{width:auto}
 </style>
 </head>
 <body>
@@ -138,18 +156,18 @@ input[readonly]{background:#EEF2F8;color:var(--ink2)}
   <header>
     <div>
       <h1>Тандем KZ · дневной отчёт</h1>
-      <div class="sub">Заполняется в конце смены · сборка 20</div>
+      <div class="sub">Заполняется в конце смены · сборка 21</div>
     </div>
   </header>
 
-  <div class="rule"><b>Правило одно.</b> Вся выручка сдаётся полностью. Любой расход — только через подотчёт, отдельной строкой и с номером чека.</div>
+  <div class="rule"><b>Правило одно.</b> Вся выручка сдаётся полностью. Любой расход из кассы (изъятие) — отдельной строкой и с номером чека.</div>
 
   <div class="card">
     <h2>Вход для точки</h2>
     <label for="lpoint">Точка</label>
     <select id="lpoint"></select>
     <label for="lpin">Код точки</label>
-    <input id="lpin" inputmode="numeric" autocomplete="off" placeholder="4 цифры">
+    <input id="lpin" type="password" inputmode="numeric" autocomplete="off" placeholder="4 цифры">
     <div style="margin-top:16px"><button id="btn-login">Войти</button></div>
     <div class="err" id="lerr"></div>
     <div class="hint">Код выдаёт руководитель. Телефон запомнит вход — вводить каждый день не нужно.</div>
@@ -160,9 +178,10 @@ input[readonly]{background:#EEF2F8;color:var(--ink2)}
   <div class="card" id="ownerbox" hidden>
     <h2>Вход для собственника</h2>
     <label for="opin">Код доступа</label>
-    <input id="opin" inputmode="numeric" autocomplete="off" placeholder="код">
+    <input id="opin" type="password" inputmode="numeric" autocomplete="off" placeholder="код">
     <div style="margin-top:16px"><button id="btn-owner">Открыть сводку</button></div>
     <div class="err" id="oerr"></div>
+    <div class="hint">Код собственника и водителя не запоминается: после выхода или обновления страницы введите его снова.</div>
     <div style="margin-top:10px"><a class="link" href="office.html">Бэк-офис — справочники, склады, контрагенты</a></div>
   </div>
 </div>
@@ -178,8 +197,9 @@ input[readonly]{background:#EEF2F8;color:var(--ink2)}
 
   <div class="card" id="block-kassa" hidden>
     <h2>Закрытие смены кассы</h2>
-    <div class="hint" style="margin:0 0 12px">Продажи и деньги по каналам уже собраны из чеков. Осталось пересчитать наличные, внести расходы под отчёт и сохранить.</div>
+    <div class="hint" style="margin:0 0 12px">Продажи и деньги по каналам уже собраны из чеков. Осталось пересчитать наличные, внести расходы из кассы (изъятие) и закрыть смену.</div>
     <div class="rrow"><span>Чеков за день</span><b id="kcount">—</b></div>
+    <div class="chk bad" id="klate" hidden></div>
     <div class="chk bad" id="kqueue" hidden></div>
     <a class="kassalink" href="kassa.html">← Вернуться в кассу</a>
   </div>
@@ -190,6 +210,7 @@ input[readonly]{background:#EEF2F8;color:var(--ink2)}
     <input id="date" type="date">
     <label for="shift_by">Смену сдал</label>
     <input id="shift_by" placeholder="Фамилия и инициалы">
+    <div class="hint" id="firstby" hidden></div>
     <div class="hint" id="saved"></div>
   </div>
 
@@ -219,17 +240,19 @@ input[readonly]{background:#EEF2F8;color:var(--ink2)}
   <div class="card">
     <h2>Движение наличных</h2>
     <div class="row2">
-      <div><label for="cash_open">Остаток на начало</label><input id="cash_open" inputmode="decimal" placeholder="0"></div>
+      <div><label for="cash_open">Остаток на начало (размен)</label><input id="cash_open" inputmode="decimal" placeholder="0"></div>
       <div><label for="cash_handed">Сдано / инкассация</label><input id="cash_handed" inputmode="decimal" placeholder="0"></div>
     </div>
-    <div class="tot"><span>Выдано под отчёт</span><span id="podotchet">0 ₸</span></div>
+    <div class="tot"><span>Расходы из кассы (изъятие)</span><span id="podotchet">0 ₸</span></div>
     <div class="tot"><span>Должно остаться в кассе</span><span id="cash_expected">0 ₸</span></div>
+    <div class="chk wait" id="klatecash" hidden></div>
+    <div class="hint">Должно = остаток на начало (размен) + наличные − сдано − расходы из кассы.</div>
     <label for="cash_counted">Фактически пересчитано, ₸</label>
     <input id="cash_counted" inputmode="decimal" placeholder="пересчитайте руками">
   </div>
 
   <div class="card">
-    <h2>Расходы под отчёт</h2>
+    <h2>Расходы из кассы (изъятие)</h2>
     <div id="exp"></div>
     <div style="margin-top:10px"><button class="ghost small" id="addexp" type="button">+ строка расхода</button></div>
     <div class="hint">Строка без номера чека считается нарушением регламента и подсвечивается в сводке у руководителя.</div>
@@ -273,7 +296,7 @@ input[readonly]{background:#EEF2F8;color:var(--ink2)}
 
   <div class="card" id="block-raw" hidden>
     <h2>Расход сырья по техкартам</h2>
-    <div class="hint" style="margin:0 0 10px">Сколько продуктов должно было уйти на то, что пробито за смену. Считается по калькуляциям из iiko — сверяйте с фактическим списанием.</div>
+    <div class="hint" style="margin:0 0 10px">Сколько продуктов должно было уйти на то, что пробито за смену. Считается по техкартам — сверяйте с фактическим списанием.</div>
     <div id="raw"></div>
   </div>
 
@@ -302,7 +325,8 @@ input[readonly]{background:#EEF2F8;color:var(--ink2)}
     <button class="ghost small dper" data-per="today" type="button">Сегодня</button>
     <button class="ghost small dper" data-per="yesterday" type="button">Вчера</button>
     <button class="ghost small dper" data-per="week" type="button">Неделя</button>
-    <button class="ghost small dper" data-per="month" type="button">Месяц</button>
+    <button class="ghost small dper" data-per="month" type="button">Этот месяц</button>
+    <button class="ghost small dper" data-per="prevmonth" type="button">Прошлый месяц</button>
   </div>
   <div class="dtools">
     <div><label for="dfrom">С</label><input id="dfrom" type="date"></div>
@@ -315,8 +339,9 @@ input[readonly]{background:#EEF2F8;color:var(--ink2)}
   <div class="kpis">
     <div class="kpi"><div class="kl">Выручка за период</div><div class="kv" id="k1">—</div></div>
     <div class="kpi"><div class="kl">Отчётов сдано</div><div class="kv" id="k2">—</div></div>
-    <div class="kpi"><div class="kl">Ушло под отчёт</div><div class="kv" id="k3">—</div></div>
+    <div class="kpi"><div class="kl">Расходы из кассы (изъятие)</div><div class="kv" id="k3">—</div></div>
     <div class="kpi"><div class="kl">Отчётов с расхождением</div><div class="kv" id="k4">—</div></div>
+    <div class="kpi" id="k5c" hidden><div class="kl">Чеков · средний чек</div><div class="kv" id="k5">—</div></div>
   </div>
 
   <div class="card" id="dpins-card" hidden>
@@ -349,13 +374,13 @@ input[readonly]{background:#EEF2F8;color:var(--ink2)}
     <h2>По точкам</h2>
     <div class="scroll">
       <table>
-        <thead><tr><th>Точка</th><th style="text-align:right">Выручка</th><th style="text-align:right">Сдано дней</th>
+        <thead id="phead"><tr><th>Точка</th><th style="text-align:right">Выручка</th><th style="text-align:right">Сдано дней</th>
           <th style="text-align:right">Не сдано</th><th style="text-align:right">В среднем в день</th>
           <th style="text-align:right">Дней с расхождением</th><th style="text-align:right">Расхождение, ₸</th></tr></thead>
         <tbody id="pbody"></tbody>
       </table>
     </div>
-    <div class="hint">Енешка и буфет КМК здесь раздельно — хотя в iiko их чеки идут через одну кассу. Именно это разделение iiko дать не может.</div>
+    <div class="hint" id="phint"></div>
   </div>
 
   <div class="card">
@@ -377,7 +402,7 @@ input[readonly]{background:#EEF2F8;color:var(--ink2)}
   <div class="card">
     <h2>Расход сырья за период</h2>
     <div id="draw"></div>
-    <div class="hint">По техкартам iiko для проданных позиций. Сверяйте со списанием на кухне.</div>
+    <div class="hint">По техкартам для проданных позиций: карта берётся на дату продажи. Сверяйте со списанием на кухне.</div>
   </div>
 
   <div class="card">
@@ -392,7 +417,7 @@ input[readonly]{background:#EEF2F8;color:var(--ink2)}
       <table>
         <thead><tr><th>Дата</th><th>Точка</th><th style="text-align:right">Нал.</th><th style="text-align:right">QR</th>
           <th style="text-align:right">Перевод</th><th style="text-align:right">Карта</th><th style="text-align:right">Итого</th>
-          <th style="text-align:right">Сдано</th><th style="text-align:right">Подотчёт</th><th>Проверка</th></tr></thead>
+          <th style="text-align:right">Сдано</th><th style="text-align:right">Расходы из кассы</th><th>Проверка</th></tr></thead>
         <tbody id="dbody"></tbody>
       </table>
     </div>
@@ -444,7 +469,8 @@ input[readonly]{background:#EEF2F8;color:var(--ink2)}
   </div>
 </div>
 
-<script src="config.js?v=20"></script>
-<script src="app.js?v=20"></script>
+<script src="config.js?v=21"></script>
+<script src="js/feedback.js?v=21"></script>
+<script src="app.js?v=21"></script>
 </body>
 </html>

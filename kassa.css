@@ -70,22 +70,23 @@ header.top{display:flex;align-items:center;gap:10px;padding:6px 14px;background:
 .rhead{display:flex;align-items:center;gap:6px;border-bottom:1px dashed #C9BFA3;padding-bottom:6px}
 .rhead h2{margin:0;font-size:16px;flex:1;color:var(--ink)}
 .rhead .closesheet{display:none}
+.rhead button.link{min-height:32px}   /* шапка чека ниже — строкам чека больше места */
 .rlines{flex:1;min-height:0;overflow-y:auto}
 .rempty{padding:26px 6px;text-align:center;color:var(--muted);font-size:14.5px}
-.rline{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:4px 8px;padding:9px 0;border-bottom:1px dashed #DDD4BB}
-.rline .rn{font-size:14.5px;line-height:1.25;overflow-wrap:anywhere}
+.rline{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 8px;padding:4px 0;border-bottom:1px dashed #DDD4BB}
+.rline .rn{font-size:14.5px;line-height:1.2;overflow-wrap:anywhere}
 .rline .rs{font:600 15px/1.25 ui-monospace,"Cascadia Mono",Consolas,monospace;text-align:right;white-space:nowrap}
 .rctl{grid-column:1/-1;display:flex;align-items:center;gap:6px}
-.rctl button{min-width:44px;padding:0;font-size:20px;font-weight:500;background:#fff}
-.rctl input{width:72px;min-height:44px;text-align:center;border:1px solid var(--paperline);border-radius:10px;background:#fff;font-size:16px;font-variant-numeric:tabular-nums}
+.rctl button{min-width:42px;min-height:36px;padding:0;font-size:20px;font-weight:500;background:#fff}
+.rctl input{width:72px;min-height:36px;text-align:center;border:1px solid var(--paperline);border-radius:10px;background:#fff;font-size:16px;font-variant-numeric:tabular-nums}
 .rctl .price{margin-left:auto;font-size:13.5px;font-weight:500;color:var(--ink2);background:none;border:none;text-decoration:underline dotted;padding:0 4px}
 .rctl .price s{color:var(--muted);margin-right:4px}
-.rctl .price.cut{color:var(--warn)}
+.rctl .price.cut{color:var(--warn)}.rctl .price.zero{color:var(--bad);font-weight:700}
 .rctl .x{color:var(--bad);border-color:var(--paperline)}
 .rtotal{display:flex;justify-content:space-between;align-items:baseline;border-top:2px solid var(--ink);margin-top:6px;padding-top:8px;font-size:15px}
 .rtotal b{font:700 24px/1 ui-monospace,"Cascadia Mono",Consolas,monospace}
-.pay{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px}
-.pay button{min-height:58px;font-size:17px;background:var(--accent);border-color:var(--accent);color:#fff}
+.pay{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}
+.pay button{min-height:54px;font-size:17px;background:var(--accent);border-color:var(--accent);color:#fff}
 .pay button[data-pay=cash]{background:var(--ok);border-color:var(--ok)}
 .editing .paper{border-color:var(--warn);box-shadow:0 0 0 2px var(--warnbg)}
 
@@ -147,3 +148,38 @@ header.top{display:flex;align-items:center;gap:10px;padding:6px 14px;background:
 .cashquick button{min-height:48px;font-size:15px}
 .cashbtns{display:grid;grid-template-columns:1fr 2fr;gap:8px;margin-top:14px}
 .cashbtns button{min-height:56px;font-size:17px}
+/* ---------- сборка 21: закрытая смена, окна подтверждения, прежний способ оплаты ---------- */
+/* Полоса «смена закрыта» над экраном продажи: видна всё время, пока продажа идёт в закрытый день */
+.closedbar{display:flex;align-items:center;gap:4px 14px;flex-wrap:wrap;padding:6px 14px;background:var(--badbg);color:var(--bad);
+  border-bottom:1px solid #EBC3BE;font-size:14.5px;font-weight:600;line-height:1.3}
+.closedbar span{flex:1 1 320px}
+.closedbar a.link{min-height:30px;color:var(--bad);font-weight:700}
+.cashwarn{background:var(--badbg);color:var(--bad);border-radius:10px;padding:9px 12px;font-size:14px;font-weight:600;margin:10px 0 2px;line-height:1.3}
+/* Окно вопроса (оплата безналом, цена, скидка, «350 кг?») — на основе окна сдачи */
+.dlg h3{margin:0 0 6px;font-size:19px;line-height:1.3;color:var(--ink)}
+.dlg p{margin:0 0 6px;color:var(--ink2);font-size:15px}
+.dlg label{display:block;font-size:13px;font-weight:600;color:var(--ink2);margin:12px 0 5px}
+.dlg .err{min-height:0;margin-top:6px}
+.dlgquick{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-top:10px}
+.dlgquick button{min-height:56px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;font-size:17px}
+.dlgquick small{font-weight:500;font-size:13px;color:var(--ink2)}
+.dlgbtns{display:grid;gap:8px;margin-top:16px}
+.dlgbtns button{min-height:56px;font-size:17px}
+/* Исправление чека: способ оплаты до правки подсвечен и подписан */
+.pay button.was{position:relative;box-shadow:0 0 0 3px var(--paper),0 0 0 6px var(--warn)}
+.pay button.was::after{content:"было";position:absolute;top:-9px;right:8px;background:var(--warn);color:#fff;font-size:11.5px;font-weight:700;
+  padding:1px 7px;border-radius:999px;line-height:1.4}
+/* Только что добавленная строка чека — коротко подсвечена, чтобы глаз её нашёл */
+.rline.flash{animation:rflash 1.2s ease-out}
+@keyframes rflash{from{background:#FCEFC7}to{background:transparent}}
+@media (prefers-reduced-motion:reduce){.rline.flash{animation:none}}
+/* ---------- сборка 21, второй круг ---------- */
+/* Поздний чек (пробит после закрытия смены): его ещё можно исправить и отменить в кассе */
+.pill.late{background:var(--badbg);color:var(--bad);font-weight:600}
+.note .late{margin-top:6px}
+/* Окно причины отмены: частые причины одним касанием (вписывают текст в поле) */
+.dlgreasons{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-top:10px}
+.dlgreasons button{min-height:52px;font-size:14.5px;font-weight:500;line-height:1.2;padding:6px 8px}
+.dlg input.reason{font-size:18px;text-align:left;min-height:52px}
+/* Сообщение после чека — над меню, а не по центру экрана: там оно закрывало кнопку «Перевод» */
+@media (min-width:821px){body:has(#shell:not([hidden]) > #sale:not([hidden])) .toast{left:calc((100% - 380px) / 2);max-width:calc(100% - 380px - 32px)}}

@@ -1,5 +1,5 @@
-import { api, can } from "./api.js?v=20";
-import { el, toast, debounce, modal, errText, saveFailed } from "./ui.js?v=20";
+import { api, can } from "./api.js?v=21";
+import { el, toast, debounce, modal, errText, saveFailed } from "./ui.js?v=21";
 
 const KINDS = { supplier: "поставщик", customer: "покупатель", employee: "сотрудник", other: "прочее" };
 let root, state = { q: "", kind: "", page: 1 }, table, pager;
@@ -45,7 +45,7 @@ function edit(c) {
   const f = {
     name: el("input", { value: c ? c.name : "", readonly: ro }),
     kind: el("select", { disabled: ro }, ...Object.entries(KINDS).map(([v, t]) => el("option", { value: v, selected: c ? c.kind === v : v === "supplier" }, t))),
-    bin: el("input", { value: c ? c.bin || "" : "", readonly: ro }),
+    bin: el("input", { value: c ? c.bin || "" : "", readonly: ro, inputmode: "numeric", autocomplete: "off", placeholder: "12 цифр" }),
     phone: el("input", { value: c ? c.phone || "" : "", readonly: ro }),
     note: el("input", { value: c ? c.note || "" : "", readonly: ro }),
     active: el("input", { type: "checkbox", checked: c ? c.active : true, disabled: ro }),
@@ -59,8 +59,13 @@ function edit(c) {
     el("div", { class: "actions" }, el("label", {}, f.active, " активен")), err,
     el("div", { class: "actions" },
       ro ? null : el("button", { onclick: async (e) => {
+        // БИН/ИИН в Казахстане — ровно 12 цифр; раньше молча сохранялся и БИН из 11 цифр. Проверяем до
+        // отправки (сервер проверяет так же). Пробелы из скопированного «1809 4001 2345» убираем; пустое поле — можно.
+        const bin = f.bin.value.replace(/\s+/g, "");
+        if (bin && !/^[0-9]{12}$/.test(bin)) { err.textContent = "БИН/ИИН — 12 цифр" + (/^[0-9]+$/.test(bin) ? ` (сейчас ${bin.length})` : ""); f.bin.focus(); return; }
+        err.textContent = "";
         e.target.disabled = true;   // второе нажатие до ответа заводило дубль контрагента
-        const r = await api("counteragent_save", { id: c ? c.id : undefined, name: f.name.value, kind: f.kind.value, bin: f.bin.value, phone: f.phone.value, note: f.note.value, active: f.active.checked });
+        const r = await api("counteragent_save", { id: c ? c.id : undefined, name: f.name.value, kind: f.kind.value, bin, phone: f.phone.value, note: f.note.value, active: f.active.checked });
         // новый контрагент после обрыва связи: повтор завёл бы второго — сначала проверить список
         if (!r.ok) { if (saveFailed(r, !c, e.target, err)) load(); return; }
         e.target.disabled = false;

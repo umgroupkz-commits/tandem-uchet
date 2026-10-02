@@ -5,11 +5,11 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="theme-color" content="#1F3864">
 <title>Тандем KZ — склад</title>
-<link rel="stylesheet" href="stock.css?v=20">
+<link rel="stylesheet" href="stock.css?v=21">
 </head>
 <body>
 <div id="login" class="screen" hidden>
-  <header><h1>Склад · Тандем KZ</h1><div class="sub">Вход для кладовщика · сборка 20</div></header>
+  <header><h1>Склад · Тандем KZ</h1><div class="sub">Вход для кладовщика · сборка 21</div></header>
   <label for="llogin">Логин</label><input id="llogin" autocomplete="username" autocapitalize="off">
   <label for="lpin">PIN</label><input id="lpin" type="password" inputmode="numeric" autocomplete="current-password">
   <button id="lbtn" class="big">Войти</button>
@@ -26,12 +26,13 @@
 <div id="shell" class="screen" hidden>
   <header class="top">
     <div><div class="brand" id="storename">Склад</div><div class="sub" id="uname"></div></div>
-    <button class="link" id="changestore">сменить склад</button>
+    <div class="hacts"><button class="link" id="fbbtn" title="Сообщить о проблеме или неудобстве">✎ замечание</button><button class="link" id="changestore">сменить склад</button></div>
   </header>
   <main id="main"></main>
 </div>
 <div id="toast" class="toast" hidden></div>
-<script src="config.js?v=20"></script>
-<script type="module" src="js/stock/app.js?v=20"></script>
+<script src="config.js?v=21"></script>
+<script src="js/feedback.js?v=21"></script>
+<script type="module" src="js/stock/app.js?v=21"></script>
 </body>
 </html>

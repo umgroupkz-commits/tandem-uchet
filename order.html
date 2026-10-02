@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="theme-color" content="#1F3864">
 <title>Тандем KZ — заявка на кухню</title>
-<link rel="stylesheet" href="stock.css?v=20">
+<link rel="stylesheet" href="stock.css?v=21">
 <style>
   .day{display:flex;gap:6px;margin:6px 0 2px}.day button{flex:1;min-height:44px;font-size:15px}
   .status{border-radius:10px;padding:10px 12px;margin:10px 0;font-size:14.5px}
@@ -18,11 +18,17 @@
   .note{border-radius:10px;padding:10px 12px;margin:10px 0;font-size:14.5px}
   .note.ok{background:var(--okbg);color:var(--ok)}.note.warn{background:var(--warnbg);color:var(--warn)}.note.bad{background:var(--badbg);color:var(--bad)}
   #main.busy{pointer-events:none;opacity:.7}
+  .ocomment{width:100%;min-height:72px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;font:inherit;
+    font-size:16px;background:var(--in);color:var(--ink);resize:vertical}
+  .ocomment:focus{outline:2px solid var(--accent2);outline-offset:-1px;background:#fff}
+  .ol input.bad{border-color:var(--bad);background:var(--badbg)}
+  /* кнопки замечания (js/feedback.js): общее button{width:100%;min-height:48px} из stock.css растягивало их */
+  button.tfb-btn,#tfb-ov button{width:auto;min-height:0}
 </style>
 </head>
 <body>
 <div id="login" class="screen" hidden>
-  <header><h1>Заявка на кухню</h1><div class="sub">Тандем KZ · вход для точки · сборка 20</div></header>
+  <header><h1>Заявка на кухню</h1><div class="sub">Тандем KZ · вход для точки · сборка 21</div></header>
   <label for="lpoint">Точка</label><select id="lpoint"><option value="">Загружаю точки…</option></select>
   <label for="lpin">Код точки</label><input id="lpin" type="password" inputmode="numeric" autocomplete="off">
   <label for="lwho">Кто подаёт заявку</label><input id="lwho" placeholder="Фамилия и инициалы" autocomplete="off">
@@ -39,7 +45,8 @@
   <main id="main"></main>
 </div>
 <div id="toast" class="toast" hidden></div>
-<script src="config.js?v=20"></script>
-<script type="module" src="js/order/app.js?v=20"></script>
+<script src="config.js?v=21"></script>
+<script src="js/feedback.js?v=21"></script>
+<script type="module" src="js/order/app.js?v=21"></script>
 </body>
 </html>

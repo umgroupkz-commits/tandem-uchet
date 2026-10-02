@@ -65,6 +65,12 @@ try {
   const steps = await until("document.querySelectorAll('details.step').length");
   check("маршрут проверки: шаги отрисованы", steps >= 25, steps);
   check("маршрут проверки: отчёт собирается", (await js("return document.getElementById('report').value.length")) > 200);
+  // Задание на тестирование (сборка 21): роль из адреса, шаги этапов, отчёт.
+  await go("test.html#sklad");
+  const tsteps = await until("document.querySelectorAll('details.step').length");
+  check("задание на тестирование: роль из адреса, шаги кладовщика", tsteps >= 10
+    && await js("return document.querySelector('#roles button.on') && document.querySelector('#roles button.on').textContent === 'Кладовщик кухни'"), tsteps);
+  check("задание на тестирование: отчёт собирается", (await js("return document.getElementById('report').value.includes('Кладовщик кухни')")));
   await go("help.html#tech");
   check("памятки: роль из адреса выбрана, шапка на месте", await js("return document.querySelector('nav button[aria-selected=true]').textContent === 'Технолог' && window.scrollY === 0"));
   await clickText("nav button", "Собственник");

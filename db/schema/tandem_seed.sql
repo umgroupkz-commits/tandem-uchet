@@ -66,6 +66,8 @@ insert into tandem.role_permissions (role, section, action) values
   ('owner','stock','view'),
   ('owner','stores','edit'),
   ('owner','stores','view'),
+  ('owner','users','edit'),
+  ('owner','users','view'),
   ('storekeeper','charts','view'),
   ('storekeeper','counteragents','view'),
   ('storekeeper','doc:inventory','edit'),

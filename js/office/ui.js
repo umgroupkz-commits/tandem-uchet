@@ -60,8 +60,14 @@ export function uid() {
 // закрывало форму со всем введённым. Окна с вводом (keep) по фону не закрываются вовсе.
 // dirty ставится при любом вводе в карточке (кроме полей с data-nodirty — поиск и выбор
 // версии); cancel() при изменениях спрашивает, точно ли бросить введённое.
+// «✎ Замечание» в углу окна: кнопка в шапке страницы под затемнением окна не нажимается, а замечание
+// «из окна документа» — частый случай (заголовок окна прикладывается к замечанию сам). Кнопка — после
+// заголовка: первым ребёнком карточки остаётся h1 (на него опираются техкарты и документы).
 export function modal(title, opts = {}) {
-  const card = el("div", { class: "card" }, el("h1", {}, title));
+  const fb = document.getElementById("fbbtn");
+  const card = el("div", { class: "card" }, el("h1", {}, title),
+    fb && !fb.hidden && window.TandemFeedback
+      ? el("button", { class: "link fbmini noprint", type: "button", title: fb.title, onclick: () => window.TandemFeedback.open() }, "✎ Замечание") : null);
   const ov = el("div", { class: "overlay" }, card);
   let downOv = false, upOv = false;
   ov.addEventListener("mousedown", (e) => { downOv = e.target === ov; });

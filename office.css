@@ -50,7 +50,7 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
 .actions{display:flex;gap:8px;margin-top:14px;flex-wrap:wrap}
 .dim{color:var(--muted);font-size:13px}
 .toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:var(--ink);color:#fff;padding:10px 16px;border-radius:9px;font-size:14px;z-index:10}
-.toast.bad{background:var(--bad)}
+.toast.bad{background:var(--bad);color:#fff}
 .overlay{position:fixed;inset:0;background:rgba(27,36,48,.35);display:flex;align-items:flex-start;justify-content:center;padding:40px 16px;z-index:8;overflow:auto}
 .overlay .card{width:100%;max-width:640px}
 /* Окно повторного входа — поверх любых открытых форм; кнопки как на экране входа. */
@@ -58,6 +58,7 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
 .sbox{position:relative}.sres{margin-top:6px;max-height:260px;overflow-y:auto;border:1px solid var(--line);border-radius:8px;background:#fff}
 .sres:empty{display:none}.sitem{display:block;width:100%;text-align:left;background:#fff;border:none;border-bottom:1px solid var(--line);border-radius:0;padding:9px 12px;color:var(--ink);font-weight:500}
 .sitem:last-child{border-bottom:none}
+.sitem.hl{background:#eef2ff}.sitem .dim{font-weight:400}
 .tot{display:flex;justify-content:space-between;align-items:baseline;padding:10px 14px;background:#EEF2F8;border-radius:8px;margin-top:10px}
 .tot span:last-child{font-weight:700;color:var(--accent);font-variant-numeric:tabular-nums}
 button.x{width:30px;padding:4px;background:#fff;color:var(--bad);border-color:var(--line);font-size:16px;line-height:1;font-weight:400}
@@ -72,5 +73,32 @@ button.small{padding:5px 10px;font-size:12.5px}
 .cats{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:2px 12px;max-height:260px;overflow-y:auto;border:1px solid var(--line);border-radius:8px;padding:8px;margin-top:6px}
 .cats label.chk{display:flex;align-items:center;gap:6px;font-weight:400;margin:0;min-height:32px;font-size:14px}
 .okbox{background:#E3F3EC;color:#0B6B4F;border-radius:10px;padding:12px 14px;font-weight:600}
+/* Сборка 21. Число новых замечаний в меню; список замечаний. Кнопка «Замечание» — в шапке, места под
+   плавающую внизу страницы больше не нужно. */
+#menu .mcount{display:inline-block;min-width:18px;margin-left:5px;padding:0 5px;border-radius:9px;background:var(--bad);color:#fff;font-size:11px;line-height:18px;text-align:center;font-weight:700}
+.fb td.nowrap{white-space:nowrap}.fb .fbmsg{white-space:pre-wrap;word-break:break-word;min-width:260px}
+.fb .fbdone{margin-top:6px;font-size:12.5px;color:var(--muted);white-space:normal}.fb .fbans{margin-top:4px;font-size:13px;color:var(--ink2);white-space:pre-wrap}
+.fb tr.fbdet td{background:#F7F9FD}.fbctx{font-size:12.5px;color:var(--ink2);word-break:break-word}.fbctx b{font-weight:600;color:var(--ink)}
+.fbquote{white-space:pre-wrap;background:#F7F9FD;border-radius:8px;padding:10px 12px;font-size:14px;max-height:200px;overflow:auto}
+/* Склад точки не привязан к ней — жёлтая метка, как предупреждение. */
+.tag.warn{background:#FCF3E1;color:#8A6412}
+/* Шапка: меню разделов не сжимается в столбик под длинной строкой ссылок справа (при 1366 px меню
+   разъезжалось на три строки и больше) — когда места не хватает, ссылки и «✎ Замечание» переносятся
+   второй строкой вправо, а меню остаётся одной строкой. */
+.top{flex-wrap:wrap;row-gap:4px}
+#menu{flex:1 1 560px}
+.who{margin-left:auto;display:flex;flex-wrap:wrap;align-items:center;justify-content:flex-end;gap:2px 0;white-space:normal}
+.who > *{white-space:nowrap}
+#uname{margin-right:5px}#urole{margin-right:8px}
+/* «✎ Замечание» в правом верхнем углу открытого окна (ui.js modal). */
+.overlay .card{position:relative}
+.overlay .card > .fbmini{position:absolute;top:12px;right:10px;font-size:12.5px;padding:2px 6px}
+.overlay .card:has(> .fbmini) > h1{padding-right:110px}
+/* Склад в таблице точек — ссылка на карточку склада, вровень с текстом соседних ячеек. */
+td button.link.cell{padding:0;font:inherit;text-align:left;text-decoration:underline dotted;text-underline-offset:3px}
+/* Склады пользователя: «Все склады / Выбранные», поиск и список с прокруткой. */
+.uscope label.chk,.ustores label.chk{display:flex;align-items:center;gap:6px;font-weight:400;margin:0;color:var(--ink)}
+.ustores{max-height:220px;overflow:auto;border:1px solid var(--line);border-radius:8px;padding:6px 10px}
+.ustores label.chk{margin:4px 0;font-size:14px}.ustores.off{opacity:.5}
 /* Печать сводного плана выпечки: только таблица, без меню и кнопок. */
 @media print{.top,#menu,.tabs,.tools,.actions,details,button,nav,.noprint{display:none!important}body,.card{background:#fff;box-shadow:none}}

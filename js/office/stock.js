@@ -1,74 +1,122 @@
-import { api, session, LONG_MS } from "./api.js?v=20";
-import { el, fmt, toast, debounce, modal, confirmDlg, today, isoDate, errText, uid } from "./ui.js?v=20";
+import { api, can } from "./api.js?v=21";
+import { el, fmt, toast, debounce, modal, confirmDlg, today, isoDate, errText, uid, saveFailed } from "./ui.js?v=21";
+import { parseNum, numStr, numInput, enterNext, fmtDate, fmtDateTime, fmtMoney, itemPicker } from "./inputs.js?v=21";
+import { TYPES, MANUAL, REASONS, perms, canDoc, canAnyDoc, canSales, stores, setStores, active, opts, myIds, setMyIds, mine,
+  seqs, nextSeq, tabOut, sel, hooks } from "./stock-common.js?v=21";
+import { loadSales, loadTurnover, loadOrders, loadC1, loadReports, loadReady, srResync, resetReports } from "./stock-reports.js?v=21";
 
-const TYPES = { invoice_in: "Приход", transfer: "Перемещение", writeoff: "Списание", production: "Производство", inventory: "Инвентаризация", sale: "Продажа" };
-// Продажу заводит отчёт точки, а не человек: в «+ Новый документ» её нет.
-const MANUAL = Object.keys(TYPES).filter((k) => k !== "sale");
-const REASONS = { spoilage: "порча", tasting: "проработка", staff_meals: "питание персонала", other: "прочее" };
-const perms = () => (session() && session().permissions) || [];
-const canDoc = (type) => perms().includes("doc:" + type + ":edit");
-const canAnyDoc = () => MANUAL.some(canDoc);
-const canSales = () => perms().includes("doc:sale:view");
-let root, stores = [], state = { tab: "docs", doc_type: "", store_id: "", status: "", q: "", date_from: "", date_to: "", page: 1 };
+let root, state = { tab: "docs", doc_type: "", store_id: "", status: "", q: "", date_from: "", date_to: "", page: 1 };
 let table, pager;
-// Список складов держим полным: выключенный склад должен читаться в карточке старого
-// документа и в остатках. Выбирать из него можно только действующие — active().
-const active = () => stores.filter((s) => s.active);
-const opts = (list) => Object.fromEntries(list.map((s) => [s.id, s.name]));
-// Склады, закреплённые за пользователем (пусто — все). Сервер проверяет сам; здесь лишь
-// не предлагаем то, что он отклонит.
-let myIds = [];
-const mine = (list) => myIds.length ? list.filter((s) => myIds.includes(s.id)) : list;
-// Номер последнего запроса по вкладке: ответ, обогнанный более новым, не рисуется — иначе при
-// быстрой смене фильтра на экране складывались таблицы всех запросов, в том числе устаревших.
-const seqs = {};
-const nextSeq = (k) => (seqs[k] = (seqs[k] || 0) + 1);
-// Вкладка отчёта: строка фильтров строится один раз при открытии вкладки (build), дальше
-// обновляется только область результата .out — пересозданное поле теряло фокус посреди ввода.
-function tabOut(id, build) {
-  const host = document.getElementById(id); if (!host) return null;
-  if (!host.firstChild) host.append(...build(), el("div", { class: "out" }));
-  return host.querySelector(":scope > .out");
-}
+
+// Числа строк: в поле — текст, как его набрал человек («12,5»), в расчётах — число; пусто и мусор — 0.
+const num0 = (v) => { const x = parseNum(v); return x === null || Number.isNaN(x) ? 0 : x; };
+const r2 = (x) => Math.round(x * 100) / 100;
+const plural = (n, one, few, many) => { const a = Math.abs(n) % 100, b = a % 10; return a > 10 && a < 20 ? many : b === 1 ? one : b >= 2 && b <= 4 ? few : many; };
+const rows_ = (n) => `${n} ${plural(n, "строка", "строки", "строк")}`;
+// Список названий в сообщении — как в ответах сервера: до трёх, дальше «и ещё N».
+const listNames = (a) => a.slice(0, 3).join(", ") + (a.length > 3 ? ` и ещё ${a.length - 3}` : "");
+const storeName = (id) => (stores.find((s) => s.id === id) || {}).name || "";
+// Цена на экране — с копейками, но не короче записанной: цена из «сумма / кол-во» бывает с 4 знаками.
+const priceTxt = (v) => (v === null || v === undefined || v === "" ? "" : Number(v).toLocaleString("ru-RU", { minimumFractionDigits: 2, maximumFractionDigits: 4 }));
+// Пометка инвентаризации «ввод начальных остатков» (0045): у списания reason — причина, у инвентаризации — только она.
+const OPENING = "opening";
+const reasonOf = (d) => d.doc_type === "writeoff" && d.reason ? REASONS[d.reason] || d.reason
+  : d.doc_type === "inventory" && d.reason === OPENING ? "ввод остатков" : "";
 
 export async function mount(r) {
   root = r; state.page = 1;
-  stores = (await api("stores_list", {})).stores || [];
-  salePoints = null;
+  setStores((await api("stores_list", {})).stores || []);
+  resetReports();
   const me = await api("me", {});
-  myIds = (me.ok && me.user && me.user.store_ids) || [];
+  setMyIds((me.ok && me.user && me.user.store_ids) || []);
+  if (!tabOk(state.tab)) state.tab = "docs";
   drawShell();
   // Вкладка помнится между заходами в раздел: грузим её, а не журнал документов (раньше при
   // возврате в «Склад» на вкладке «Остатки» или «Заявки» она оставалась пустой).
-  await (LOADERS[state.tab] || loadDocs)();
+  await LOADERS[state.tab]();
 }
 const LOADERS = { docs: loadDocs, bal: loadBalances, sales: loadSales, turn: loadTurnover, ord: loadOrders, c1: loadC1, rep: loadReports, ready: loadReady };
+// Вкладки, которые видны не всем ролям: открыть такую через setTab без права нельзя — откроется журнал.
+const TAB_OK = { sales: canSales, c1: canSales, rep: canSales, ord: () => perms().includes("doc:transfer:view") };
+const tabOk = (t) => !!LOADERS[t] && (!TAB_OK[t] || TAB_OK[t]());
+
+// Открыть «Склад» сразу на вкладке (стартовый экран собственника — «Отчёты»). До mount — только запоминаем:
+// mount сам откроет эту вкладку. После — перерисовываем, но только если в root по-прежнему наш раздел:
+// app.js отдаёт один и тот же <main> всем разделам.
+export function setTab(tab) {
+  if (!LOADERS[tab]) return;
+  state.tab = tab;
+  if (root && root.querySelector(":scope > .tabs[data-stock]")) {
+    if (!tabOk(state.tab)) state.tab = "docs";
+    drawShell(); LOADERS[state.tab]();
+  }
+}
+
 // После проведения, отмены или удаления документа обновляется открытая вкладка. Документ плана
 // заявок (source_kind='orders') ставит или снимает строки «готовым со склада» и может оставить
 // помеченные к пересчёту продажи — их добирает тот же цикл, что и после ручной правки.
-function afterDocChange(d) {
-  (LOADERS[state.tab] || loadDocs)();
-  if (d && d.source_kind === "orders" && perms().includes("stock:edit")) srResync({ quiet: true });
+hooks.editDoc = (id, newType) => editDoc(id, newType);
+// Переход в журнал извне: поиск и, если передан o, фильтр ровно из него — тип, склад, период (щелчок
+// по поставщику в «Закупках» приводит в приходы того же склада за тот же период, buh 4); чего в o нет —
+// пусто, статус «все». Без o прежние фильтры журнала остаются, меняется только поиск. Раздел «Склад»
+// не на экране — только запоминаем, как setTab: mount откроет журнал с этим фильтром.
+hooks.openDocs = (q, o) => {
+  state.tab = "docs"; state.q = q || ""; state.page = 1;
+  if (o) Object.assign(state, { doc_type: o.doc_type || "", store_id: o.store_id || "", status: o.status || "",
+    date_from: o.date_from || "", date_to: o.date_to || "" });
+  if (root && root.querySelector(":scope > .tabs[data-stock]")) { drawShell(); loadDocs(); }
+};
+// r — ответ doc_post/doc_unpost. С 0045 «готовым» ставит и ручное перемещение на склад точки: сервер
+// сразу пересобирает до 5 продаж и говорит, сколько осталось (resynced/remaining — в ответе или в его
+// поле ready); остаток добирает srResync. Старый сервер про ручные документы молчит — тогда как раньше:
+// тихая проверка только после документа плана.
+function afterDocChange(d, r) {
+  // Документ могли открыть и не из раздела «Склад» (ссылка на приход в карточке позиции): тогда
+  // журнала на экране нет и перерисовывать нечего — иначе loadDocs падал на пустой таблице.
+  if (root && root.isConnected) (LOADERS[state.tab] || loadDocs)();
+  if (!perms().includes("stock:edit")) return;
+  const rd = (r && (r.ready && typeof r.ready === "object" ? r.ready : r)) || {};
+  const left = Number(rd.remaining) || 0;
+  if (left > 0) srResync({ done: Number(rd.resynced) || 0, left });
+  else if (d && d.source_kind === "orders" && !("remaining" in rd)) srResync({ quiet: true });
+}
+// Что сказать после проведения (r — ответ doc_post), одним окном, а не стопкой:
+//  * later_moves (0045, sklad 2): документ проведён задним числом внутри уже прожитого — после него на
+//    этом складе по его позициям уже проведены расходы (N); их себестоимость программа не пересчитывает,
+//    и человек должен это знать (исправленный приход: перемещения остались по прежней цене);
+//  * ready_new (0045): позиции, которые документ впервые сделал «готовыми» на складе точки — продажа там
+//    теперь списывает саму выпечку, а не ингредиенты.
+// Старый сервер этих полей не отдаёт — окна нет.
+function postNotes(r, type) {
+  const later = Number(r && r.later_moves) || 0;
+  const list = r && Array.isArray(r.ready_new) ? r.ready_new : [];
+  if (later <= 0 && !list.length) return;
+  const cm = modal(later > 0 ? "Документ проведён" : "Продаются готовыми");
+  if (later > 0) cm.root.append(el("div", { class: "warnbox" },
+    `После этого документа уже были расходы (${later}): их себестоимость посчитана по прежней цене.`,
+    type === "invoice_in" ? el("div", { style: "margin-top:4px" }, "Средняя цена склада уже новая — по ней спишутся следующие расходы.") : null));
+  if (list.length) {
+    const by = new Map();
+    for (const x of list) { const k = x.store_name || ""; if (!by.has(k)) by.set(k, []); by.get(k).push(x.item_name || x.item_code || ""); }
+    for (const [st, items] of by) cm.root.append(el("div", { style: "margin:8px 0" }, `Теперь на складе «${st}» продаются готовыми: ${items.join(", ")}.`));
+    cm.root.append(el("div", { class: "dim" }, "Продажа этих позиций на складе списывает саму позицию, привезённую с кухни, а не муку и начинку по техкарте. "
+      + "Список — «Склад» → «Заявки», блок «Что склады получают готовым»; там же строку можно убрать."));
+  }
+  cm.root.append(el("div", { class: "actions" }, el("button", { onclick: cm.close }, "Понятно")));
 }
 
 function drawShell() {
   root.innerHTML = "";
-  root.append(el("div", { class: "tabs" },
-    el("button", { class: state.tab === "docs" ? "" : "ghost", onclick: () => { state.tab = "docs"; drawShell(); loadDocs(); } }, "Документы"),
-    el("button", { class: state.tab === "bal" ? "" : "ghost", onclick: () => { state.tab = "bal"; drawShell(); loadBalances(); } }, "Остатки"),
-    canSales() ? el("button", { class: state.tab === "sales" ? "" : "ghost", onclick: () => { state.tab = "sales"; drawShell(); loadSales(); } }, "Продажи") : null,
-    el("button", { class: state.tab === "turn" ? "" : "ghost", onclick: () => { state.tab = "turn"; drawShell(); loadTurnover(); } }, "Ведомость"),
-    perms().includes("doc:transfer:view") ? el("button", { class: state.tab === "ord" ? "" : "ghost", onclick: () => { state.tab = "ord"; drawShell(); loadOrders(); } }, "Заявки") : null,
-    canSales() ? el("button", { class: state.tab === "c1" ? "" : "ghost", onclick: () => { state.tab = "c1"; drawShell(); loadC1(); } }, "Расход для 1С") : null,
-    canSales() ? el("button", { class: state.tab === "rep" ? "" : "ghost", onclick: () => { state.tab = "rep"; drawShell(); loadReports(); } }, "Отчёты") : null,
-    el("button", { class: state.tab === "ready" ? "" : "ghost", onclick: () => { state.tab = "ready"; drawShell(); loadReady(); } }, "Готовность")));
-  if (state.tab === "bal") { root.append(el("div", { id: "bal-root" })); return; }
-  if (state.tab === "sales") { root.append(el("div", { id: "sales-root" })); return; }
-  if (state.tab === "turn") { root.append(el("div", { id: "turn-root" })); return; }
-  if (state.tab === "c1") { root.append(el("div", { id: "c1-root" })); return; }
-  if (state.tab === "ord") { root.append(el("div", { id: "ord-root" })); return; }
-  if (state.tab === "rep") { root.append(el("div", { id: "rep-root" })); return; }
-  if (state.tab === "ready") { root.append(el("div", { id: "ready-root" })); return; }
+  const tab = (id, title) => el("button", { class: state.tab === id ? "" : "ghost", onclick: () => setTab(id) }, title);
+  root.append(el("div", { class: "tabs", "data-stock": "" },
+    tab("docs", "Документы"), tab("bal", "Остатки"),
+    canSales() ? tab("sales", "Продажи") : null,
+    tab("turn", "Ведомость"),
+    tabOk("ord") ? tab("ord", "Заявки") : null,
+    canSales() ? tab("c1", "Расход для 1С") : null,
+    canSales() ? tab("rep", "Отчёты") : null,
+    tab("ready", "Готовность")));
+  if (state.tab !== "docs") { root.append(el("div", { id: state.tab + "-root" })); return; }
   // Роли без единого doc:*:edit (пока таких нет, но право снимается настройкой) видят
   // журнал и остатки, но пустого выпадающего списка «+ Новый документ…» им не показываем.
   const newBtn = canAnyDoc()
@@ -77,138 +125,408 @@ function drawShell() {
         ...MANUAL.filter(canDoc).map((k) => el("option", { value: k }, TYPES[k])))
     : null;
   table = el("table"); pager = el("div", { class: "pager" });
+  // Быстрый период подсвечивается, пока даты совпадают с ним. Поля дат при этом не пересоздаются:
+  // пересозданное поле теряло бы фокус посреди набора года.
+  const P = periods();
+  const pBtns = Object.entries(P).map(([k, [a, b, t]]) => el("button", { "data-p": k, onclick: () => setPeriod(a, b) }, t));
+  const markPeriod = () => { for (const b of pBtns) { const [a, z] = P[b.dataset.p]; b.className = "small" + (a === state.date_from && z === state.date_to ? "" : " ghost"); } };
+  const dateIn = (key, title) => el("input", { type: "date", title, value: state[key], style: "flex:0 1 160px",
+    onchange: debounce((e) => { state[key] = e.target.value; state.page = 1; markPeriod(); loadDocs(); }, 400) });
+  const dFrom = dateIn("date_from", "с"), dTo = dateIn("date_to", "по");
+  function setPeriod(from, to) { state.date_from = from; state.date_to = to; state.page = 1; dFrom.value = from; dTo.value = to; markPeriod(); loadDocs(); }
+  markPeriod();
+  // Склады фильтра — только свои, как в «Остатках» (admin 8, owner У8): сервер и так отдаёт лишь
+  // документы складов пользователя, и выбор чужого склада давал пустой журнал. Склад, пришедший
+  // извне (openDocs из отчёта), остаётся в списке и выключенным — иначе фильтр стоял бы невидимым;
+  // склада, которого нет в справочнике вовсе, фильтр не держит.
+  if (state.store_id && !stores.some((s) => s.id === state.store_id)) state.store_id = "";
+  const jStores = mine(active());
+  if (state.store_id && !jStores.some((s) => s.id === state.store_id)) jStores.push(stores.find((s) => s.id === state.store_id));
   root.append(el("div", { class: "tools" },
-      el("input", { placeholder: "Номер, поставщик, комментарий", value: state.q, oninput: debounce((e) => { state.q = e.target.value; state.page = 1; loadDocs(); }, 300) }),
+      el("input", { placeholder: "Номер, № накладной, поставщик, комментарий", value: state.q, style: "flex:2 1 340px;min-width:340px",
+        oninput: debounce((e) => { state.q = e.target.value; state.page = 1; loadDocs(); }, 300) }),
       sel({ "": "все типы", ...TYPES }, state.doc_type, (v) => { state.doc_type = v; state.page = 1; loadDocs(); }),
-      sel({ "": "все склады", ...opts(active()) }, state.store_id, (v) => { state.store_id = v; state.page = 1; loadDocs(); }),
+      sel({ "": myIds.length ? "мои склады" : "все склады", ...opts(jStores) }, state.store_id, (v) => { state.store_id = v; state.page = 1; loadDocs(); }),
       sel({ "": "все", draft: "черновики", posted: "проведённые" }, state.status, (v) => { state.status = v; state.page = 1; loadDocs(); }),
-      el("input", { type: "date", title: "с", value: state.date_from, onchange: debounce((e) => { state.date_from = e.target.value; state.page = 1; loadDocs(); }, 400) }),
-      el("span", { class: "dim" }, "—"),
-      el("input", { type: "date", title: "по", value: state.date_to, onchange: debounce((e) => { state.date_to = e.target.value; state.page = 1; loadDocs(); }, 400) }),
       newBtn),
+    el("div", { class: "tools" },
+      dFrom, el("span", { class: "dim" }, "—"), dTo, ...pBtns,
+      el("span", { style: "flex:1" }),
+      el("button", { class: "ghost small", title: "Журнал по текущему фильтру, все страницы — для Excel", onclick: (e) => docsCsv(e.currentTarget) }, "CSV")),
     el("div", { class: "card", style: "padding:0;overflow:auto" }, table), pager);
 }
-function sel(opts, value, onchange, disabled = false) {
-  const s = el("select", { disabled, onchange: (e) => onchange(e.target.value) });
-  for (const [v, t] of Object.entries(opts)) s.append(el("option", { value: v, selected: v === value }, t));
-  return s;
+// Быстрые периоды журнала, как в iiko: [с, по, подпись]. Даты — по часам пользователя (isoDate).
+function periods() {
+  const d = new Date(), y = d.getFullYear(), mo = d.getMonth(), t = today();
+  const yst = isoDate(new Date(y, mo, d.getDate() - 1, 12));
+  return { today: [t, t, "Сегодня"], yesterday: [yst, yst, "Вчера"], month: [isoDate(new Date(y, mo, 1, 12)), t, "Этот месяц"],
+    prev: [isoDate(new Date(y, mo - 1, 1, 12)), isoDate(new Date(y, mo, 0, 12)), "Прошлый месяц"], all: ["", "", "Все даты"] };
+}
+const docFilter = () => ({ doc_type: state.doc_type || null, store_id: state.store_id || null, status: state.status || null, q: state.q,
+  date_from: state.date_from || null, date_to: state.date_to || null });
+const docWho = (d) => d.doc_type === "invoice_in" ? `${d.counteragent_name || ""} → ${d.store_to_name || ""}`
+  : d.doc_type === "transfer" ? `${d.store_from_name || ""} → ${d.store_to_name || ""}`
+  : d.doc_type === "sale" ? `${d.store_from_name || ""} · ${d.comment || ""}` : (d.store_from_name || "");
+// Подсказка строки журнала: кто завёл, кто и когда провёл (posted_by_name — с 0045; без него — только время).
+function docTip(d) {
+  const t = [];
+  if (d.created_by_name) t.push("Создал: " + d.created_by_name);
+  if (d.status === "posted") t.push((d.posted_by_name ? "Провёл: " + d.posted_by_name + (d.posted_at ? ", " : "") : "Проведён ") + (d.posted_at ? fmtDateTime(d.posted_at) : ""));
+  if (d.doc_type === "invoice_in" && (d.ext_number || d.ext_date)) t.push("Накладная поставщика" + (d.ext_number ? " № " + d.ext_number : "") + (d.ext_date ? " от " + fmtDate(d.ext_date) : ""));
+  if (d.comment && d.doc_type !== "sale") t.push("Комментарий: " + d.comment);
+  return t.join("\n");
 }
 
 async function loadDocs() {
   const n = nextSeq("docs");
-  const r = await api("docs_list", { doc_type: state.doc_type || null, store_id: state.store_id || null, status: state.status || null, q: state.q, date_from: state.date_from || null, date_to: state.date_to || null, page: state.page });
+  const r = await api("docs_list", { ...docFilter(), page: state.page });
   if (n !== seqs.docs) return;
   if (!r.ok) { toast(errText(r), "bad"); return; }
   table.innerHTML = "";
-  table.append(el("tr", {}, ...["Номер", "Тип", "Дата", "Склады / поставщик", "Сумма", "Статус"].map((h, i) => el("th", { class: i === 4 ? "num" : "" }, h))));
+  table.append(el("tr", {}, ...["Номер", "Тип", "Дата", "№ вх.", "Склады / поставщик", "Сумма", "Автор", "Статус"].map((h, i) => el("th", { class: i === 5 ? "num" : "" }, h))));
   for (const d of r.rows) {
-    const who = d.doc_type === "invoice_in" ? `${d.counteragent_name || ""} → ${d.store_to_name || ""}`
-      : d.doc_type === "transfer" ? `${d.store_from_name || ""} → ${d.store_to_name || ""}`
-      : d.doc_type === "sale" ? `${d.store_from_name || ""} · ${d.comment || ""}` : (d.store_from_name || "");
-    table.append(el("tr", { class: "row", onclick: () => editDoc(d.id) },
-      el("td", {}, d.number), el("td", {}, TYPES[d.doc_type] || d.doc_type), el("td", {}, d.doc_date), el("td", {}, who),
-      el("td", { class: "num" }, d.total_sum != null ? fmt(d.total_sum) : ""),
+    const why = reasonOf(d);
+    table.append(el("tr", { class: "row", title: docTip(d), onclick: () => editDoc(d.id) },
+      el("td", { style: "white-space:nowrap" }, d.number), el("td", {}, TYPES[d.doc_type] || d.doc_type, why ? el("span", { class: "dim" }, " · " + why) : null),
+      el("td", { style: "white-space:nowrap" }, fmtDate(d.doc_date)),
+      el("td", {}, d.doc_type === "invoice_in" ? d.ext_number || "" : ""), el("td", {}, docWho(d)),
+      el("td", { class: "num" }, d.total_sum != null ? fmtMoney(d.total_sum) : ""),
+      el("td", { class: "dim" }, d.created_by_name || ""),
       el("td", {}, el("span", { class: "badge " + d.status }, d.status === "posted" ? "проведён" : "черновик"))));
   }
-  if (!r.rows.length) table.append(el("tr", {}, el("td", { colspan: 6, class: "dim" }, "Документов нет")));
+  if (!r.rows.length) table.append(el("tr", {}, el("td", { colspan: 8, class: "dim" }, "Документов нет")));
   pager.innerHTML = "";
   pager.append(`всего ${r.total} · стр. ${r.page} из ${r.pages}`,
     el("button", { class: "ghost", disabled: r.page <= 1, onclick: () => { state.page--; loadDocs(); } }, "←"),
     el("button", { class: "ghost", disabled: r.page >= r.pages, onclick: () => { state.page++; loadDocs(); } }, "→"));
 }
 
+// CSV для Excel: «;», BOM, числа с запятой. Скачивается без всплывающего окна.
+function csvFile(name, rows) {
+  const q = (v) => { const s = String(v ?? ""); return /[;"\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob(["﻿" + rows.map((r) => r.map(q).join(";")).join("\r\n")], { type: "text/csv;charset=utf-8" }));
+  a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+}
+const csvNum = (v) => (v === null || v === undefined || v === "" ? "" : String(r2(Number(v))).replace(".", ","));
+// Журнал по текущему фильтру — все страницы (сервер отдаёт по 200), а не только видимая.
+async function docsCsv(btn) {
+  btn.disabled = true;
+  const all = [];
+  try {
+    let page = 1, pages = 1;
+    do {
+      const r = await api("docs_list", { ...docFilter(), page });
+      if (!r.ok) { toast(errText(r), "bad"); return; }
+      all.push(...(r.rows || [])); pages = r.pages || 1; page++;
+    } while (page <= pages);
+  } finally { btn.disabled = false; }
+  const head = ["Номер", "Тип", "Дата", "№ накладной поставщика", "Дата накладной", "Откуда", "Куда", "Поставщик", "Причина / пометка", "Сумма", "Статус", "Создал", "Провёл", "Проведён", "Комментарий"];
+  csvFile(`журнал документов${state.date_from || state.date_to ? ` ${state.date_from || "…"}—${state.date_to || "…"}` : ""}.csv`,
+    [head, ...all.map((d) => [d.number, TYPES[d.doc_type] || d.doc_type, fmtDate(d.doc_date), d.ext_number || "", fmtDate(d.ext_date),
+      d.store_from_name || "", d.store_to_name || "", d.counteragent_name || "", reasonOf(d), csvNum(d.total_sum),
+      d.status === "posted" ? "проведён" : "черновик", d.created_by_name || "", d.posted_by_name || "", d.posted_at ? fmtDateTime(d.posted_at) : "", d.comment || ""])]);
+}
+
 // ---------- форма документа ----------
-async function editDoc(id, newType) {
+// preset — новый документ «как этот» (кнопка «Копировать»): склады, поставщик, причина и строки.
+async function editDoc(id, newType, preset) {
   let doc = { doc_type: newType, doc_date: today(), status: "draft", lines: [], consume: [] };
   if (id) { const r = await api("doc_get", { id }); if (!r.ok) { toast(errText(r), "bad"); return; } doc = r.doc; }
+  else if (preset) doc = { ...doc, ...preset };
   const type = doc.doc_type, posted = doc.status === "posted";
-  const isSale = type === "sale";
+  const isSale = type === "sale", isInv = type === "inventory", isIn = type === "invoice_in", isProd = type === "production";
   const ro = posted || !canDoc(type) || isSale;
-  // Форма с вводом по фону не закрывается; «Отмена» при изменениях переспрашивает.
-  const m = modal(`${TYPES[type]} ${doc.number || ""}`, { keep: !ro }); m.root.style.maxWidth = "960px";
+  // Форма с вводом по фону не закрывается; «Отмена» при изменениях переспрашивает (cancelForm ниже).
+  const m = modal(`${TYPES[type]} ${doc.number || (doc.copy_of ? "— копия " + doc.copy_of : "")}`, { keep: !ro }); m.root.style.maxWidth = "1040px";
+  const setTitle = () => { const h = m.root.querySelector("h1"); if (h) h.textContent = `${TYPES[type]} ${doc.number || ""}`; };
   // В новом документе выбирать можно только действующие склады; в уже заведённом
   // список полный, иначе выключенный позже склад пропал бы из карточки вместе с именем.
   // «Свой» склад документа (приход — получатель, прочие — источник) — только из закреплённых;
   // куда перемещать — любой действующий.
   const storeOpts = { "": "— склад —", ...opts(doc.id ? stores : active()) };
   const ownOpts = { "": "— склад —", ...opts(doc.id ? stores : mine(active())) };
+  // Единственный свой склад подставляется в новый документ сам (owner У8): у прихода — получатель,
+  // у прочих — источник. Склад, уже заданный копией, не заменяется.
+  const ownOnly = doc.id ? [] : mine(active());
+  if (ownOnly.length === 1) { if (isIn) doc.store_to = doc.store_to || ownOnly[0].id; else doc.store_from = doc.store_from || ownOnly[0].id; }
   const f = {
     date: el("input", { type: "date", value: doc.doc_date, readonly: ro }),
-    from: sel(ownOpts, doc.store_from || "", () => {}, ro),
-    to: sel(type === "invoice_in" ? ownOpts : storeOpts, doc.store_to || "", () => {}, ro),
-    reason: sel({ "": "— причина —", ...REASONS }, doc.reason || "", () => {}, ro),
+    from: sel(ownOpts, doc.store_from || "", () => { if (isInv) checkFirstInventory(); }, ro),
+    to: sel(isIn ? ownOpts : storeOpts, doc.store_to || "", () => {}, ro),
+    reason: sel({ "": "— причина —", ...REASONS }, type === "writeoff" ? doc.reason || "" : "", () => {}, ro),
     comment: el("input", { value: doc.comment || "", readonly: ro }),
     caId: doc.counteragent_id || null,
-    ca: el("input", { placeholder: "поставщик: начните вводить", value: doc.counteragent_name || "", readonly: ro }),
+    ca: el("input", { placeholder: "поставщик: начните вводить", value: doc.counteragent_name || "", readonly: ro, autocomplete: "off" }),
     // Реквизиты бумажной накладной поставщика — только у прихода (сервер их и принимает только там).
     ext: el("input", { placeholder: "как в накладной", value: doc.ext_number || "", readonly: ro }),
     extd: el("input", { type: "date", value: doc.ext_date || "", readonly: ro }),
   };
+
+  // ----- поставщик: выбор из списка или новый прямо из накладной -----
+  // Название в поле без выбора из списка — не поставщик: сервер ответил бы «Приходу нужны склад и
+  // поставщик», хотя поле выглядит заполненным. Поэтому id сбрасывается на первом же символе, а
+  // нет совпадений — тут же можно завести нового (право counteragents:edit есть у бухгалтера).
   const caRes = el("div", { class: "sres" });
+  let caRows = [], caHl = -1, caSeq = 0;
+  function caDraw(q) {
+    caRes.innerHTML = "";
+    caRows.forEach((c, i) => caRes.append(el("button", { type: "button", class: "sitem" + (i === caHl ? " hl" : ""), tabindex: "-1",
+      onmousedown: (e) => e.preventDefault(), onclick: () => caPick(c) }, c.name, c.bin ? el("span", { class: "dim" }, "  БИН " + c.bin) : null)));
+    if (!caRows.length && q) {
+      if (can("counteragents", "edit")) caRes.append(el("button", { type: "button", class: "sitem", tabindex: "-1", style: "color:var(--accent2)",
+        onmousedown: (e) => e.preventDefault(), onclick: () => newSupplier(q) }, `+ Завести поставщика «${q}»`));
+      else caRes.append(el("div", { class: "dim", style: "padding:9px 12px" }, "Такого поставщика нет. Нового заводит бухгалтер или администратор в разделе «Контрагенты»."));
+    }
+  }
+  const NO_CA = "Поставщик не выбран из списка — выберите или заведите нового";
+  function caPick(c) {
+    f.caId = c.id; f.ca.value = c.name; caRows = []; caHl = -1; caRes.innerHTML = ""; m.dirty = true;
+    if (err.textContent === NO_CA) err.textContent = "";
+    if (isIn && !ro) checkDup();   // № накладной уже вписан — проверяем его у нового поставщика
+  }
+  // Поставщика переписывают — предупреждение о дубле было про прежнего: снимаем до нового выбора.
+  f.ca.addEventListener("input", () => { f.caId = null; if (isIn && !ro) checkDup(); });
   f.ca.addEventListener("input", debounce(async () => {
-    caRes.innerHTML = ""; f.caId = null; const q = f.ca.value.trim(); if (q.length < 2) return;
-    const s = await api("counteragents_list", { q, kind: "supplier" });
-    for (const c of (s.rows || []).slice(0, 10)) caRes.append(el("button", { class: "sitem", onclick: () => { f.caId = c.id; f.ca.value = c.name; caRes.innerHTML = ""; } }, c.name));
+    const q = f.ca.value.trim(); const n = ++caSeq;
+    if (q.length < 2) { caRows = []; caDraw(""); return; }
+    const s = await api("counteragents_list", { q, kind: "supplier", active: true });
+    if (n !== caSeq) return;
+    caRows = (s.rows || []).slice(0, 10); caHl = caRows.length ? 0 : -1; caDraw(q);
   }, 300));
+  f.ca.addEventListener("keydown", (e) => {
+    if (e.key === "ArrowDown" && caRows.length) { e.preventDefault(); caHl = (caHl + 1) % caRows.length; caDraw(f.ca.value.trim()); }
+    else if (e.key === "ArrowUp" && caRows.length) { e.preventDefault(); caHl = (caHl - 1 + caRows.length) % caRows.length; caDraw(f.ca.value.trim()); }
+    else if (e.key === "Enter" && caRows.length) { e.preventDefault(); caPick(caRows[Math.max(caHl, 0)]); f.ext.focus(); }
+    else if (e.key === "Escape" && caRes.firstChild) { e.preventDefault(); caRows = []; caRes.innerHTML = ""; }
+  });
+  function newSupplier(q) {
+    const cm = modal("Новый поставщик", { keep: true });
+    const name = el("input", { value: q }), bin = el("input", { inputmode: "numeric", placeholder: "12 цифр, можно не заполнять" });
+    const e2 = el("div", { class: "err" }), go = el("button", {}, "Завести");
+    go.onclick = async () => {
+      e2.textContent = "";
+      const nm = name.value.trim(), b = bin.value.replace(/\s/g, "");
+      if (!nm) { e2.textContent = "Впишите название"; return; }
+      if (b && !/^\d{12}$/.test(b)) { e2.textContent = "БИН/ИИН — 12 цифр"; return; }
+      go.disabled = true;   // второе нажатие до ответа завело бы двух одинаковых поставщиков
+      const r = await api("counteragent_save", { name: nm, kind: "supplier", bin: b, active: true });
+      if (!r.ok) { saveFailed(r, true, go, e2); return; }
+      cm.close(); caPick({ id: r.id, name: nm }); toast("Поставщик заведён: " + nm); f.ext.focus();
+    };
+    for (const x of [name, bin]) x.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); go.click(); } });
+    cm.root.append(el("div", { class: "dim" }, "Остальное (телефон, заметку) можно дописать потом в разделе «Контрагенты»."),
+      el("label", {}, "Название"), name, el("label", {}, "БИН/ИИН"), bin, e2,
+      el("div", { class: "actions" }, go, el("button", { class: "ghost", onclick: cm.close }, "Отмена")));
+    setTimeout(() => name.focus(), 0);
+  }
+
+  // ----- пометка «ввод начальных остатков» у инвентаризации (день X) -----
+  // Первые остатки склада — не излишек: в прибыль они не входят (0046). У черновика флажок уходит
+  // с сохранением, у проведённой меняется сразу отдельным действием: движения от него не меняются.
+  let opening = null;
+  const openHint = el("div", { class: "warnbox", hidden: true });
+  if (isInv) {
+    opening = el("input", { type: "checkbox", checked: doc.reason === OPENING, disabled: !canDoc("inventory") });
+    opening.addEventListener("change", async () => {
+      if (!posted) { checkFirstInventory(); return; }
+      const want = opening.checked; opening.disabled = true; err.textContent = "";
+      const r = await api("doc_set_opening", { id: doc.id, opening: want });
+      opening.disabled = false;
+      if (!r.ok) { opening.checked = !want; err.textContent = errText(r); return; }
+      doc.reason = want ? OPENING : null; saved = true;
+      toast(want ? "Отмечено: ввод начальных остатков — в прибыль не входит" : "Пометка «ввод остатков» снята");
+    });
+  }
+  // У склада ещё нет ни одной проведённой инвентаризации — скорее всего, это и есть день X.
+  async function checkFirstInventory() {
+    openHint.hidden = true;
+    if (!isInv || posted || !opening || opening.checked || opening.disabled) return;
+    const st = f.from.value; if (!st) return;
+    const r = await api("docs_list", { doc_type: "inventory", store_id: st, status: "posted", page: 1 });
+    if (!r.ok || f.from.value !== st || opening.checked || Number(r.total) > 0) return;
+    openHint.textContent = `У склада «${storeName(st)}» ещё нет ни одной проведённой инвентаризации. Если это первые остатки (день X) — `
+      + "поставьте флажок «Ввод начальных остатков»: тогда они не попадут в прибыль как излишек.";
+    openHint.hidden = false;
+  }
+
   const head = el("div", { class: "grid2" }, el("div", {}, el("label", {}, "Дата"), f.date));
-  if (type === "invoice_in") head.append(el("div", {}, el("label", {}, "Склад-получатель"), f.to), el("div", { class: "sbox" }, el("label", {}, "Поставщик"), f.ca, caRes),
+  if (isIn) head.append(el("div", {}, el("label", {}, "Склад-получатель"), f.to), el("div", { class: "sbox" }, el("label", {}, "Поставщик"), f.ca, caRes),
     el("div", {}, el("label", {}, "№ накладной поставщика"), f.ext), el("div", {}, el("label", {}, "Дата накладной"), f.extd));
   if (type === "transfer") head.append(el("div", {}, el("label", {}, "Откуда"), f.from), el("div", {}, el("label", {}, "Куда"), f.to));
   if (type === "writeoff") head.append(el("div", {}, el("label", {}, "Склад"), f.from), el("div", {}, el("label", {}, "Причина"), f.reason));
-  if (type === "production") head.append(el("div", {}, el("label", {}, "Склад кухни (расход и выпуск)"), f.from));
-  if (type === "inventory") head.append(el("div", {}, el("label", {}, "Склад"), f.from));
+  if (isProd) head.append(el("div", {}, el("label", {}, "Склад кухни (расход и выпуск)"), f.from));
+  if (isInv) head.append(el("div", {}, el("label", {}, "Склад"), f.from));
   if (isSale) head.append(el("div", {}, el("label", {}, "Склад точки"), f.from));
   head.append(el("div", {}, el("label", {}, isSale ? "Источник" : "Комментарий"), f.comment));
+  if (isInv) head.append(el("div", { style: "grid-column:1/-1" },
+    el("label", { style: "margin-top:12px" }, opening, "Ввод начальных остатков (день X) — не входит в прибыль")));
   m.root.append(head);
+  // Кто завёл и кто провёл (имена — с 0045; старый сервер отдаёт только время проведения).
+  const who = [doc.created_by_name ? "Создал " + doc.created_by_name : null,
+    posted ? (doc.posted_by_name ? "Провёл " + doc.posted_by_name + " " : "Проведён ") + (doc.posted_at ? fmtDateTime(doc.posted_at) : "") : null].filter(Boolean);
+  if (who.length) m.root.append(el("div", { class: "dim", style: "margin-top:8px" }, who.join(" · ")));
   if (isSale) m.root.append(el("div", { class: "dim", style: "margin-top:6px" },
     "Документ ведёт отчёт точки: он меняется, когда точка правит отчёт. Руками его не правят: если отчёт правили, во вкладке «Продажи» есть «Провести продажи за период»."));
   if (doc.sync_note) m.root.append(el("div", { class: "warnbox", style: "margin-top:8px" }, doc.sync_note));
-  // строки
+  // Дубль накладной (0045, dup_of в ответе doc_save): сохраняется, но человек видит, что такая уже есть.
+  const dupBox = el("div", { class: "warnbox", hidden: true });
+  const dupText = (d) => `У поставщика уже есть накладная № ${f.ext.value.trim()} — ${d.number} от ${fmtDate(d.doc_date)} (${d.status === "posted" ? "проведена" : "черновик"})`;
+  function showDup(d) {
+    dupBox.innerHTML = ""; dupBox.hidden = !d; if (!d) return;
+    dupBox.append(`У поставщика уже есть накладная № ${f.ext.value.trim()} — `,
+      el("a", { href: "#", class: "link", style: "padding:0", onclick: (e) => { e.preventDefault(); editDoc(d.id); } }, `${d.number} от ${fmtDate(d.doc_date)}`),
+      ` (${d.status === "posted" ? "проведена" : "черновик"}). Проверьте, не внесена ли она второй раз.`);
+  }
+  // То же предупреждение — до сохранения, как только курсор ушёл из «№ накладной поставщика» (buh 3):
+  // раньше дубль всплывал только в ответе doc_save, когда черновик с номером ПН уже записан. Ищем
+  // журналом (он ищет и по № накладной) приход того же поставщика с тем же номером — без регистра и
+  // крайних пробелов, как сверяет сервер, — кроме этого документа; первым — проведённый, затем ранний.
+  // Журнал отдаёт только документы складов пользователя; что он не увидит, покажет ответ сохранения.
+  let dupSeq = 0;
+  async function checkDup() {
+    const no = f.ext.value.trim(), ca = f.caId, n = ++dupSeq;
+    if (!no || !ca) { showDup(null); return; }
+    const hits = [];
+    for (let page = 1, pages = 1; page <= Math.min(pages, 5); page++) {
+      const r = await api("docs_list", { doc_type: "invoice_in", q: no, page });
+      if (n !== dupSeq) return;   // номер или поставщика уже поменяли — ответ устарел
+      if (!r.ok) return;
+      hits.push(...(r.rows || []).filter((d) => d.id !== doc.id && d.counteragent_id === ca
+        && String(d.ext_number || "").trim().toLowerCase() === no.toLowerCase()));
+      pages = r.pages || 1;
+    }
+    hits.sort((a, b) => (b.status === "posted") - (a.status === "posted") || String(a.doc_date).localeCompare(String(b.doc_date))
+      || String(a.number).localeCompare(String(b.number)));
+    showDup(hits[0] || null);
+  }
+  if (isIn && !ro) {
+    f.ext.addEventListener("change", checkDup);
+    if (doc.id && doc.ext_number) checkDup();   // открыли черновик с номером — дубль виден сразу
+  }
+  m.root.append(dupBox, openHint);
+
+  // ----- строки -----
   const lines = doc.lines.map((l) => ({ ...l }));
   const tbl = el("table"); const tot = el("div", { class: "tot" });
-  const isInv = type === "inventory", isIn = type === "invoice_in";
-  // Ячейки сумм, которые пересчитываются при вводе; перерисовки таблицы не требуют.
-  let sumCells = [];
-  // Ввод в строке меняет только свою ячейку суммы и итог. Раньше здесь была полная
-  // перерисовка таблицы на каждый input: браузер пересоздавал поле, и при наборе «10.5»
-  // каретка прыгала в начало, а незавершённое число («10.») терялось. Восстановление
-  // фокуса ниже оставлено как страховка на перерисовки от добавления/удаления строк.
-  function refreshSums() {
-    let sum = 0;
-    for (const c of sumCells) {
-      if (c.live) {
-        const q = Number(isInv ? c.l.fact_qty : c.l.qty) || 0, p = Number(c.l.price) || 0;
-        c.td.textContent = fmt(q * p); sum += q * p;
-      } else sum += Number(c.l.sum || 0);
-    }
-    tot.innerHTML = ""; tot.append(el("span", {}, posted ? (isSale ? "Себестоимость проданного" : "Сумма документа") : (isIn ? "Сумма" : "Строк")), el("span", {}, posted || isIn ? fmt(posted ? doc.total_sum : sum) + " ₸" : String(lines.length)));
-  }
-  // Любая перерисовка после первой — добавление или удаление строк: форма изменена.
+  let picker = null;
+  const focusSearch = () => { if (picker) picker.focus(); };
+  // Enter в строке: следующее поле этой строки, с последнего — в поиск следующей позиции (накладную
+  // набирают так: позиция → кол-во → цена → сумма → следующая позиция). У инвентаризации строки уже
+  // стоят списком (с остатком, из файла), и пересчёт идёт сверху вниз — там Enter ведёт вниз по той же
+  // колонке, с последней строки — в поиск.
+  const downCol = (key) => (e) => {
+    const all = [...tbl.querySelectorAll(`input[data-key="${key}"]`)].filter((x) => !x.readOnly);
+    const i = all.indexOf(e.target);
+    if (i >= 0 && i < all.length - 1) all[i + 1].focus(); else focusSearch();
+  };
+  const qkey = isInv ? "fact_qty" : "qty";
+  const lineSum = (l) => r2(num0(l[qkey]) * num0(l.price));
+  const docSum = () => r2(lines.reduce((a, l) => a + lineSum(l), 0));
+  // Цена из суммы строки (накладная, где по строке только сумма): до 4 знаков; если при большом
+  // количестве кол-во × цена с 4 знаками не даёт ту же сумму до тиына — до 6: итог должен сойтись с бумагой.
+  const priceOf = (s, q) => { const p4 = Math.round(s / q * 1e4) / 1e4; return Math.abs(r2(q * p4) - s) < 0.005 ? p4 : Math.round(s / q * 1e6) / 1e6; };
+  let liveCells = [];   // ячейки «Сумма» у инвентаризации: пересчитываются при вводе без перерисовки таблицы
+  let paper = null, paperNote = null;
+  // Ввод в строке меняет только свои ячейки и итог; полная перерисовка — при добавлении и удалении строк
+  // (на каждый символ поле пересоздавалось бы, и каретка прыгала). Фокус после перерисовки возвращается.
   let drawn = false;
   function drawLines() {
     if (drawn) m.dirty = true; drawn = true;
-    const ae = document.activeElement; const keep = ae && ae.dataset && ae.dataset.li != null ? { li: ae.dataset.li, key: ae.dataset.key } : null;
-    tbl.innerHTML = ""; sumCells = [];
-    const cols = ["Позиция", "Ед.", isInv ? "Факт" : "Кол-во"]; if (isInv && posted) cols.push("Расчёт", "Разница"); if (isIn) cols.push("Цена", "Сумма"); if (posted && !isIn && !isInv) cols.push(isSale ? "Цена продажи" : "Себест.", isSale ? "Выручка" : "Сумма"); if (isInv && posted) cols.push("Сумма"); cols.push("");
-    tbl.append(el("tr", {}, ...cols.map((h, i) => el("th", { class: i >= 2 ? "num" : "" }, h))));
+    const ae = document.activeElement;
+    const keep = ae && tbl.contains(ae) && ae.dataset && ae.dataset.li != null ? { li: ae.dataset.li, key: ae.dataset.key } : null;
+    tbl.innerHTML = ""; liveCells = [];
+    const cols = ["№", "Позиция", "Ед.", isInv ? "Факт" : "Кол-во"];
+    if (isInv && posted) cols.push("Расчёт", "Разница");
+    if (isIn || isInv) cols.push("Цена", isInv && posted ? "Сумма разницы" : "Сумма");
+    else if (posted) cols.push(isSale ? "Цена продажи" : "Себест.", isSale ? "Выручка" : "Сумма");
+    if (!ro) cols.push("");
+    tbl.append(el("tr", {}, ...cols.map((h, i) => el("th", { class: i >= 3 && h ? "num" : "", style: i === 0 ? "width:34px" : null,
+      title: isInv && h === "Цена" ? "Цена излишка: по ней оценится найденное сверх расчёта. Пусто — по средней цене склада" : null }, h))));
     lines.forEach((l, idx) => {
-      const q = Number(isInv ? l.fact_qty : l.qty) || 0, p = Number(l.price) || 0;
-      const inp = (key) => el("input", { type: "number", step: "0.001", value: l[key] ?? "", readonly: ro, "data-li": String(idx), "data-key": key, style: "text-align:right;padding:6px", oninput: (e) => { l[key] = e.target.value; refreshSums(); } });
-      const tds = [el("td", {}, l.name, isInv && !posted && l.current_qty != null ? el("i", { class: "dim", style: "display:block;font-style:normal;font-size:11px" }, "расчёт: " + fmt(l.current_qty)) : null), el("td", {}, l.unit_id || ""), el("td", { class: "num" }, inp(isInv ? "fact_qty" : "qty"))];
-      if (isInv && posted) tds.push(el("td", { class: "num" }, fmt(l.calc_qty)), el("td", { class: "num" }, fmt(q - Number(l.calc_qty || 0))));
-      if (isIn) { const sc = el("td", { class: "num" }, fmt(q * p)); tds.push(el("td", { class: "num" }, inp("price")), sc); sumCells.push({ l, td: sc, live: true }); }
-      if (posted && !isIn && !isInv) { tds.push(el("td", { class: "num" }, fmt(l.price)), el("td", { class: "num" }, fmt(l.sum))); sumCells.push({ l, live: false }); }
-      if (isInv && posted) { tds.push(el("td", { class: "num" }, fmt(l.sum))); sumCells.push({ l, live: false }); }
-      tds.push(el("td", {}, ro ? null : el("button", { class: "x", onclick: () => { lines.splice(idx, 1); drawLines(); } }, "×")));
-      tbl.append(el("tr", {}, ...tds));
+      const tr = el("tr", {});
+      const rowNav = enterNext(tr, focusSearch);
+      const inp = (key, o = {}) => numInput({ value: l[key], width: o.width || "110px",
+        attrs: { "data-li": String(idx), "data-key": key, "data-nav": "" },
+        onInput: (t) => { l[key] = t; if (o.onInput) o.onInput(t); refreshSums(); },
+        onEnter: isInv ? downCol(key) : rowNav });
+      const tds = [el("td", { class: "dim" }, String(idx + 1)),
+        el("td", {}, l.name, isInv && !posted && l.current_qty != null ? el("i", { class: "dim", style: "display:block;font-style:normal;font-size:11px" }, "расчёт: " + fmt(l.current_qty)) : null),
+        el("td", {}, l.unit_id || "")];
+      if (ro) {
+        tds.push(el("td", { class: "num" }, fmt(l[qkey])));
+        if (isInv && posted) {
+          const diff = num0(l.fact_qty ?? l.qty) - num0(l.calc_qty);
+          tds.push(el("td", { class: "num" }, fmt(l.calc_qty)), el("td", { class: "num" + (diff < 0 ? " bad" : "") }, fmt(diff)),
+            el("td", { class: "num" }, priceTxt(l.price)), el("td", { class: "num" }, fmtMoney(l.sum)));
+        } else if (isIn || isInv) tds.push(el("td", { class: "num" }, priceTxt(l.price)), el("td", { class: "num" }, fmtMoney(posted && l.sum != null ? l.sum : lineSum(l) || null)));
+        else if (posted) tds.push(el("td", { class: "num" }, priceTxt(l.price)), el("td", { class: "num" }, fmtMoney(l.sum)));
+      } else if (isIn) {
+        // Приход: кол-во, цена и сумма связаны. Сумма введена — цена = сумма / кол-во; меняют кол-во или
+        // цену — сумма пересчитывается по цене. Кол-во ещё пустое, а сумма уже есть — цена появится с ним.
+        if (l._sum === undefined) l._sum = lineSum(l) || "";
+        let note = l._last !== undefined && l._last !== null
+          ? el("div", { class: "dim", style: "font-size:11px;white-space:nowrap" }, "как в прошлом приходе" + (l._last ? " от " + fmtDate(l._last).slice(0, 5) : "")) : null;
+        const dropNote = () => { l._last = null; if (note) { note.remove(); note = null; } };
+        let pIn = null, sIn = null;
+        const qIn = inp("qty", { onInput: (t) => {
+          const q = num0(t);
+          if (!(num0(l.price) > 0) && num0(l._sum) > 0 && q > 0) { l.price = priceOf(num0(l._sum), q); pIn.value = numStr(l.price); }
+          else { l._sum = lineSum(l) || ""; sIn.value = numStr(l._sum); }
+        } });
+        pIn = inp("price", { onInput: () => { dropNote(); l._sum = lineSum(l) || ""; sIn.value = numStr(l._sum); } });
+        sIn = inp("_sum", { width: "130px", onInput: (t) => {
+          const s = parseNum(t), q = num0(l.qty);
+          if (q > 0 && s !== null && !Number.isNaN(s)) { l.price = priceOf(s, q); pIn.value = numStr(l.price); dropNote(); }
+        } });
+        sIn.title = "Можно ввести сумму строки — цена посчитается сама";
+        tds.push(el("td", { class: "num" }, qIn), el("td", { class: "num" }, pIn, note), el("td", { class: "num" }, sIn));
+      } else if (isInv) {
+        const sc = el("td", { class: "num" }); liveCells.push({ l, td: sc });
+        tds.push(el("td", { class: "num" }, inp("fact_qty")), el("td", { class: "num" }, inp("price")), sc);
+      } else tds.push(el("td", { class: "num" }, inp("qty")));
+      // «×» — не в порядке Tab: Tab с цены попадал на «×», и Enter удалял строку без вопроса.
+      if (!ro) tds.push(el("td", {}, el("button", { class: "x", tabindex: "-1", title: "Убрать строку", onclick: () => { lines.splice(idx, 1); drawLines(); } }, "×")));
+      tr.append(...tds);
+      tbl.append(tr);
     });
     refreshSums();
     if (keep) { const n = tbl.querySelector(`input[data-li="${keep.li}"][data-key="${keep.key}"]`); if (n) n.focus(); }
   }
+  function refreshSums() {
+    for (const c of liveCells) { const v = lineSum(c.l); c.td.textContent = v ? fmtMoney(v) : ""; }
+    const n = lines.length, sum = docSum();
+    tot.innerHTML = "";
+    if (posted) tot.append(el("span", {}, (isSale ? "Себестоимость проданного" : isInv ? "Итог разницы (излишки − недостача)" : "Сумма документа") + " · " + rows_(n)),
+      el("span", {}, fmtMoney(doc.total_sum || 0) + " ₸"));
+    else if (isIn) tot.append(el("span", {}, "Сумма · " + rows_(n)), el("span", {}, fmtMoney(sum) + " ₸"));
+    else if (isInv) {
+      const withFact = lines.filter((l) => l.fact_qty !== "" && l.fact_qty !== null && l.fact_qty !== undefined).length;
+      tot.append(el("span", {}, `Строк ${n} · с фактом ${withFact}`), el("span", {}, sum ? "оценка по ценам " + fmtMoney(sum) + " ₸" : ""));
+    } else tot.append(el("span", {}, "Строк"), el("span", {}, String(n)));
+    if (paperNote) {
+      // «Итого по накладной (на бумаге)» — живая сверка с суммой строк; поле не сохраняется.
+      paperNote.innerHTML = "";
+      const p = parseNum(paper.value);
+      if (p !== null && !Number.isNaN(p)) {
+        const d = r2(p - sum);
+        paperNote.append(Math.abs(d) < 0.005 ? el("span", { class: "tag ok" }, "сходится")
+          : el("span", { class: "tag bad", title: d > 0 ? "В документе меньше, чем на бумаге" : "В документе больше, чем на бумаге" }, `расходится на ${fmtMoney(Math.abs(d))} ₸`));
+      }
+    }
+  }
+  if (isIn && !ro) {
+    paper = numInput({ placeholder: "как на бумаге", width: "160px", attrs: { "data-nodirty": "" }, onInput: () => refreshSums() });
+    paperNote = el("span", {});
+  }
   drawLines();
-  // Итог загрузки из файла живёт под таблицей: сводка и список ненайденных строк.
+  // Итог загрузки из файла живёт под таблицей: сверка, предупреждения и список ненайденных строк.
   const warn = el("div", { hidden: true });
-  m.root.append(el("h2", { style: "margin-top:14px" }, isInv ? "Позиции и факт" : (type === "production" ? "Выпуск" : isSale ? "Продано по отчёту" : "Строки")), tbl, tot, warn);
+  // append() пишет пустое значение текстом «null» — необязательное добавляется отдельно.
+  m.root.append(el("h2", { style: "margin-top:14px" }, isInv ? "Позиции и факт" : (isProd ? "Выпуск" : isSale ? "Продано по отчёту" : "Строки")), tbl, tot);
+  if (paper) m.root.append(el("div", { style: "display:flex;gap:10px;align-items:center;justify-content:flex-end;margin-top:8px;flex-wrap:wrap" },
+    el("span", { class: "dim" }, "Итого по накладной (на бумаге)"), paper, paperNote));
+  m.root.append(warn);
 
   async function fillFromBalances() {
     const st = f.from.value; if (!st) { toast("Сначала выберите склад", "bad"); return; }
@@ -216,16 +534,37 @@ async function editDoc(id, newType) {
     do {
       const b = await api("stock_balances", { store_id: st, only_nonzero: true, page });
       if (!b.ok) { toast(errText(b), "bad"); return; }
-      for (const x of (b.rows || [])) if (!lines.some((l) => l.item_code === x.item_code)) lines.push({ item_code: x.item_code, name: x.name, unit_id: x.unit_id, fact_qty: "", current_qty: x.qty });
+      for (const x of (b.rows || [])) {
+        if (lines.some((l) => l.item_code === x.item_code)) continue;
+        const l = { item_code: x.item_code, name: x.name, unit_id: x.unit_id, fact_qty: "", price: "", current_qty: x.qty };
+        // Артикул (код iiko, stock_balances с 0045) — чтобы бланк пересчёта печатался с «Код iiko», как
+        // итоговая опись (sklad 16). Старый сервер его не отдаёт — ключа нет, и бланк печатает код учёта.
+        if ("artikul" in x) l.artikul = x.artikul;
+        lines.push(l);
+      }
       pages = b.pages || 1; page++;
     } while (page <= pages);
     drawLines();
+  }
+  // Пересчитали часть склада (sklad 15: 12 позиций из 35 после «заполнить позициями с остатком») —
+  // строки без факта убираются одной кнопкой, а не крестиком по одной. Инвентаризация меняет остаток
+  // только тех позиций, что в ней есть, поэтому убранные останутся как были. Введённое не теряется:
+  // убираются только пустые строки, а вернуть их можно той же кнопкой «Заполнить позициями с остатком».
+  function dropNoFact() {
+    const keep = lines.filter((l) => parseNum(l.fact_qty) !== null);
+    const n = lines.length - keep.length;
+    if (!n) { toast("Строк без факта нет"); return; }
+    lines.splice(0, lines.length, ...keep);
+    drawLines();
+    if (err.textContent.startsWith("Укажите факт")) err.textContent = "";   // отказ проведения был ровно про эти строки
+    toast(`Убрано ${rows_(n)} без факта — их остатки документ не изменит`);
   }
 
   // Загрузка факта из файла остатков iiko. Разбор вынесен в parseStockFile — форма выбирает
   // лист (оборотка iiko приходит книгой: лист на фильтр складов), подтверждает сводный лист,
   // зовёт сопоставление и правит строки. Документ не сохраняется и не проводится: человек
-  // смотрит итог и решает сам.
+  // смотрит итог и решает сам. Вместе с количеством берётся «Сумма с/н» остатка: цена строки =
+  // сумма / кол-во — иначе излишек дня X оценился бы по учётной цене программы, а не по iiko.
   async function importFact(file) {
     err.textContent = ""; warn.hidden = true; warn.innerHTML = "";
     const store = stores.find((s) => s.id === f.from.value);
@@ -236,11 +575,11 @@ async function editDoc(id, newType) {
     if (!p.ok) { err.textContent = p.error; return; }
     const sh = await pickSheet(p.sheets, store);
     if (!sh) return;
-    let rows = sh.rows;
+    let rows = sh.rows, filtered = false;
     if (sh.has_store_col && sh.stores.length > 1) {
       const pick = await pickStore(sh.stores);
       if (!pick) return;
-      rows = rows.filter((x) => x.store === pick);
+      rows = rows.filter((x) => x.store === pick); filtered = true;
     }
     if (!rows.length) { err.textContent = "В листе нет строк с количеством"; return; }
     // Ключи уходят пачками: сервер принимает до 2000 за вызов.
@@ -251,33 +590,55 @@ async function editDoc(id, newType) {
       if (!r.ok) { err.textContent = errText(r); return; }
       for (const x of (r.rows || [])) found.set(from + x.i, x);
     }
-    // Одна позиция может прийти файлом несколькими строками (разные группы отчёта) — складываем.
+    // Одна позиция может прийти файлом несколькими строками (разные группы отчёта) — складываем
+    // и количество, и сумму. Сумма строки с минусом не берётся: факт у неё 0.
     const got = new Map(), miss = [];
     rows.forEach((row, i) => {
       const it = found.get(i);
       if (!it) { if (row.qty > 0) miss.push(row); return; }   // ненайденный ноль грузить некуда и незачем
+      const s = row.qty > 0 && row.sum > 0 ? row.sum : 0;
       const prev = got.get(it.item_code);
-      if (prev) prev.qty += row.qty; else got.set(it.item_code, { it, qty: row.qty });
+      if (prev) { prev.qty += row.qty; prev.sum += s; } else got.set(it.item_code, { it, qty: row.qty, sum: s });
     });
+    let loadedSum = 0; const noPrice = [];
     for (const [itemCode, v] of got) {
-      const val = String(Math.round(v.qty * 1000) / 1000);
+      const val = Math.round(v.qty * 1000) / 1000;
+      // цена — от округлённого факта: факт × цена должен вернуть сумму файла, а не потерять тиыны на округлении
+      const price = val > 0 && v.sum > 0 ? Math.round(v.sum / val * 1e6) / 1e6 : null;
+      if (val > 0 && price === null) noPrice.push(v.it.name);
+      if (price !== null) loadedSum += r2(val * price);
       const line = lines.find((l) => l.item_code === itemCode);
-      if (line) line.fact_qty = val;
-      else lines.push({ item_code: itemCode, name: v.it.name, unit_id: v.it.unit_id, qty: "", fact_qty: val, price: "" });
+      if (line) { line.fact_qty = val; if (price !== null) line.price = price; }
+      else lines.push({ item_code: itemCode, name: v.it.name, unit_id: v.it.unit_id, qty: "", fact_qty: val, price: price ?? "" });
     }
     drawLines();
+    const sumOf = (list) => r2(list.reduce((a, x) => a + (Number(x.sum) || 0), 0));
     warn.className = "warnbox"; warn.hidden = false; warn.innerHTML = "";
-    warn.append(el("div", {}, `Лист «${sh.sheet}»: загружено ${got.size}, не найдено ${miss.length}`
-      + (sh.zeros ? `, нулевых ${sh.zeros}` : "") + (sh.blanks ? `, пропущено без количества ${sh.blanks}` : "")));
+    // Сверка с файлом: сколько и на какую сумму в файле, что из этого встало в документ и что нет.
+    warn.append(el("div", { style: "font-weight:600" }, sh.has_sum
+      ? `В файле ${rows.length} поз. на ${fmtMoney(sumOf(rows))} ₸` + (sh.total !== null && !filtered ? ` (итог файла ${fmtMoney(sh.total)} ₸)` : "")
+        + ` — загружено ${got.size} на ${fmtMoney(r2(loadedSum))} ₸, не найдено ${miss.length} на ${fmtMoney(sumOf(miss))} ₸, без цены ${noPrice.length}`
+      : `В файле ${rows.length} поз. — загружено ${got.size}, не найдено ${miss.length}. Колонки суммы в листе нет: цены не загружены`));
+    warn.append(el("div", { class: "dim" }, `Лист «${sh.sheet}»` + (sh.zeros ? `, нулевых ${sh.zeros}` : "") + (sh.blanks ? `, пропущено без количества ${sh.blanks}` : "")));
     for (const w of sh.warnings) warn.append(el("div", { class: "dim" }, w));
+    if (sh.period_to && sh.period_to !== f.date.value) warn.append(el("div", {},
+      `Остатки в файле — на конец ${fmtDate(sh.period_to)}, а дата документа — ${fmtDate(f.date.value)}. Проверьте, тот ли это файл и та ли дата.`));
     if (sh.combined) warn.append(el("div", {}, `Лист сводный (${sh.stores.join(", ")}) — всё загружено на склад «${store.name}»`));
     if (sh.negatives.length) warn.append(el("details", {},
-      el("summary", {}, `В iiko минус у ${sh.negatives.length} поз. — факт поставлен 0`),
+      el("summary", {}, `В iiko минус у ${sh.negatives.length} поз.` + (sh.has_sum ? ` на ${fmtMoney(sumOf(sh.negatives))} ₸` : "") + " — факт поставлен 0"),
       el("div", { class: "dim" }, sh.negatives.map((x) => `${x.name} (${fmt(x.qty)})`).join("; "))));
+    // Сумма без количества (посуда, списанная в iiko «в ноль» по количеству) — в остаток её не положить.
+    const zeroSum = rows.filter((x) => x.qty === 0 && !x.neg && x.sum);
+    if (sh.has_sum && zeroSum.length) warn.append(el("details", {},
+      el("summary", {}, `Кол-во 0, а сумма есть у ${zeroSum.length} поз. на ${fmtMoney(sumOf(zeroSum))} ₸ — сумма без количества не загружается`),
+      el("div", { class: "dim" }, zeroSum.map((x) => `${x.name} (${fmtMoney(x.sum)} ₸)`).join("; "))));
+    if (sh.has_sum && noPrice.length) warn.append(el("details", {},
+      el("summary", {}, `Без цены ${noPrice.length} поз.: в файле у них нет суммы — излишек оценится по средней цене склада`),
+      el("div", { class: "dim" }, noPrice.join("; "))));
     if (miss.length) {
       const mt = el("table");
-      mt.append(el("tr", {}, ...["Не найдено в номенклатуре", "Код", "Кол-во"].map((h, i) => el("th", { class: i === 2 ? "num" : "" }, h))));
-      for (const w of miss) mt.append(el("tr", {}, el("td", {}, w.name), el("td", {}, w.code), el("td", { class: "num" }, fmt(w.qty))));
+      mt.append(el("tr", {}, ...["Не найдено в номенклатуре", "Код", "Кол-во", "Сумма"].map((h, i) => el("th", { class: i >= 2 ? "num" : "" }, h))));
+      for (const w of miss) mt.append(el("tr", {}, el("td", {}, w.name), el("td", {}, w.code), el("td", { class: "num" }, fmt(w.qty)), el("td", { class: "num" }, w.sum ? fmtMoney(w.sum) : "")));
       warn.append(mt);
     }
     // Строки, которых нет в файле, но есть в документе (например, после «заполнить позициями
@@ -335,18 +696,24 @@ async function editDoc(id, newType) {
   }
 
   if (!ro) {
-    const search = el("input", { placeholder: "Добавить позицию: название или код", "data-nodirty": "" }); const res = el("div", { class: "sres" });
-    search.addEventListener("input", debounce(async () => {
-      res.innerHTML = ""; const q = search.value.trim(); if (q.length < 2) return;
-      const s = await api("items_search", { q, active: true, page: 1 });
-      for (const it of (s.rows || []).slice(0, 12)) {
-        if (type === "production" && !["dish", "prepared"].includes(it.item_type)) continue;
-        if (lines.some((l) => l.item_code === it.code)) continue;
-        res.append(el("button", { class: "sitem", onclick: () => { lines.push({ item_code: it.code, name: it.name, unit_id: it.unit_id, qty: "", fact_qty: "", price: "" }); search.value = ""; res.innerHTML = ""; drawLines(); } },
-          it.name, el("span", { class: "dim" }, ` · ${it.unit_id}`)));
-      }
-    }, 300));
-    const tools = el("div", { class: "sbox", style: "margin-top:10px" }, search, res);
+    // Поиск позиции: в приходе — только товары (блюда не приходуют), в акте производства — что выпускают
+    // (блюда и полуфабрикаты), в прочих — всё. Уже добавленные не показываются; после выбора — курсор
+    // в количество новой строки. В приходе цена подставляется из последнего прихода (last_price, 0047).
+    // В перемещении и списании поиск знает склад-отправитель (sklad 12): сервер отдаёт остаток на нём
+    // (stock_qty, 0047) и ставит позиции с остатком выше, а в подсказке виден «ост. N» — беляш без
+    // остатка не выбирается вслепую. Склад читается в момент поиска: его могли сменить после открытия.
+    const fromStore = type === "transfer" || type === "writeoff" ? () => f.from.value || null : null;
+    picker = itemPicker({ types: isIn ? ["goods"] : isProd ? ["dish", "prepared"] : null, limit: 30, store_id: fromStore,
+      exclude: (it) => lines.some((l) => l.item_code === it.code),
+      onPick: (it) => {
+        const l = { item_code: it.code, name: it.name, unit_id: it.unit_id, qty: "", fact_qty: "", price: "" };
+        if (it.artikul) l.artikul = it.artikul;
+        if (it.group_name) l.group_name = it.group_name;
+        if (isIn && it.last_price !== null && it.last_price !== undefined && Number(it.last_price) > 0) { l.price = Number(it.last_price); l._last = it.last_price_date || ""; }
+        lines.push(l); drawLines();
+        const q = tbl.querySelector(`input[data-li="${lines.length - 1}"][data-key="${qkey}"]`); if (q) q.focus();
+      } });
+    const tools = el("div", { style: "margin-top:10px" }, picker.root);
     if (isInv) {
       // Файл выбирается скрытым input'ом: своя кнопка рядом с «заполнить с остатком» читается
       // лучше, чем системный «Обзор…», и остаётся на месте после каждой загрузки.
@@ -355,81 +722,246 @@ async function editDoc(id, newType) {
       tools.prepend(el("div", { style: "margin-bottom:8px;display:flex;gap:8px;flex-wrap:wrap" },
         el("button", { class: "ghost small", onclick: fillFromBalances }, "Заполнить позициями с остатком"),
         el("button", { class: "ghost small", onclick: () => file.click() }, "Загрузить факт из файла"),
+        el("button", { class: "ghost small", title: "Пересчитали не всё — строки без факта уберутся, остатки этих позиций документ не изменит",
+          onclick: dropNoFact }, "Убрать строки без факта"),
         file));
     }
     m.root.append(tools);
   }
   if (doc.consume && doc.consume.length) {
     const ct = el("table"); ct.append(el("tr", {}, ...["Расход сырья", "Ед.", "Кол-во", "Себест.", "Сумма"].map((h, i) => el("th", { class: i >= 2 ? "num" : "" }, h))));
-    for (const c of doc.consume) ct.append(el("tr", {}, el("td", {}, c.name), el("td", {}, c.unit_id), el("td", { class: "num" }, fmt(c.qty)), el("td", { class: "num" }, fmt(c.price)), el("td", { class: "num" }, fmt(c.sum))));
+    for (const c of doc.consume) ct.append(el("tr", {}, el("td", {}, c.name), el("td", {}, c.unit_id), el("td", { class: "num" }, fmt(c.qty)), el("td", { class: "num" }, priceTxt(c.price)), el("td", { class: "num" }, fmtMoney(c.sum))));
     m.root.append(el("h2", { style: "margin-top:14px" }, isSale ? "Списано со склада (по техкартам и как есть)" : "Списано по техкартам"), ct);
   }
   const err = el("div", { class: "err" }); const actions = el("div", { class: "actions" });
   // Ключ повтора нового документа (контракт п. 8) — один на открытую форму: если ответ на первое
   // сохранение потерялся и человек нажал ещё раз, сервер узнает документ по ключу и не заведёт второй.
   const clientKey = doc.id ? undefined : uid();
+  const payloadReason = () => isInv ? (opening && opening.checked ? OPENING : null) : type === "writeoff" ? f.reason.value || null : null;
+  const numOrNull = (v) => { const x = parseNum(v); return x === null || Number.isNaN(x) ? null : x; };
   const payload = () => ({ id: doc.id, client_key: clientKey, doc_type: type, doc_date: f.date.value, store_from: f.from.value || null, store_to: f.to.value || null,
-    counteragent_id: f.caId, reason: f.reason.value || null, comment: f.comment.value,
+    counteragent_id: f.caId, reason: payloadReason(), comment: f.comment.value,
     ext_number: f.ext.value.trim() || null, ext_date: f.extd.value || null,
-    lines: lines.map((l) => ({ item_code: l.item_code, qty: l.qty === "" ? null : l.qty, fact_qty: l.fact_qty === "" ? null : l.fact_qty, price: l.price === "" ? null : l.price })) });
+    // Цену хранят приход (закупка) и инвентаризация (цена излишка); у прочих её ставит проведение.
+    lines: lines.map((l) => ({ item_code: l.item_code, qty: isInv ? null : numOrNull(l.qty), fact_qty: isInv ? numOrNull(l.fact_qty) : null,
+      price: isIn || isInv ? numOrNull(l.price) : null })) });
+  // Проверки до сервера — те, что человек может поправить в форме: число, которое не число, и поставщик,
+  // набранный, но не выбранный из списка.
+  function check() {
+    for (const l of lines) for (const k of [qkey, ...(isIn || isInv ? ["price"] : [])]) {
+      const x = parseNum(l[k]);
+      if (x !== null && Number.isNaN(x)) return `${k === "price" ? "Цена" : isInv ? "Факт" : "Количество"} — число: ${l.name}`;
+    }
+    if (isIn && !f.caId) return NO_CA;
+    return "";
+  }
+  // Сохранено ли что-то за время формы: тогда при закрытии обновляется журнал (новый черновик в нём виден).
+  let saved = false;
+  function closeForm() { m.close(); if (saved) (LOADERS[state.tab] || loadDocs)(); }
+  // Черновик уже на сервере — «пропадёт» было бы неправдой: пропадут только правки после сохранения.
+  function cancelForm() {
+    if (!ro && m.dirty && !confirmDlg(doc.id ? `Черновик ${doc.number} сохранён, последние изменения пропадут. Закрыть?` : "Закрыть без сохранения? Введённое пропадёт.")) return;
+    closeForm();
+  }
   // Один запрос сохранения за раз: повторное нажатие (двойной щелчок, медленная связь) ждёт уже
-  // идущий и получает тот же id, а не создаёт второй документ. Кнопки на время запроса выключены.
+  // идущий и получает тот же ответ, а не создаёт второй документ. Кнопки на время запроса выключены.
   let saving = null;
   function save() {
     if (!saving) saving = (async () => {
       err.textContent = "";
+      const bad = check(); if (bad) { err.textContent = bad; return null; }
       const r = await api("doc_save", payload());
       if (!r.ok) { err.textContent = errText(r); return null; }
-      doc.id = r.id; doc.number = r.number; return r.id;
+      const first = !doc.id;
+      doc.id = r.id; doc.number = r.number; saved = true; m.dirty = false;
+      if (first) { setTitle(); drawActions(); }
+      dupSeq++; showDup(isIn ? r.dup_of : null);   // ответ сервера точнее проверки по журналу — она уже не нужна
+      return r;
     })().finally(() => { saving = null; });
     return saving;
   }
   const draftBtn = el("button", { class: "ghost" }, "Сохранить черновик"), postBtn = el("button", {}, "Провести");
   const busy = (on) => { draftBtn.disabled = postBtn.disabled = on; };
+  // Окно «Провести документ?» не бывает пустым: что за документ, сколько строк и на какую сумму, откуда
+  // и куда, затем что спишется и что уйдёт в минус.
+  // Поля preview новых версий сервера необязательны — без них окно такое же, как раньше: сумма
+  // документа total_sum (у прихода сумма своя — из строк формы), тип позиции item_type у минусов и
+  // позиции выпуска без действующей техкарты warnings_charts [{item_name}].
+  function postSummary(pv) {
+    const box = el("div", {});
+    const n = lines.length;
+    // Сумма у списания и инвентаризации (sklad 18) — только посчитанная сервером: списание идёт по
+    // средней склада, разница инвентаризации — по расчёту на дату, ни того ни другого в форме нет.
+    // Не отдал — в заголовке только число строк.
+    const raw = pv.total_sum ?? pv.sum;
+    const srvSum = raw !== null && raw !== undefined && raw !== "" && Number.isFinite(Number(raw)) ? Number(raw) : null;
+    const sumTxt = isIn ? "на " + fmtMoney(docSum()) + " ₸"
+      : srvSum === null ? null : (isInv ? "итог разницы " : "на ") + fmtMoney(srvSum) + " ₸";
+    box.append(el("div", { style: "font-weight:600" }, [`${TYPES[type]} ${doc.number}`, rows_(n), sumTxt].filter(Boolean).join(" · ")));
+    const from = storeName(f.from.value), to = storeName(f.to.value);
+    const where = isIn ? `${f.ca.value.trim()}${f.ext.value.trim() ? ", накладная № " + f.ext.value.trim() : ""}${f.extd.value ? " от " + fmtDate(f.extd.value) : ""} → ${to}`
+      : type === "transfer" ? `${from} → ${to}`
+      : type === "writeoff" ? `${from}, причина: ${REASONS[f.reason.value] || "—"}`
+      : isInv ? `Склад ${from}` + (opening && opening.checked ? " · ввод начальных остатков — в прибыль не войдёт" : "")
+      : `Склад ${from}`;
+    box.append(el("div", { class: "dim" }, `от ${fmtDate(f.date.value)} · ${where}`));
+    // Позиции выпуска без действующей техкарты (sklad 1, «Вода ПФ»): проведение откажет — говорим заранее.
+    const charts = (Array.isArray(pv.warnings_charts) ? pv.warnings_charts : []).map((c) => c.item_name || c.name || c.item_code).filter(Boolean);
+    if (charts.length) box.append(el("div", { class: "warnbox" },
+      `Нет действующей техкарты на ${fmtDate(f.date.value)}: ${listNames(charts)} — документ не проведётся. `
+      + "Уберите эти позиции из выпуска или заведите техкарту в разделе «Техкарты»."));
+    if (pv.consume && pv.consume.length) box.append(el("div", { class: "dim", style: "margin-top:6px" }, "Будет списано: " + pv.consume.map((c) => `${c.name} ${fmt(c.qty)} ${c.unit_id}`).join(", ")));
+    const minus = (Array.isArray(pv.warnings) ? pv.warnings : []).filter((w) => w.balance_after !== null && w.balance_after !== undefined);
+    if (minus.length) box.append(el("div", { class: "warnbox" }, "Уйдут в минус: " + minus.map((w) => `${w.name} (${w.store_name}) → ${fmt(w.balance_after)}`).join("; "),
+      prepHint(minus)));
+    return box;
+  }
+  // Подсказка про акт приготовления (sklad 14) — только когда в минус уходит полуфабрикат: у товара
+  // («Приправа Черный молотый перец») она сбивала. Тип берётся из warnings[].item_type; старый сервер
+  // его не отдаёт — тогда, как раньше, общий текст у производства (по «ПФ» в названии не гадаем).
+  function prepHint(minus) {
+    const st = { style: "margin-top:4px" };
+    if (!minus.some((w) => w.item_type !== undefined && w.item_type !== null)) {
+      return isProd ? el("div", st, "Если это полуфабрикат — сначала проведите его акт приготовления, потом этот.") : null;
+    }
+    const pf = minus.filter((w) => w.item_type === "prepared").map((w) => w.name);
+    if (!pf.length) return null;
+    return el("div", st, (pf.length > 1 ? `Полуфабрикаты ${listNames(pf)} — сначала проведите их акты приготовления`
+      : `Полуфабрикат ${pf[0]} — сначала проведите его акт приготовления`) + ", потом этот документ.");
+  }
   async function post() {
     busy(true);
     try {
-      const id = await save(); if (!id) return;
+      if (isInv) {
+        const empty = lines.filter((l) => numOrNull(l.fact_qty) === null);
+        if (empty.length) { err.textContent = `Укажите факт у ${empty.length} поз.: ${empty.slice(0, 3).map((l) => l.name).join(", ")}${empty.length > 3 ? "…" : ""} `
+          + "(нет в наличии — 0; не пересчитывали — кнопка «Убрать строки без факта»)"; return; }
+      }
+      const sr = await save(); if (!sr) return;
+      const id = sr.id;
+      if (isIn && sr.dup_of && !confirmDlg(dupText(sr.dup_of) + ".\n\nВсё равно провести?")) return;
       const pv = await api("doc_preview", { id }); if (!pv.ok) { err.textContent = errText(pv); return; }
-      const box = el("div", {});
-      if (pv.consume.length) box.append(el("div", { class: "dim" }, "Будет списано: " + pv.consume.map((c) => `${c.name} ${fmt(c.qty)} ${c.unit_id}`).join(", ")));
-      if (pv.warnings.length) box.append(el("div", { class: "warnbox" }, "Уйдут в минус: " + pv.warnings.map((w) => `${w.name} (${w.store_name}) → ${fmt(w.balance_after)}`).join("; ")));
-      const cm = modal("Провести документ?"); cm.root.append(box, el("div", { class: "actions" },
+      const cm = modal("Провести документ?"); cm.root.append(postSummary(pv), el("div", { class: "actions" },
         el("button", { onclick: async () => {
           cm.close(); busy(true);
           const r = await api("doc_post", { id });
           busy(false);
           if (!r.ok) { err.textContent = errText(r); return; }
-          toast("Проведено" + (r.warnings.length ? " — есть минусы" : "")); m.close(); afterDocChange(doc);
+          toast("Проведено" + ((r.warnings || []).length ? " — есть минусы" : "")); m.close(); afterDocChange(doc, r); postNotes(r, type);
         } }, "Провести"),
         el("button", { class: "ghost", onclick: cm.close }, "Отмена")));
     } finally { busy(false); }
   }
-  draftBtn.onclick = async () => { busy(true); const id = await save(); busy(false); if (id) { toast("Черновик сохранён"); m.close(); (LOADERS[state.tab] || loadDocs)(); } };
+  draftBtn.onclick = async () => {
+    busy(true); const r = await save(); busy(false);
+    if (!r) return;
+    // Дубль накладной: форма остаётся открытой, чтобы предупреждение было видно.
+    if (isIn && r.dup_of) { toast("Черновик сохранён — проверьте: такая накладная уже есть", "bad"); return; }
+    toast("Черновик сохранён"); closeForm();
+  };
   postBtn.onclick = post;
-  if (!ro) actions.append(draftBtn, postBtn);
-  if (posted && canDoc(type) && !isSale) actions.append(el("button", { class: "ghost", onclick: async (e) => {
-    if (!confirmDlg("Отменить проведение?")) return;
-    e.target.disabled = true;
-    const r = await api("doc_unpost", { id: doc.id });
-    e.target.disabled = false;
-    if (!r.ok) { err.textContent = errText(r); return; }
-    const hasWarn = r.warnings && r.warnings.length;
-    toast("Проведение отменено" + (hasWarn ? " — в минусе: " + r.warnings.map((w) => `${w.name} (${w.store_name}) ${fmt(w.balance_after)}`).join("; ") : ""), hasWarn ? "bad" : "ok");
-    m.close(); afterDocChange(doc);
-  } }, "Отменить проведение"));
-  if (doc.id && !posted && canDoc(type) && !isSale) actions.append(el("button", { class: "ghost", onclick: async (e) => {
-    if (!confirmDlg("Удалить черновик?")) return;
-    e.target.disabled = true;
-    const r = await api("doc_delete", { id: doc.id });
-    e.target.disabled = false;
-    if (!r.ok) { err.textContent = errText(r); return; } toast("Удалено"); m.close(); afterDocChange(null); } }, "Удалить"));
-  actions.append(el("button", { class: "ghost", onclick: m.cancel }, ro ? "Закрыть" : "Отмена"));
+  // Документ в форме, как его отдал бы doc_get: печать черновика — с тем, что сейчас в форме
+  // (бланк пересчёта после «заполнить позициями с остатком» печатается и без сохранения).
+  function formDoc() {
+    const clean = (l) => Object.fromEntries(Object.entries(l).filter(([k]) => !k.startsWith("_")));
+    if (ro) return { ...doc, lines: lines.map(clean) };
+    const fromId = f.from.value || null, toId = f.to.value || null;
+    return { ...doc, doc_date: f.date.value || doc.doc_date, store_from: fromId, store_to: toId,
+      store_from_name: storeName(fromId) || null, store_to_name: storeName(toId) || null,
+      counteragent_id: f.caId, counteragent_name: f.ca.value.trim() || null, reason: payloadReason(), comment: f.comment.value,
+      ext_number: f.ext.value.trim() || null, ext_date: f.extd.value || null,
+      total_sum: isIn ? docSum() : doc.total_sum,
+      lines: lines.map((l) => ({ ...clean(l), sum: isIn || isInv ? lineSum(l) : l.sum })) };
+  }
+  function choose(title, list) {
+    return new Promise((resolve) => {
+      const cm = modal(title);
+      cm.root.append(el("div", { class: "actions" },
+        ...list.map(([t, o], i) => el("button", { class: i ? "ghost" : "", onclick: () => { cm.close(); resolve(o); } }, t)),
+        el("button", { class: "ghost", onclick: () => { cm.close(); resolve(null); } }, "Отмена")));
+    });
+  }
+  async function doPrint() {
+    let o = { withCost: type !== "transfer" };
+    // Перемещение: без цен — для водителя и точки, с ценами — для бухгалтерии (цены есть только у проведённого).
+    if (type === "transfer" && posted) { o = await choose("Печать накладной на перемещение", [["Без цен", { withCost: false }], ["С ценами", { withCost: true }]]); if (!o) return; }
+    // Инвентаризация: бланк для пересчёта — у любой (без факта), итоговая опись — у проведённой.
+    if (isInv) {
+      o = posted ? await choose("Печать инвентаризации", [["Итоговая опись", { blank: false, withCost: true }], ["Бланк для пересчёта", { blank: true }]]) : { blank: true };
+      if (!o) return;
+    }
+    let mod;
+    try { mod = await import("./print.js?v=21"); }
+    catch (e) { toast("Печать не загрузилась: " + (e && e.message ? e.message : e), "bad"); return; }
+    try {
+      const res = await mod.printDoc(formDoc(), o);
+      if (res && res.ok === false) toast(res.error || "Не получилось напечатать", "bad");
+    } catch (e) { toast("Не получилось напечатать: " + (e && e.message ? e.message : e), "bad"); }
+  }
+  // «Копировать»: новый документ того же типа на сегодня — склады, поставщик, строки. У прихода — кол-во
+  // и цены, без № и даты накладной поставщика; у инвентаризации — только позиции, без факта.
+  function doCopy() {
+    if (!ro && m.dirty && !confirmDlg(doc.id ? `Черновик ${doc.number} сохранён, последние изменения пропадут. Сделать копию?` : "Введённое пропадёт. Сделать копию?")) return;
+    const pre = { copy_of: doc.number || "", store_from: f.from.value || null, store_to: f.to.value || null,
+      counteragent_id: isIn ? f.caId : null, counteragent_name: isIn ? f.ca.value.trim() : null,
+      reason: type === "writeoff" ? f.reason.value || null : null,
+      lines: lines.map((l) => {
+        const c = { item_code: l.item_code, name: l.name, unit_id: l.unit_id, qty: isInv ? "" : l.qty ?? "", fact_qty: "", price: isIn ? l.price ?? "" : "" };
+        if (l.artikul) c.artikul = l.artikul;
+        if (l.group_name) c.group_name = l.group_name;
+        return c;
+      }) };
+    closeForm();
+    editDoc(null, type, pre);
+  }
+  function drawActions() {
+    actions.innerHTML = "";
+    if (!ro) actions.append(draftBtn, postBtn);
+    if (!isSale) actions.append(el("button", { class: "ghost", onclick: doPrint }, "Печать"));
+    if (doc.id && !isSale && canDoc(type)) actions.append(el("button", { class: "ghost", onclick: doCopy }, "Копировать"));
+    if (posted && canDoc(type) && !isSale) actions.append(el("button", { class: "ghost", onclick: async (e) => {
+      if (!confirmDlg("Отменить проведение?")) return;
+      e.target.disabled = true;
+      const r = await api("doc_unpost", { id: doc.id });
+      e.target.disabled = false;
+      if (!r.ok) { err.textContent = errText(r); return; }
+      const hasWarn = r.warnings && r.warnings.length;
+      toast("Проведение отменено — документ открыт для правки" + (hasWarn ? ". В минусе: " + r.warnings.map((w) => `${w.name} (${w.store_name}) ${fmt(w.balance_after)}`).join("; ") : ""), hasWarn ? "bad" : "ok");
+      // Как в iiko: распровели — поправили — провели. Форма открывается снова, уже черновиком.
+      m.close(); afterDocChange(doc, r); editDoc(doc.id);
+    } }, "Отменить проведение"));
+    if (doc.id && !posted && canDoc(type) && !isSale) actions.append(el("button", { class: "ghost", onclick: async (e) => {
+      if (!confirmDlg("Удалить черновик?")) return;
+      e.target.disabled = true;
+      const r = await api("doc_delete", { id: doc.id });
+      e.target.disabled = false;
+      if (!r.ok) { err.textContent = errText(r); return; } toast("Удалено"); m.close(); afterDocChange(null); } }, "Удалить"));
+    actions.append(el("button", { class: "ghost", onclick: cancelForm }, ro ? "Закрыть" : "Отмена"));
+  }
+  drawActions();
   m.root.append(err, actions);
+  // Копия — уже введённое, но не сохранённое: закрытие переспросит.
+  if (preset) m.dirty = true;
+  if (isInv && !posted) checkFirstInventory();
 }
 
 // ---------- остатки ----------
 let bal = { store_id: "", q: "", nonzero: true, page: 1 };
+// Средняя строки в минусе: сервер отдаёт 0, а сумма не ноль (owner Д4: «−3,9 кг · 0,00 · −6 254,82») —
+// показываем цену, по которой сумма посчитана: сумма / кол-во.
+const balAvg = (x) => {
+  const q = Number(x.qty), s = Number(x.sum), a = s / q;
+  return q < 0 && !(Number(x.avg_cost) > 0) && a > 0 && Number.isFinite(a) ? Math.round(a * 1e4) / 1e4 : x.avg_cost;
+};
+// Пустой список остатков. Поиск без совпадений — не пустой склад (sklad 15: «самс» по кухне пугал
+// советом «проведите первую инвентаризацию»): называем, что искали и где. Совет про первую
+// инвентаризацию — только когда пусто без поиска.
+function balEmpty() {
+  const q = bal.q.trim();
+  if (!q) return "Остатков нет — проведите первую инвентаризацию или приход";
+  const where = bal.store_id ? `на складе «${storeName(bal.store_id)}»` : myIds.length ? "на ваших складах" : "на складах";
+  return `По «${q}» ${where} ничего нет` + (bal.nonzero ? ". Нулевые остатки скрыты флажком «только с остатком»" : "");
+}
 async function loadBalances() {
   const out = tabOut("bal-root", () => [el("div", { class: "tools" },
     sel({ "": myIds.length ? "мои склады" : "все склады", ...opts(mine(stores)) }, bal.store_id, (v) => { bal.store_id = v; bal.page = 1; loadBalances(); }),
@@ -451,649 +983,46 @@ async function loadBalances() {
   const r = await api("stock_balances", { store_id: bal.store_id || null, q: bal.q, only_nonzero: bal.nonzero, page: bal.page });
   if (n !== seqs.bal) return;
   if (!r.ok) { toast(errText(r), "bad"); return; }
-  out.parentNode.querySelector(".bal-sum").textContent = `итого ${fmt(r.total_sum)} ₸`;
+  out.parentNode.querySelector(".bal-sum").textContent = `итого ${fmtMoney(r.total_sum)} ₸`;
   const t = el("table"); t.append(el("tr", {}, ...["Склад", "Позиция", "Ед.", "Кол-во", "Средняя", "Сумма"].map((h, i) => el("th", { class: i >= 3 ? "num" : "" }, h))));
   for (const x of r.rows) t.append(el("tr", { class: "row", onclick: () => showMoves(x) }, el("td", { class: "dim" }, x.store_name), el("td", {}, x.name), el("td", {}, x.unit_id),
-    el("td", { class: "num" + (Number(x.qty) < 0 ? " bad" : "") }, fmt(x.qty)), el("td", { class: "num" }, fmt(x.avg_cost)), el("td", { class: "num" }, fmt(x.sum))));
-  if (!r.rows.length) t.append(el("tr", {}, el("td", { colspan: 6, class: "dim" }, "Остатков нет — проведите первую инвентаризацию или приход")));
+    el("td", { class: "num" + (Number(x.qty) < 0 ? " bad" : "") }, fmt(x.qty)), el("td", { class: "num" }, priceTxt(balAvg(x))), el("td", { class: "num" }, fmtMoney(x.sum))));
+  if (!r.rows.length) t.append(el("tr", {}, el("td", { colspan: 6, class: "dim" }, balEmpty())));
   out.innerHTML = "";
   out.append(el("div", { class: "card", style: "padding:0;overflow:auto" }, t),
     el("div", { class: "pager" }, `всего ${r.total} · стр. ${r.page} из ${r.pages}`,
       el("button", { class: "ghost", disabled: r.page <= 1, onclick: () => { bal.page--; loadBalances(); } }, "←"),
       el("button", { class: "ghost", disabled: r.page >= r.pages, onclick: () => { bal.page++; loadBalances(); } }, "→")));
 }
+// Движения позиции на складе — как карточка товара в iiko: с остатком после каждого движения
+// (balance_after, 0045). Старый сервер его не отдаёт — тогда колонки нет.
 async function showMoves(x) {
   const r = await api("stock_moves", { store_id: x.store_id, item_code: x.item_code, page: 1 });
   if (!r.ok) { toast(errText(r), "bad"); return; }
-  const m = modal(`${x.name} · ${x.store_name}`);
-  const t = el("table"); t.append(el("tr", {}, ...["Дата", "Документ", "Кол-во", "Себест.", "Сумма"].map((h, i) => el("th", { class: i >= 2 ? "num" : "" }, h))));
+  const rows = r.rows || [];
+  const m = modal(`${x.name} · ${x.store_name}`); m.root.style.maxWidth = "820px";
+  const hasBal = rows.some((mv) => mv.balance_after !== null && mv.balance_after !== undefined);
+  const t = el("table"); t.append(el("tr", {}, ...["Дата", "Документ", "Кол-во", "Себест.", "Сумма", ...(hasBal ? ["Остаток после"] : [])].map((h, i) => el("th", { class: i >= 2 ? "num" : "" }, h))));
   // Строка без количества (qty = 0) — переоценка: приход на склад, ушедший в минус, переоценил
   // недостающее по своей цене; её сумма — поправка стоимости остатка (adj).
   let reval = false;
-  for (const mv of (r.rows || [])) {
+  for (const mv of rows) {
     const isReval = Number(mv.qty) === 0; reval = reval || isReval;
-    t.append(el("tr", { class: "row", onclick: () => { m.close(); editDoc(mv.document_id); } }, el("td", {}, mv.move_date), el("td", {}, `${TYPES[mv.doc_type] || mv.doc_type} ${mv.number}`),
+    t.append(el("tr", { class: "row", onclick: () => { m.close(); editDoc(mv.document_id); } },
+      el("td", { style: "white-space:nowrap" }, fmtDate(mv.move_date)), el("td", {}, `${TYPES[mv.doc_type] || mv.doc_type} ${mv.number}`),
       isReval ? el("td", { class: "num dim" }, "переоценка") : el("td", { class: "num" + (Number(mv.qty) < 0 ? " bad" : "") }, fmt(mv.qty)),
-      el("td", { class: "num" }, isReval ? "" : fmt(mv.unit_cost)), el("td", { class: "num" }, fmt(isReval && mv.adj != null ? mv.adj : mv.sum))));
+      el("td", { class: "num" }, isReval ? "" : priceTxt(mv.unit_cost)), el("td", { class: "num" }, fmtMoney(isReval && mv.adj != null ? mv.adj : mv.sum)),
+      hasBal ? el("td", { class: "num" + (Number(mv.balance_after) < 0 ? " bad" : "") }, fmt(mv.balance_after)) : null));
   }
-  m.root.append(t, reval ? el("div", { class: "dim", style: "margin-top:8px" }, "«Переоценка» — поправка стоимости без количества: приход на склад, ушедший в минус, пересчитал недостающее по цене прихода.") : null,
-    el("div", { class: "actions" }, el("button", { class: "ghost", onclick: m.close }, "Закрыть")));
+  if (!rows.length) t.append(el("tr", {}, el("td", { colspan: hasBal ? 6 : 5, class: "dim" }, "Движений нет")));
+  // Пустое значение в append() браузер пишет текстом «null» — поэтому необязательное добавляется только если есть.
+  m.root.append(el("div", { style: "overflow:auto;max-height:60vh" }, t));
+  if (reval) m.root.append(el("div", { class: "dim", style: "margin-top:8px" }, "«Переоценка» — поправка стоимости без количества: приход на склад, ушедший в минус, пересчитал недостающее по цене прихода."));
+  if (Number(r.total) > rows.length) m.root.append(el("div", { class: "dim", style: "margin-top:8px" }, `Показаны последние ${rows.length} из ${r.total} движений.`));
+  m.root.append(el("div", { class: "actions" }, el("button", { class: "ghost", onclick: m.close }, "Закрыть")));
 }
 
 // ---------- разбор файла остатков ----------
-// ---------- продажи: отчёты точек и их складские документы ----------
-const iso = isoDate;
-// Даты по умолчанию («последняя неделя», «с начала месяца», «завтра») считаются при открытии
-// вкладки, а не при загрузке модуля, — пока человек их не менял (auto): вкладка, открытая
-// вчера утром, иначе показывала бы вчерашние «сегодня» и «завтра».
-const monthStart = () => iso(new Date(new Date().getFullYear(), new Date().getMonth(), 1, 12));
-const tomorrow = () => iso(new Date(Date.now() + 86400e3));
-const sales = { date_from: "", date_to: "", auto: true, point_id: "" };
-// Точки фильтра — из справочника точек, а не из строк ответа: раньше после пустого периода в
-// списке оставалось только «все точки», а фильтром по-прежнему уходила выбранная точка (и
-// «Провести продажи за период» шла только по ней). Справочник читается раз на заход в раздел.
-let salePoints = null;
-const SALE_STATE = {
-  posted: ["проведена", "ok"], none: ["нет продаж с кодом", ""], no_store: ["у точки нет склада", "bad"],
-  locked: ["изменён после инвентаризации", "bad"], draft: ["не проведена", "bad"],
-  pending: ["не проведена — нажмите «Провести продажи за период»", "bad"], stale: ["устарела — проведите заново", "bad"],
-};
-async function loadSales() {
-  if (!document.getElementById("sales-root")) return;
-  if (!salePoints) { const p = await api("store_points_list", {}); salePoints = p.ok ? p.points : []; }
-  if (sales.point_id && !salePoints.some((x) => x.id === sales.point_id)) sales.point_id = "";
-  const out = tabOut("sales-root", () => {
-    if (sales.auto) { sales.date_from = iso(new Date(Date.now() - 7 * 864e5)); sales.date_to = today(); }
-    const canSync = perms().includes("doc:sale:edit");
-    const syncBtn = canSync ? el("button", { onclick: async (e) => {
-      e.target.disabled = true;
-      const s = await api("doc_sales_sync", { date_from: sales.date_from, date_to: sales.date_to, point_id: sales.point_id || null }, { timeout: LONG_MS });
-      e.target.disabled = false;
-      // обрыв: часть продаж могла провестись — перечитываем список
-      if (!s.ok) { toast(errText(s), "bad"); if (s.error === "network") loadSales(); return; }
-      const c = s.counts || {};
-      toast(`Проведено ${c.posted || 0}, без изменений ${c.unchanged || 0}, без продаж ${c.empty || 0}, без склада ${c.no_store || 0}, заблокировано ${c.locked || 0}`
-        + (c.error ? `, ошибок ${c.error}` : ""), c.error || c.locked ? "bad" : undefined);
-      loadSales();
-    } }, "Провести продажи за период") : null;
-    return [el("div", { class: "tools" },
-      el("input", { type: "date", title: "с", value: sales.date_from, onchange: debounce((e) => { sales.date_from = e.target.value; sales.auto = false; loadSales(); }, 400) }),
-      el("span", { class: "dim" }, "—"),
-      el("input", { type: "date", title: "по", value: sales.date_to, onchange: debounce((e) => { sales.date_to = e.target.value; sales.auto = false; loadSales(); }, 400) }),
-      sel({ "": "все точки", ...Object.fromEntries(salePoints.map((x) => [x.id, x.name + (x.active ? "" : " (выключена)")])) }, sales.point_id, (v) => { sales.point_id = v; loadSales(); }),
-      syncBtn)];
-  });
-  if (!out) return;
-  const n = nextSeq("sales");
-  const period = { date_from: sales.date_from, date_to: sales.date_to, point_id: sales.point_id || null };
-  const r = await api("doc_sales_list", period);
-  if (n !== seqs.sales) return;
-  out.innerHTML = "";
-  if (!r.ok) { out.append(el("div", { class: "err" }, errText(r))); return; }
-  const t = el("table");
-  t.append(el("tr", {}, ...["Дата", "Точка", "Склад", "Строк", "Деньги в отчёте", "Продано", "Себестоимость", "Документ", "Состояние"]
-    .map((h, i) => el("th", { class: i >= 3 && i <= 6 ? "num" : "" }, h))));
-  for (const x of r.rows) {
-    const [label, cls] = SALE_STATE[x.state] || [x.state, ""];
-    t.append(el("tr", { class: x.doc_id ? "row" : "", onclick: x.doc_id ? () => editDoc(x.doc_id) : null },
-      el("td", {}, x.report_date), el("td", {}, x.point_name), el("td", {}, x.store_name || el("span", { class: "dim" }, "—")),
-      el("td", { class: "num" }, String(x.lines)), el("td", { class: "num" }, fmt(x.money)),
-      el("td", { class: "num" }, x.sale_sum != null ? fmt(x.sale_sum) : ""), el("td", { class: "num" }, x.cost != null ? fmt(x.cost) : ""),
-      el("td", {}, x.number || ""),
-      el("td", {}, el("span", { class: "tag " + cls }, label), x.sync_note ? el("div", { class: "dim", style: "font-size:12px;max-width:320px" }, x.sync_note) : null)));
-  }
-  if (!r.rows.length) t.append(el("tr", {}, el("td", { colspan: 9, class: "dim" }, "За период отчётов точек нет")));
-  // Итоги по проведённым продажам: выручка, себестоимость, валовая прибыль, фудкост.
-  const sum = await api("doc_sales_report", period);
-  if (n !== seqs.sales) return;
-  if (sum.ok && sum.points.length) {
-    const pct = (v) => v == null ? "" : fmt(v) + " %";
-    const pt = el("table");
-    pt.append(el("tr", {}, ...["Точка", "Продаж", "Выручка", "Себестоимость", "Валовая прибыль", "Фудкост"].map((h, i) => el("th", { class: i ? "num" : "" }, h))));
-    for (const x of sum.points) pt.append(el("tr", {}, el("td", {}, x.point_name), el("td", { class: "num" }, String(x.docs)),
-      el("td", { class: "num" }, fmt(x.revenue)), el("td", { class: "num" }, fmt(x.cost)), el("td", { class: "num" }, fmt(x.margin)), el("td", { class: "num" }, pct(x.foodcost_pct))));
-    const it = el("table");
-    it.append(el("tr", {}, ...["Позиция", "Кол-во", "Выручка", "Себестоимость", "Прибыль", "Фудкост"].map((h, i) => el("th", { class: i ? "num" : "" }, h))));
-    for (const x of sum.items.slice(0, 30)) it.append(el("tr", {}, el("td", {}, x.name), el("td", { class: "num" }, fmt(x.qty) + " " + (x.unit_id || "")),
-      el("td", { class: "num" }, fmt(x.revenue)), el("td", { class: "num" }, fmt(x.cost)), el("td", { class: "num" }, fmt(x.margin)),
-      el("td", { class: "num" }, x.foodcost_pct == null ? "" : el("span", { class: "tag " + (x.foodcost_pct > 35 ? "bad" : "ok") }, pct(x.foodcost_pct)))));
-    out.append(el("h2", { style: "margin-top:4px" }, "Итоги по проведённым продажам"),
-      el("div", { class: "card", style: "padding:0;overflow:auto" }, pt),
-      el("details", { style: "margin:8px 0 14px" }, el("summary", {}, `Позиции по выручке (${Math.min(sum.items.length, 30)} из ${sum.items.length})`),
-        el("div", { class: "card", style: "padding:0;overflow:auto;margin-top:8px" }, it)),
-      el("h2", {}, "Отчёты точек"));
-  }
-  out.append(el("div", { class: "card", style: "padding:0;overflow:auto" }, t),
-    el("div", { class: "dim", style: "margin-top:8px" },
-      "Продажа проводится сама, когда точка сохраняет отчёт. «Провести продажи за период» нужна, если склад точке привязали позже или отчёт правили."));
-}
-
-// ---------- оборотная ведомость склада ----------
-// Аналог «Расширенной оборотно-сальдовой ведомости» iiko: по позиции остаток на начало,
-// обороты по видам документов и остаток на конец. Нужна для сверки с iiko в параллельной работе.
-const turn = { store_id: "", date_from: "", date_to: "", auto: true, q: "" };
-const TURN_COLS = [["start_qty", "Начало"], ["income", "Приход"], ["transfer_in", "Перемещ. +"], ["transfer_out", "Перемещ. −"],
-  ["production_in", "Произв. +"], ["production_out", "Произв. −"], ["sales", "Продажи"], ["writeoff", "Списания"],
-  ["inventory", "Инвент. ±"], ["end_qty", "Конец"], ["end_sum", "Сумма на конец"]];
-async function loadTurnover() {
-  const out = tabOut("turn-root", () => {
-    if (turn.auto) { turn.date_from = monthStart(); turn.date_to = today(); }
-    return [el("div", { class: "tools" },
-      sel({ "": myIds.length ? "мои склады вместе" : "все склады вместе", ...opts(mine(stores)) }, turn.store_id, (v) => { turn.store_id = v; loadTurnover(); }),
-      el("input", { type: "date", title: "с", value: turn.date_from, onchange: debounce((e) => { turn.date_from = e.target.value; turn.auto = false; loadTurnover(); }, 400) }),
-      el("span", { class: "dim" }, "—"),
-      el("input", { type: "date", title: "по", value: turn.date_to, onchange: debounce((e) => { turn.date_to = e.target.value; turn.auto = false; loadTurnover(); }, 400) }),
-      el("input", { placeholder: "Позиция или код", value: turn.q, oninput: debounce((e) => { turn.q = e.target.value; loadTurnover(); }, 400) }),
-      el("button", { class: "ghost csv" }, "Скачать CSV"))];
-  });
-  if (!out) return;
-  const csvBtn = out.parentNode.querySelector(".csv"); csvBtn.onclick = null;
-  const n = nextSeq("turn");
-  out.innerHTML = ""; out.append(el("div", { class: "dim" }, "Считаю…"));
-  const r = await api("stock_turnover_report", { store_id: turn.store_id || null, date_from: turn.date_from, date_to: turn.date_to, q: turn.q });
-  if (n !== seqs.turn) return;
-  out.innerHTML = "";
-  if (!r.ok) { out.append(el("div", { class: "err" }, errText(r))); return; }
-  // Переоценка (reval_sum, ₸) — поправка стоимости без количества: приход на ушедший в минус остаток
-  // пересчитывает недостающее по своей цене. Колонка появляется, только если она где-то есть;
-  // суммы на начало и конец её уже включают.
-  const hasReval = r.rows.some((x) => Number(x.reval_sum || 0) !== 0);
-  const cols = hasReval ? [...TURN_COLS.slice(0, -1), ["reval_sum", "Переоценка, ₸"], TURN_COLS[TURN_COLS.length - 1]] : TURN_COLS;
-  const t = el("table");
-  t.append(el("tr", {}, el("th", {}, "Позиция"), el("th", {}, "Ед."), ...cols.map(([, h]) => el("th", { class: "num" }, h))));
-  let group = null; const tot = { start_sum: 0, income_sum: 0, sales_sum: 0, writeoff_sum: 0, inventory_sum: 0, reval_sum: 0, end_sum: 0 };
-  for (const x of r.rows) {
-    if ((x.group_name || "") !== group) { group = x.group_name || ""; t.append(el("tr", {}, el("td", { colspan: 2 + cols.length, class: "dim", style: "font-weight:700;padding-top:10px" }, group || "без группы"))); }
-    for (const k of Object.keys(tot)) tot[k] += Number(x[k] || 0);
-    t.append(el("tr", {}, el("td", {}, x.name), el("td", {}, x.unit_id || ""),
-      ...cols.map(([k]) => { const v = Number(x[k] || 0); return el("td", { class: "num" + (k === "end_qty" && v < 0 ? " bad" : "") }, v ? fmt(v) : ""); })));
-  }
-  if (!r.rows.length) t.append(el("tr", {}, el("td", { colspan: 2 + cols.length, class: "dim" }, "За период движений нет")));
-  out.append(el("div", { class: "card", style: "padding:0;overflow:auto" }, t),
-    el("div", { class: "tot" }, el("span", {}, `Позиций ${r.rows.length} · сумма на начало ${fmt(tot.start_sum)} · приход ${fmt(tot.income_sum)} · продажи ${fmt(tot.sales_sum)} · списания ${fmt(tot.writeoff_sum)} · инвентаризация ${fmt(tot.inventory_sum)}`
-      + (hasReval ? ` · переоценка ${fmt(tot.reval_sum)}` : "")),
-      el("span", {}, `на конец ${fmt(tot.end_sum)} ₸`)),
-    el("div", { class: "dim", style: "margin-top:8px" }, "Суммы — по себестоимости движений, как «Сумма с/н» в оборотной ведомости iiko. Расход показан положительными числами."
-      + (hasReval ? " «Переоценка» — поправка стоимости без количества: приход на склад, ушедший в минус, пересчитал недостающее по цене прихода; суммы на начало и конец её включают." : "")));
-  const period = { from: turn.date_from, to: turn.date_to };
-  csvBtn.onclick = () => {
-    const head = ["Код", "Позиция", "Ед.", "Группа", ...cols.map(([, h]) => h)];
-    const lines = [head, ...r.rows.map((x) => [x.item_code, x.name, x.unit_id || "", x.group_name || "", ...cols.map(([k]) => String(x[k] ?? 0).replace(".", ","))])]
-      .map((row) => row.map((v) => /[;"\n]/.test(String(v)) ? '"' + String(v).replace(/"/g, '""') + '"' : String(v)).join(";")).join("\r\n");
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(new Blob(["﻿" + lines], { type: "text/csv;charset=utf-8" }));
-    a.download = `ведомость ${period.from}—${period.to}.csv`; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
-  };
-}
-
-// ---------- заявки точек и сводный план выпечки (миграция 0038) ----------
-// Точки подают заявки на завтра со страницы order.html до отсечки. Здесь — сводный план дня: сколько
-// заказано по позициям и точкам, факт выпуска (отмечает пекарь), и одной кнопкой черновики акта
-// производства на склад кухни и перемещений на склады точек.
-const ord = { date: "", auto: true };
-async function loadOrders() {
-  const out = tabOut("ord-root", () => {
-    if (ord.auto) ord.date = tomorrow();
-    const d = el("input", { type: "date", value: ord.date, onchange: debounce((e) => { ord.date = e.target.value; ord.auto = false; loadOrders(); }, 400) });
-    return [el("div", { class: "tools" }, d,
-      el("button", { class: "ghost", onclick: () => { ord.auto = true; ord.date = tomorrow(); d.value = ord.date; loadOrders(); } }, "Завтра"),
-      el("button", { class: "ghost", onclick: () => window.print() }, "Печать плана"),
-      el("a", { class: "link", href: "order.html", target: "_blank" }, "Страница заявки для точек"))];
-  });
-  if (!out) return;
-  // Список «готовым» перечитывается при каждой загрузке плана: после «Создать производство и
-  // перемещения», проведения документов плана и смены дня в нём могли появиться или уйти строки.
-  if (!out.nextSibling) out.after(storeReadyBox());
-  loadStoreReady();
-  const n = nextSeq("ord");
-  out.innerHTML = ""; out.append(el("div", { class: "dim" }, "Загружаю…"));
-  const r = await api("stock_orders_report", { for_date: ord.date });
-  if (n !== seqs.ord) return;
-  out.innerHTML = "";
-  if (!r.ok) { out.append(el("div", { class: "err" }, errText(r))); return; }
-  // День, который показан, — из ответа: кнопки ниже сохраняют выпуск и создают документы именно
-  // на него, даже если поле даты успели сменить.
-  const day = r.for_date || ord.date;
-  // Заголовок с датой виден и на печати: поле даты в печать не идёт, и план уходил на кухню без дня.
-  const [y, mo, dd] = String(day).split("-");
-  out.append(el("h3", { style: "margin:0 0 8px" }, `План выпечки на ${dd}.${mo}.${y}` + (day === tomorrow() ? " (завтра)" : day === today() ? " (сегодня)" : "")));
-  const kitchen = stores.find((s) => s.id === r.store_id);
-  // Настройки: склад кухни и отсечка — только у тех, кто правит склады.
-  if (perms().includes("stores:edit")) {
-    const ks = sel({ "": "— склад кухни не выбран —", ...opts(active()) }, r.store_id || "", () => {});
-    const cut = el("input", { value: r.cutoff, style: "width:80px", title: "Время отсечки заявок" });
-    out.append(el("details", { style: "margin-bottom:10px" }, el("summary", {}, `Настройки: склад кухни — ${kitchen ? kitchen.name : "не выбран"}, отсечка ${r.cutoff}`),
-      el("div", { class: "tools", style: "margin-top:8px" }, el("span", {}, "Склад кухни"), ks, el("span", {}, "Отсечка"), cut,
-        el("button", { onclick: async (e) => { e.target.disabled = true; const x = await api("stock_orders_settings_save", { store_id: ks.value, cutoff: cut.value.trim() }); e.target.disabled = false;
-          if (!x.ok) { toast(errText(x), "bad"); return; } toast("Сохранено"); loadOrders(); } }, "Сохранить"))));
-  }
-  out.append(el("div", { class: "dim", style: "margin-bottom:8px" },
-    r.locked ? "План передан в производство: документы созданы, заявки этого дня закрыты для правок."
-      : r.open ? `Приём заявок на этот день открыт до ${r.cutoff} накануне — план ещё может измениться.` : "Приём заявок на этот день закрыт — можно печатать план и отмечать выпуск."));
-  const pts = r.orders.map((o) => o.point_id);
-  const t = el("table");
-  t.append(el("tr", {}, el("th", {}, "Позиция"), el("th", {}, "Ед."), el("th", { class: "num" }, "Заявлено"), el("th", { class: "num" }, "Выпуск"),
-    el("th", { class: "num" }, "Расхождение"), ...r.orders.map((o) => el("th", { class: "num" }, o.point_name))));
-  const facts = new Map();
-  const canFact = perms().includes("doc:production:edit") && !r.locked;
-  for (const x of r.plan) {
-    const inp = el("input", { inputmode: "decimal", value: x.fact ?? "", disabled: !canFact, style: "width:80px;text-align:right" });
-    facts.set(x.item_code, inp);
-    const diff = x.fact == null ? "" : fmt(Number(x.fact) - Number(x.qty));
-    t.append(el("tr", {}, el("td", {}, x.name, x.has_chart ? null : el("span", { class: "tag bad", title: "Без техкарты в акт производства не попадёт" }, " нет техкарты")),
-      el("td", {}, x.unit || ""), el("td", { class: "num", style: "font-weight:700" }, fmt(x.qty)), el("td", { class: "num" }, inp),
-      el("td", { class: "num" + (x.fact != null && Number(x.fact) < Number(x.qty) ? " bad" : "") }, diff),
-      ...pts.map((p) => el("td", { class: "num" }, x.by_point[p] != null ? fmt(x.by_point[p]) : ""))));
-  }
-  if (!r.plan.length) t.append(el("tr", {}, el("td", { colspan: 5, class: "dim" }, "На этот день заявок нет")));
-  out.append(el("div", { class: "card", style: "padding:0;overflow:auto" }, t));
-  const factRows = () => r.plan.map((p) => ({ item_code: p.item_code, fact: String(facts.get(p.item_code).value).replace(",", ".").trim() }));
-  const acts = el("div", { class: "actions" });
-  if (canFact && r.plan.length) acts.append(el("button", { class: "ghost", onclick: async (e) => {
-    e.target.disabled = true;
-    const x = await api("stock_orders_fact_save", { for_date: day, rows: factRows() });
-    e.target.disabled = false;
-    if (!x.ok) { toast(errText(x), "bad"); return; } toast("Выпуск сохранён"); loadOrders(); } }, "Сохранить выпуск"));
-  if (r.plan.length && perms().includes("doc:production:edit") && perms().includes("doc:transfer:edit")) acts.append(el("button", { onclick: async (e) => {
-    if (!r.locked && !confirmDlg(r.open
-      ? `Приём заявок на этот день ещё открыт до ${r.cutoff}. Если создать документы сейчас, точки больше не смогут поправить заявки. Создать всё равно?`
-      : "Создать черновики акта производства и перемещений на точки? После этого заявки этого дня не изменить.")) return;
-    e.target.disabled = true;
-    // Введённый, но не сохранённый «Выпуск» сначала сохраняется: документы строятся по сохранённому
-    // выпуску, и без этого шага акт и перемещения ушли бы по заявке, а введённые цифры пропали бы.
-    if (canFact) {
-      const fx = await api("stock_orders_fact_save", { for_date: day, rows: factRows() });
-      if (!fx.ok) { e.target.disabled = false; toast("Выпуск не сохранён, документы не созданы: " + errText(fx), "bad"); return; }
-    }
-    const x = await api("stock_orders_docs_save", { for_date: day, force: r.open }, { timeout: LONG_MS });
-    e.target.disabled = false;
-    // обрыв: документы могли создаться — показываем, что есть на самом деле
-    if (!x.ok) { toast(errText(x), "bad"); if (x.error === "network") loadOrders(); return; }
-    toast(x.made ? `Создано документов: ${x.made}` : "Все документы уже созданы");
-    if (x.skipped) toast("Без склада точки, перемещение не создано: " + x.skipped, "bad");
-    loadOrders(); } }, r.locked ? "Досоздать документы" : "Создать производство и перемещения"));
-  out.append(acts);
-  out.append(el("div", { class: "dim", style: "margin-top:8px" }, "Выпуск раскладывается по точкам пропорционально заявкам. Сначала проводится акт производства, затем перемещения. Когда документы плана проведены, позиции на складах точек продаются готовыми: продажа списывает саму позицию, а не ингредиенты (строки появятся в блоке «Что склады получают готовым» ниже)."));
-  if (r.docs.length) out.append(el("h3", { style: "margin:14px 0 6px" }, "Документы по плану"),
-    el("div", {}, ...r.docs.map((d) => el("div", {}, el("a", { href: "#", onclick: (e) => { e.preventDefault(); editDoc(d.id); } }, `${TYPES[d.doc_type]} ${d.number}`),
-      " — ", d.status === "draft" ? el("span", { class: "tag" }, "черновик") : el("span", { class: "tag ok" }, "проведён")))));
-  if (r.orders.length) out.append(el("h3", { style: "margin:14px 0 6px" }, "Кто подал"),
-    el("div", {}, ...r.orders.map((o) => el("div", { class: "dim" }, `${o.point_name}: ${o.lines} поз., ${o.sent_by || "—"}, ${new Date(o.updated_at).toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}`,
-      o.has_store ? null : el("span", { class: "tag bad" }, " у точки нет склада")))));
-}
-
-// ---------- что склады получают готовым (контракт п. 11, таблица store_ready) ----------
-// На складе с указанной даты позиция продаётся готовой: продажа списывает саму позицию (то, что
-// привезли с кухни), а не ингредиенты по техкарте. Строки «по плану» ставит проведение документов
-// плана (перемещение на точку, производство на склад кухни, который и есть склад точки) и снимает
-// отмена их проведения; здесь их видно и можно поправить руками.
-const SR_SOURCE = { manual: "вручную", office: "вручную", plan: "по плану", orders: "по плану", auto: "по плану" };
-const sr = { store_id: "" };
-let srSeq = 0;
-// Пересчёт продаж после правки идёт частями: сервер за один вызов пересобирает не больше 5 продаж
-// и отвечает, сколько осталось (remaining); остальные добирает stock_ready_resync, пока не станет 0.
-// Цикл один на страницу: правка, сделанная во время пересчёта, только добавляет ему работы.
-let srLoop = null;
-function srNote(...parts) {
-  const note = document.querySelector("#ord-root .sr-note"); if (!note) return;
-  note.innerHTML = ""; note.append(...parts);
-}
-function srResync(o = {}) {
-  if (srLoop) return srLoop;
-  srLoop = (async () => {
-    let total = o.done || 0, left = o.left || 0;
-    // quiet — проверка после проведения документа плана: если пересчитывать нечего, молчим
-    if (!o.quiet || left) srNote(left ? `Пересчитываю продажи: осталось ${left}` : "Пересчитываю продажи…");
-    for (;;) {
-      const r = await api("stock_ready_resync", {}, { timeout: LONG_MS });
-      if (!r.ok) {
-        if (o.quiet && !total) return;
-        // Обрыв или отказ: что успело пересчитаться, неизвестно — перечитываем список и даём продолжить.
-        srNote(`Пересчёт продаж прервался: ${errText(r)}. `, el("button", { class: "link", onclick: () => srResync() }, "Продолжить пересчёт"));
-        toast(errText(r), "bad");
-        loadStoreReady();
-        return;
-      }
-      total += Number(r.resynced) || 0;
-      left = Number(r.remaining) || 0;
-      if (!left) break;
-      // Ни одной за вызов — дальше не сдвинется (например, мешает инвентаризация): не крутимся впустую.
-      if (!Number(r.resynced)) {
-        srNote(`Пересчитано продаж: ${total}. Ещё ${left} сейчас не пересчитать — причина видна во вкладке «Продажи». `,
-          el("button", { class: "link", onclick: () => srResync() }, "Повторить"));
-        loadStoreReady();
-        return;
-      }
-      srNote(`Пересчитываю продажи: осталось ${left}`);
-    }
-    if (o.quiet && !total) return;
-    srNote(`Готово: пересчитано продаж — ${total}`);
-    toast(`Продажи пересчитаны: ${total}`);
-    loadStoreReady();
-  })().finally(() => { srLoop = null; });
-  return srLoop;
-}
-function storeReadyBox() {
-  const canEdit = perms().includes("stock:edit");
-  return el("div", { class: "card sr-box noprint", style: "margin-top:18px" },
-    el("h3", { style: "margin:0 0 4px" }, "Что склады получают готовым"),
-    el("div", { class: "dim", style: "margin-bottom:8px" },
-      "Если склад получает позицию готовой (выпечку с кухни), её продажа на этом складе списывает саму позицию, а не муку, масло и начинку по техкарте. "
-      + "Строки «по плану» появляются, когда проведены документы плана (производство и перемещения), и снимаются отменой их проведения; здесь строки можно добавить или убрать. "
-      + "После правки продажи склада с этой даты пересчитываются — частями, ход пересчёта виден здесь же. Если закрыть страницу раньше, остаток пересчитается при «Провести продажи за период»."),
-    el("div", { class: "tools" },
-      // Склады — только закреплённые за пользователем, как в «Остатках»: по чужим сервер откажет.
-      sel({ "": myIds.length ? "мои склады" : "все склады", ...opts(mine(stores)) }, sr.store_id, (v) => { sr.store_id = v; loadStoreReady(); }),
-      canEdit ? el("button", { class: "ghost", onclick: addStoreReady }, "+ Добавить позицию") : null),
-    el("div", { class: "dim sr-note" }),
-    el("div", { class: "sr-list" }));
-}
-async function loadStoreReady() {
-  const box = document.querySelector("#ord-root .sr-box"); if (!box) return;
-  const list = box.querySelector(".sr-list");
-  const n = ++srSeq;
-  const r = await api("stock_ready_list", { store_id: sr.store_id || null }, { timeout: LONG_MS });
-  if (n !== srSeq) return;
-  list.innerHTML = "";
-  if (!r.ok) { list.append(el("div", { class: "err" }, errText(r))); return; }
-  const canEdit = perms().includes("stock:edit");
-  const t = el("table");
-  t.append(el("tr", {}, ...["Склад", "Позиция", "Ед.", "Готовым с", "Откуда", ""].map((h) => el("th", {}, h))));
-  for (const x of r.rows) t.append(el("tr", {}, el("td", {}, x.store_name), el("td", {}, x.item_name), el("td", {}, x.unit_id || ""),
-    el("td", {}, x.date_from), el("td", { class: "dim" }, SR_SOURCE[x.source] || x.source || ""),
-    el("td", {}, canEdit ? el("button", { class: "x", title: "Убрать", onclick: (e) => delStoreReady(x, e.target) }, "×") : null)));
-  if (!r.rows.length) t.append(el("tr", {}, el("td", { colspan: 6, class: "dim" }, "Ни один склад пока не получает позиции готовыми")));
-  list.append(el("div", { style: "overflow:auto;max-height:420px" }, t));
-}
-// После правки сервер сразу пересчитывает до 5 продаж склада и говорит, сколько ещё осталось.
-function storeReadyDone(r) {
-  const done = Number(r.resynced) || 0, left = Number(r.remaining) || 0;
-  const text = `Сохранено. Пересчитано продаж: ${done}` + (left ? `, осталось ${left}` : "");
-  srNote(text);
-  toast(text);
-  loadStoreReady();
-  if (left > 0) srResync({ done, left });
-}
-async function delStoreReady(x, b) {
-  if (!confirmDlg(`Убрать «${x.item_name}» со склада «${x.store_name}»? Продажи этой позиции на складе снова будут списывать ингредиенты по техкарте.`)) return;
-  b.disabled = true;
-  const r = await api("stock_ready_delete", { store_id: x.store_id, item_code: x.item_code }, { timeout: LONG_MS });
-  b.disabled = false;
-  // Обрыв или «пересчёт уже идёт»: применилось ли удаление — видно только по свежему списку.
-  if (!r.ok) { toast(errText(r), "bad"); loadStoreReady(); return; }
-  storeReadyDone(r);
-}
-function addStoreReady() {
-  const m = modal("Склад получает позицию готовой", { keep: true });
-  let item = null;
-  const search = el("input", { placeholder: "Позиция: название или код" });
-  const res = el("div", { class: "sres" });
-  search.addEventListener("input", debounce(async () => {
-    item = null; res.innerHTML = ""; const q = search.value.trim(); if (q.length < 2) return;
-    const s = await api("items_search", { q, active: true, page: 1 });
-    for (const it of (s.rows || []).slice(0, 12)) {
-      if (!["dish", "prepared"].includes(it.item_type)) continue;   // товар и так продаётся как есть
-      res.append(el("button", { class: "sitem", onclick: () => { item = it; search.value = it.name; res.innerHTML = ""; } },
-        it.name, el("span", { class: "dim" }, ` · ${it.unit_id}`)));
-    }
-  }, 300));
-  const st = sel({ "": "— склад —", ...opts(mine(active())) }, sr.store_id, () => {});
-  const date = el("input", { type: "date", value: today() });
-  const err = el("div", { class: "err" });
-  const go = el("button", { onclick: async () => {
-    err.textContent = "";
-    if (!item) { err.textContent = "Выберите позицию из списка"; return; }
-    if (!st.value) { err.textContent = "Выберите склад"; return; }
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(date.value)) { err.textContent = "Выберите дату в календаре"; return; }
-    go.disabled = true;
-    const r = await api("stock_ready_save", { store_id: st.value, item_code: item.code, date_from: date.value }, { timeout: LONG_MS });
-    go.disabled = false;
-    // Строка склада и позиции одна (повтор её просто перезапишет), но применилась ли правка после
-    // обрыва — видно только по свежему списку под окном.
-    if (!r.ok) { err.textContent = errText(r); loadStoreReady(); return; }
-    m.close(); storeReadyDone(r);
-  } }, "Добавить");
-  m.root.append(el("div", { class: "dim" }, "С этой даты продажа позиции на складе списывает саму позицию, а не ингредиенты. Продажи склада с этой даты будут пересчитаны."),
-    el("div", { class: "sbox" }, el("label", {}, "Позиция"), search, res),
-    el("div", { class: "grid2" }, el("div", {}, el("label", {}, "Склад"), st), el("div", {}, el("label", {}, "Готовым с"), date)),
-    err, el("div", { class: "actions" }, go, el("button", { class: "ghost", onclick: m.cancel }, "Отмена")));
-  search.focus();
-}
-
-// ---------- расход для 1С: основа акта списания «на основании продаж» ----------
-// Бухгалтер списывает в 1С продукты, ушедшие на проданное. Номенклатура 1С своя, поэтому у позиции
-// учёта хранится код 1С и сколько единиц 1С в одной нашей (кофе 3в1: пакетик = 1/25 блока).
-const c1 = { store_id: "", date_from: "", date_to: "", auto: true, catalog: null };
-async function loadC1() {
-  const out = tabOut("c1-root", () => {
-    if (c1.auto) { c1.date_from = monthStart(); c1.date_to = today(); }
-    return [el("div", { class: "tools" },
-      sel({ "": myIds.length ? "мои склады вместе" : "все склады вместе", ...opts(mine(stores)) }, c1.store_id, (v) => { c1.store_id = v; loadC1(); }),
-      el("input", { type: "date", title: "с", value: c1.date_from, onchange: debounce((e) => { c1.date_from = e.target.value; c1.auto = false; loadC1(); }, 400) }),
-      el("span", { class: "dim" }, "—"),
-      el("input", { type: "date", title: "по", value: c1.date_to, onchange: debounce((e) => { c1.date_to = e.target.value; c1.auto = false; loadC1(); }, 400) }),
-      el("button", { class: "ghost csv" }, "Скачать для 1С (CSV)"))];
-  });
-  if (!out) return;
-  const csvBtn = out.parentNode.querySelector(".csv"); csvBtn.onclick = null;
-  const n = nextSeq("c1");
-  out.innerHTML = ""; out.append(el("div", { class: "dim" }, "Считаю…"));
-  const [r, cat] = await Promise.all([api("stock_1c_report", { store_id: c1.store_id || null, date_from: c1.date_from, date_to: c1.date_to }),
-    c1.catalog ? { ok: true, rows: c1.catalog } : api("stock_1c_catalog_list", {})]);
-  if (n !== seqs.c1) return;
-  out.innerHTML = "";
-  if (!r.ok) { out.append(el("div", { class: "err" }, errText(r))); return; }
-  if (cat.ok) c1.catalog = cat.rows;
-  const byCode = new Map();
-  for (const x of r.rows.filter((x) => x.code_1c && x.qty_1c !== null)) {
-    const g = byCode.get(x.code_1c) || { code: x.code_1c, name: x.name_1c, unit: x.unit_1c, account: x.account_1c, qty: 0, sum: 0, src: [] };
-    g.qty += Number(x.qty_1c); g.sum += Number(x.sum); g.src.push(x); byCode.set(x.code_1c, g);
-  }
-  const groups = [...byCode.values()].sort((a, b) => a.name.localeCompare(b.name, "ru"));
-  const free = r.rows.filter((x) => !x.code_1c || x.qty_1c === null);
-  const canEdit = perms().includes("doc:sale:edit");
-  const t = el("table");
-  t.append(el("tr", {}, el("th", {}, "Код 1С"), el("th", {}, "Номенклатура 1С"), el("th", {}, "Счёт"), el("th", {}, "Ед."),
-    el("th", { class: "num" }, "Списать"), el("th", { class: "num" }, "Себестоимость, ₸"), el("th", {}, "Из позиций учёта")));
-  let total = 0;
-  for (const g of groups) {
-    total += g.sum;
-    t.append(el("tr", {}, el("td", {}, g.code), el("td", {}, g.name), el("td", {}, g.account || ""), el("td", {}, g.unit || ""),
-      el("td", { class: "num" }, fmt(Math.round(g.qty * 1000) / 1000)), el("td", { class: "num" }, fmt(g.sum)),
-      el("td", { class: "dim" }, ...g.src.map((x, j) => el("span", {}, j ? "; " : "",
-        canEdit ? el("a", { href: "#", onclick: (e) => { e.preventDefault(); linkC1(x); } }, x.name) : x.name,
-        ` ${fmt(x.qty)} ${x.unit_id || ""}`)))));
-  }
-  if (!groups.length) t.append(el("tr", {}, el("td", { colspan: 7, class: "dim" }, "За период расхода по позициям с кодом 1С нет")));
-  out.append(el("div", { class: "card", style: "padding:0;overflow:auto" }, t),
-    el("div", { class: "tot" }, el("span", {}, `Позиций 1С: ${groups.length}`), el("span", {}, `${fmt(total)} ₸`)),
-    el("div", { class: "dim", style: "margin-top:8px" }, "Расход проведённых продаж и актов производства, кроме полуфабрикатов и выпечки с кухни, проданной готовой: 1С знает сырьё, из которого они сделаны. Себестоимость — по нашему складу; в акте 1С сумму поставит сама 1С по своим ценам."));
-  if (free.length) {
-    const ft = el("table");
-    ft.append(el("tr", {}, el("th", {}, "Позиция учёта"), el("th", {}, "Ед."), el("th", { class: "num" }, "Расход"), el("th", { class: "num" }, "₸"), canEdit ? el("th", {}, "") : null));
-    for (const x of free) ft.append(el("tr", {}, el("td", {}, x.name), el("td", {}, x.unit_id || ""), el("td", { class: "num" }, fmt(x.qty)), el("td", { class: "num" }, fmt(x.sum)),
-      canEdit ? el("td", {}, el("button", { class: "ghost", onclick: () => linkC1(x) }, "Указать позицию 1С")) : null));
-    out.append(el("h3", { style: "margin-top:18px" }, `Без позиции 1С: ${free.length}`),
-      el("div", { class: "dim" }, "Эти продукты расходовались, но не связаны с 1С — в список на списание не попали. Если такого товара в 1С нет (не было прихода по документам), списать его в 1С нельзя."),
-      el("div", { class: "card", style: "padding:0;overflow:auto;margin-top:8px" }, ft));
-  }
-  const period = { from: c1.date_from, to: c1.date_to };
-  csvBtn.onclick = () => {
-    const q = (v) => /[;"\n]/.test(String(v)) ? '"' + String(v).replace(/"/g, '""') + '"' : String(v);
-    const lines = [["Код 1С", "Номенклатура 1С", "Счёт", "Ед.", "Количество", "Себестоимость учёта, ₸"],
-      ...groups.map((g) => [g.code, g.name, g.account || "", g.unit || "", String(Math.round(g.qty * 1000) / 1000).replace(".", ","), String(g.sum).replace(".", ",")])]
-      .map((row) => row.map(q).join(";")).join("\r\n");
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(new Blob(["﻿" + lines], { type: "text/csv;charset=utf-8" }));
-    a.download = `расход для 1С ${period.from}—${period.to}.csv`; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
-  };
-}
-function linkC1(x) {
-  const m = modal("Позиция 1С для «" + x.name + "»", { keep: true });
-  const label = (c) => c.code + " · " + c.name + " · " + (c.unit || "");
-  const list = el("datalist", { id: "c1-cat" }, ...(c1.catalog || []).map((c) => el("option", { value: label(c) })));
-  const cur = (c1.catalog || []).find((c) => c.code === x.code_1c);
-  const pick = el("input", { list: "c1-cat", placeholder: "Начните вводить название из 1С", value: cur ? label(cur) : "" });
-  const k = el("input", { inputmode: "decimal", value: x.k_1c ?? "1" });
-  const err = el("div", { class: "err" });
-  const save = el("button", {}, "Сохранить");
-  const clear = x.code_1c ? el("button", { class: "ghost" }, "Снять связь") : null;
-  m.root.append(list, el("label", {}, "Позиция 1С"), pick,
-    el("label", {}, `Сколько единиц 1С в одной нашей (${x.unit_id || "ед."})`), k,
-    el("div", { class: "dim" }, "Единицы совпадают — 1. Мы считаем пакетики кофе, а 1С — блоки по 25: 0,04. Мы в кг, а в 1С банки по 400 г: 2,5."),
-    err, el("div", { class: "actions" }, save, clear, el("button", { class: "ghost", onclick: m.cancel }, "Отмена")));
-  const send = async (code, kv) => {
-    save.disabled = true; if (clear) clear.disabled = true;
-    const r = await api("stock_1c_link_save", { item_code: x.item_code, code_1c: code, k_1c: kv });
-    save.disabled = false; if (clear) clear.disabled = false;
-    if (!r.ok) { err.textContent = errText(r); return; }
-    m.close(); toast("Сохранено"); loadC1();
-  };
-  save.onclick = () => {
-    const code = pick.value.split(" · ")[0].trim();
-    if (!(c1.catalog || []).some((c) => c.code === code)) { err.textContent = "Выберите позицию из списка 1С"; return; }
-    send(code, String(k.value).replace(",", "."));
-  };
-  if (clear) clear.onclick = () => send("", "");
-}
-
-// ---------- отчёты как в iiko: прибыль по точкам, закупки, продажи по блюдам ----------
-const rep = { kind: "pnl", store_id: "", point_id: "", date_from: "", date_to: "", auto: true };
-function csvDownload(name, period, head, rows) {
-  const q = (v) => /[;"\n]/.test(String(v ?? "")) ? '"' + String(v).replace(/"/g, '""') + '"' : String(v ?? "");
-  const n = (v) => typeof v === "number" ? String(v).replace(".", ",") : v;
-  const text = [head, ...rows].map((r) => r.map((v) => q(n(v))).join(";")).join("\r\n");
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(new Blob(["﻿" + text], { type: "text/csv;charset=utf-8" }));
-  a.download = `${name} ${period.date_from}—${period.date_to}.csv`; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
-}
-async function loadReports() {
-  const KINDS = { pnl: "Прибыль по точкам", purchases: "Закупки", dishes: "Продажи по блюдам" };
-  const out = tabOut("rep-root", () => {
-    if (rep.auto) { rep.date_from = monthStart(); rep.date_to = today(); }
-    return [el("div", { class: "tools" },
-      // Вид отчёта меняет и строку фильтров (склад есть только у закупок) — её строим заново.
-      sel(KINDS, rep.kind, (v) => { rep.kind = v; const h = document.getElementById("rep-root"); if (h) h.innerHTML = ""; loadReports(); }),
-      rep.kind === "purchases" ? sel({ "": myIds.length ? "мои склады" : "все склады", ...opts(mine(stores)) }, rep.store_id, (v) => { rep.store_id = v; loadReports(); }) : null,
-      el("input", { type: "date", title: "с", value: rep.date_from, onchange: debounce((e) => { rep.date_from = e.target.value; rep.auto = false; loadReports(); }, 400) }),
-      el("span", { class: "dim" }, "—"),
-      el("input", { type: "date", title: "по", value: rep.date_to, onchange: debounce((e) => { rep.date_to = e.target.value; rep.auto = false; loadReports(); }, 400) }),
-      el("button", { class: "ghost csv" }, "Скачать CSV"))];
-  });
-  if (!out) return;
-  const csvBtn = out.parentNode.querySelector(".csv"); csvBtn.onclick = null;
-  const n = nextSeq("rep");
-  out.innerHTML = ""; out.append(el("div", { class: "dim" }, "Считаю…"));
-  const period = { date_from: rep.date_from, date_to: rep.date_to };
-  const th = (h, i) => el("th", { class: i ? "num" : "" }, h);
-  const t = el("table");
-  if (rep.kind === "pnl") {
-    // Прошлый период той же длины, вплотную перед выбранным: чтобы видеть, растёт точка или падает.
-    const d1 = new Date(rep.date_from + "T12:00:00"), d2 = new Date(rep.date_to + "T12:00:00");
-    const len = Math.round((d2 - d1) / 86400e3) + 1;
-    const prev = { date_from: isoDate(new Date(d1.getTime() - len * 86400e3)), date_to: isoDate(new Date(d1.getTime() - 86400e3)) };
-    const [r, rp] = await Promise.all([api("stock_pnl_report", period), api("stock_pnl_report", prev)]);
-    if (n !== seqs.rep) return;
-    out.innerHTML = "";
-    const pv = new Map(((rp.ok && rp.rows) || []).map((x) => [x.point_id ?? "", x]));
-    const delta = (now, was) => { if (!was) return ""; const p = Math.round((now - was) / Math.abs(was) * 100); return (p > 0 ? "+" : "") + p + " %"; };
-    if (!r.ok) { out.append(el("div", { class: "err" }, errText(r))); return; }
-    t.append(el("tr", {}, ...["Точка", "Выручка", "Себестоимость проданного", "Валовая прибыль", "Фудкост", "Списания", "Инвентаризация ±", "Итог по продуктам", "Выручка к прошлому периоду"].map(th)));
-    const tot = { revenue: 0, cost: 0, writeoff: 0, inventory: 0, reval: 0 };
-    const res = (x) => x.revenue - x.cost - x.writeoff + x.inventory;
-    // reval — переоценка проданного в минус (−сумма поправок стоимости по складам точки за период):
-    // она уже входит в себестоимость, ячейку помечаем звёздочкой и поясняем под таблицей.
-    const rv = (x) => Number(x.reval || 0);
-    const costCell = (x) => rv(x) ? el("td", { class: "num", title: "в том числе переоценка " + fmt(rv(x)) + " ₸" }, fmt(x.cost) + " *") : el("td", { class: "num" }, fmt(x.cost));
-    for (const x of r.rows) {
-      for (const k of Object.keys(tot)) tot[k] += Number(x[k] || 0);
-      t.append(el("tr", {}, el("td", {}, x.point_name), el("td", { class: "num" }, fmt(x.revenue)), costCell(x),
-        el("td", { class: "num" }, fmt(x.revenue - x.cost)), el("td", { class: "num" }, x.revenue ? fmt(Math.round(x.cost / x.revenue * 1000) / 10) + " %" : ""),
-        el("td", { class: "num" }, fmt(x.writeoff)), el("td", { class: "num" + (x.inventory < 0 ? " bad" : "") }, fmt(x.inventory)),
-        el("td", { class: "num", style: "font-weight:700" }, fmt(res(x))),
-        el("td", { class: "num", title: "Прошлый период: " + prev.date_from + " — " + prev.date_to }, delta(Number(x.revenue), pv.has(x.point_id ?? "") ? Number(pv.get(x.point_id ?? "").revenue) : 0))));
-    }
-    if (!r.rows.length) t.append(el("tr", {}, el("td", { colspan: 9, class: "dim" }, "За период проведённых продаж, списаний и инвентаризаций нет")));
-    else t.append(el("tr", { style: "font-weight:700" }, el("td", {}, "Итого"), el("td", { class: "num" }, fmt(tot.revenue)), costCell(tot),
-      el("td", { class: "num" }, fmt(tot.revenue - tot.cost)), el("td", { class: "num" }, tot.revenue ? fmt(Math.round(tot.cost / tot.revenue * 1000) / 10) + " %" : ""),
-      el("td", { class: "num" }, fmt(tot.writeoff)), el("td", { class: "num" }, fmt(tot.inventory)), el("td", { class: "num" }, fmt(res(tot))),
-      el("td", { class: "num" }, delta(tot.revenue, [...pv.values()].reduce((a, x) => a + Number(x.revenue), 0)))));
-    const revalPts = r.rows.filter((x) => rv(x));
-    out.append(el("div", { class: "card", style: "padding:0;overflow:auto" }, t),
-      revalPts.length ? el("div", { class: "warnbox" }, "* Себестоимость включает переоценку проданного в минус: товар продали раньше, чем его оприходовали, и приход пересчитал недостающее по своей цене — "
-        + revalPts.map((x) => `${x.point_name} ${rv(x) > 0 ? "+" : ""}${fmt(rv(x))} ₸`).join(", ") + ". Чтобы такого не было, заносите приходы до продаж.") : null,
-      el("div", { class: "dim", style: "margin-top:8px" }, "Только продукты: выручка и себестоимость проданного, списания (порча, проработка, питание персонала) и итог инвентаризаций со складов точки — недостача с минусом. Зарплата, аренда и прочие расходы появятся с разделом «Финансы»."));
-    csvBtn.onclick = () => csvDownload("прибыль по точкам", period, ["Точка", "Выручка", "Себестоимость", ...(revalPts.length ? ["в т. ч. переоценка"] : []), "Валовая прибыль", "Списания", "Инвентаризация", "Итог"],
-      r.rows.map((x) => [x.point_name, x.revenue, x.cost, ...(revalPts.length ? [rv(x)] : []), x.revenue - x.cost, x.writeoff, x.inventory, res(x)]));
-  } else if (rep.kind === "purchases") {
-    const r = await api("stock_purchases_report", { ...period, store_id: rep.store_id || null });
-    if (n !== seqs.rep) return;
-    out.innerHTML = "";
-    if (!r.ok) { out.append(el("div", { class: "err" }, errText(r))); return; }
-    const st = el("table");
-    st.append(el("tr", {}, ...["Поставщик", "Приходов", "Товаров", "Сумма, ₸"].map(th)));
-    for (const x of r.suppliers) st.append(el("tr", {}, el("td", {}, x.name), el("td", { class: "num" }, String(x.docs)), el("td", { class: "num" }, String(x.items)), el("td", { class: "num" }, fmt(x.sum))));
-    if (!r.suppliers.length) st.append(el("tr", {}, el("td", { colspan: 4, class: "dim" }, "За период проведённых приходов нет")));
-    t.append(el("tr", {}, ...["Товар", "Ед.", "Количество", "Сумма, ₸", "Средняя цена", "Мин. цена", "Макс. цена", "Поставщиков"].map((h, i) => el("th", { class: i > 1 ? "num" : "" }, h))));
-    for (const x of r.items) t.append(el("tr", {}, el("td", {}, x.name), el("td", {}, x.unit_id || ""), el("td", { class: "num" }, fmt(x.qty)), el("td", { class: "num" }, fmt(x.sum)),
-      el("td", { class: "num" }, fmt(x.avg_price)), el("td", { class: "num" }, fmt(x.min_price)),
-      el("td", { class: "num" + (x.max_price > x.min_price * 1.1 ? " bad" : "") }, fmt(x.max_price)), el("td", { class: "num" }, String(x.suppliers))));
-    out.append(el("h3", { style: "margin:0 0 8px" }, "По поставщикам"), el("div", { class: "card", style: "padding:0;overflow:auto" }, st),
-      el("h3", { style: "margin:16px 0 8px" }, "По товарам"), el("div", { class: "card", style: "padding:0;overflow:auto" }, t),
-      el("div", { class: "dim", style: "margin-top:8px" }, "Проведённые приходы за период. Красным — максимальная цена выше минимальной больше чем на 10 %: стоит спросить поставщика."));
-    csvBtn.onclick = () => csvDownload("закупки", period, ["Товар", "Ед.", "Количество", "Сумма", "Средняя цена", "Мин. цена", "Макс. цена", "Поставщиков"],
-      r.items.map((x) => [x.name, x.unit_id || "", x.qty, x.sum, x.avg_price, x.min_price, x.max_price, x.suppliers]));
-  } else {
-    const r = await api("doc_sales_report", period);
-    if (n !== seqs.rep) return;
-    out.innerHTML = "";
-    if (!r.ok) { out.append(el("div", { class: "err" }, errText(r))); return; }
-    t.append(el("tr", {}, ...["Блюдо / товар", "Кол-во", "Выручка", "Себестоимость", "Прибыль", "Фудкост"].map(th)));
-    for (const x of r.items) t.append(el("tr", {}, el("td", {}, x.name), el("td", { class: "num" }, fmt(x.qty) + " " + (x.unit_id || "")),
-      el("td", { class: "num" }, fmt(x.revenue)), el("td", { class: "num" }, fmt(x.cost)), el("td", { class: "num" }, fmt(x.margin)),
-      el("td", { class: "num" }, x.foodcost_pct == null ? "" : el("span", { class: "tag " + (x.foodcost_pct > 35 ? "bad" : "ok") }, fmt(x.foodcost_pct) + " %"))));
-    if (!r.items.length) t.append(el("tr", {}, el("td", { colspan: 6, class: "dim" }, "За период проведённых продаж нет")));
-    out.append(el("div", { class: "card", style: "padding:0;overflow:auto" }, t),
-      el("div", { class: "dim", style: "margin-top:8px" }, "Все проданные позиции по всем точкам за период, по выручке. Фудкост выше 35 % — красным."));
-    csvBtn.onclick = () => csvDownload("продажи по блюдам", period, ["Позиция", "Ед.", "Кол-во", "Выручка", "Себестоимость", "Прибыль", "Фудкост, %"],
-      r.items.map((x) => [x.name, x.unit_id || "", x.qty, x.revenue, x.cost, x.margin, x.foodcost_pct ?? ""]));
-  }
-}
-
-// ---------- готовность: что в справочниках и документах помешает учёту ----------
-const READY_GO = {
-  item: (x) => { location.hash = "#item/" + encodeURIComponent(x.code); location.reload(); },
-  chart: (x) => { location.hash = "#charts/" + encodeURIComponent(x.code); location.reload(); },
-};
-async function loadReady() {
-  const host = document.getElementById("ready-root"); if (!host) return;
-  host.innerHTML = ""; const wait = el("div", { class: "dim" }, "Проверяю…"); host.append(wait);
-  const r = await api("stock_quality_report", {});
-  wait.remove();
-  if (!r.ok) { host.append(el("div", { class: "err" }, errText(r)), el("button", { class: "ghost", onclick: loadReady }, "Повторить")); return; }
-  const open = r.checks.filter((c) => c.count > 0);
-  host.append(el("div", { class: "tot" },
-    el("span", {}, open.length ? `Нужно внимание: ${open.length} из ${r.checks.length} проверок` : "Все проверки чистые"),
-    el("span", {}, r.bad ? `мешают учёту: ${r.bad}` : "критичного нет")));
-  for (const c of r.checks) {
-    const clean = !c.count;
-    const d = el("details", { class: "card", style: "padding:12px 16px" });
-    d.append(el("summary", { style: "cursor:pointer;display:flex;gap:10px;align-items:center" },
-      el("span", { class: "tag " + (clean ? "ok" : c.severity === "bad" ? "bad" : "") }, clean ? "чисто" : String(c.count)),
-      el("b", {}, c.title)));
-    d.append(el("div", { class: "dim", style: "margin:8px 0" }, c.hint));
-    if (!clean) {
-      const go = READY_GO[c.target];
-      const t = el("table");
-      for (const x of c.rows) t.append(el("tr", { class: go ? "row" : "", onclick: go ? () => go(x) : null },
-        el("td", {}, x.name), el("td", { class: "dim" }, x.detail || ""), el("td", { class: "dim" }, go ? "открыть →" : "")));
-      if (c.count > c.rows.length) t.append(el("tr", {}, el("td", { colspan: 3, class: "dim" }, `…и ещё ${c.count - c.rows.length}`)));
-      d.append(el("div", { style: "overflow:auto;max-height:420px" }, t));
-    }
-    host.append(d);
-  }
-}
-
 // SheetJS тянем один раз и только когда файл действительно выбрали: библиотека тяжёлая,
 // а в бэк-офис заходят не ради инвентаризации.
 let xlsxLoading = null;
@@ -1120,10 +1049,11 @@ function num(v) {
 const findCol = (row, re) => row.findIndex((c) => re.test(txt(c)));
 
 // Разбор книги остатков → { ok:true, sheets:[лист] } либо { ok:false, error }.
-// Лист: { sheet, mode, stores, combined, has_store_col, rows:[{code,name,qty,store,neg}],
-// warnings, zeros, negatives:[{code,name,qty}], blanks }. Iiko отдаёт оборотку книгой, где
-// каждый лист — отдельный фильтр по складам, поэтому разбираются все листы, а какой брать,
-// решает форма. Вынесен из формы намеренно: так его можно проверить отдельно, без модалки.
+// Лист: { sheet, mode, stores, combined, has_store_col, has_sum, total, period_to,
+// rows:[{code,name,qty,sum,store,neg}], warnings, zeros, negatives:[{code,name,qty,sum}], blanks }.
+// Iiko отдаёт оборотку книгой, где каждый лист — отдельный фильтр по складам, поэтому разбираются
+// все листы, а какой брать, решает форма. Вынесен из формы намеренно: так его можно проверить
+// отдельно, без модалки.
 export async function parseStockFile(buf) {
   await loadXlsx();
   const wb = window.XLSX.read(new Uint8Array(buf), { type: "array" });
@@ -1138,12 +1068,12 @@ export async function parseStockFile(buf) {
   return { ok: true, sheets };
 }
 
-function parseSheet(g) {
+export function parseSheet(g) {
   const warnings = [];
   // Отчёт iiko узнаётся по строке колонок с «Код» и «Наименование»: в нём колонок «Кол-во»
   // много (приход, продажи, списания…), и нужную выбирает не имя колонки, а группа над ней.
   let hdr = g.findIndex((r) => findCol(r, /^код$/i) >= 0 && findCol(r, /наимен/i) >= 0);
-  let qtyCol = -1, nameCol = -1, codeCol = -1, storeCol = -1, mode = "plain";
+  let qtyCol = -1, sumCol = -1, nameCol = -1, codeCol = -1, storeCol = -1, mode = "plain";
   if (hdr >= 0) {
     mode = "iiko";
     nameCol = findCol(g[hdr], /наимен/i);
@@ -1158,15 +1088,23 @@ function parseSheet(g) {
       const h = txt(g[hdr][c]);
       if (/^кол/i.test(h) && !/сумм/i.test(h)) { qtyCol = c; break; }
     }
+    // «Сумма с/н» той же группы — сразу за «Кол-во»; следующая группа (её имя в строке групп) — уже не наша.
+    if (qtyCol >= 0) for (let c = qtyCol + 1; c < g[hdr].length; c++) {
+      if (c > gi && txt(grp[c])) break;
+      const h = txt(g[hdr][c]);
+      if (/сумм/i.test(h)) { sumCol = c; break; }
+      if (/^кол/i.test(h)) break;
+    }
     if (qtyCol < 0) { mode = "plain"; hdr = -1; }
   }
   if (hdr < 0) {
-    // Универсальный лист: название + количество, код и склад — если есть.
+    // Универсальный лист: название + количество, код, сумма и склад — если есть.
     hdr = g.findIndex((r) => findCol(r, /наимен|номенклат|товар|позиц/i) >= 0 && findCol(r, /кол|остат/i) >= 0);
     if (hdr < 0) return { ok: false, error: "Не нашёл строку заголовка с названием и количеством" };
     nameCol = findCol(g[hdr], /наимен|номенклат|товар|позиц/i);
     codeCol = findCol(g[hdr], /^код|артикул/i);
     qtyCol = g[hdr].findIndex((c) => /кол|остат/i.test(txt(c)) && !/сумм/i.test(txt(c)));
+    sumCol = findCol(g[hdr], /сумм/i);
     storeCol = findCol(g[hdr], /склад/i);
     if (qtyCol < 0) return { ok: false, error: "Не нашёл строку заголовка с названием и количеством" };
   }
@@ -1175,34 +1113,46 @@ function parseSheet(g) {
   // повторная загрузка (тест, потом день запуска) обнуляла то, что iiko считает пустым,
   // а не оставляла прошлое количество. Минус физически невозможен — это недоучёт в iiko;
   // сервер минус в факте и не примет, поэтому ставим 0 и показываем такие строки списком.
-  const rows = [], negatives = []; let zeros = 0, blanks = 0;
+  // Итоговая строка отчёта (внизу, без кода и названия) — «итог файла» для сверки.
+  const rows = [], negatives = []; let zeros = 0, blanks = 0, total = null;
   for (let i = hdr + 1; i < g.length; i++) {
     const r = g[i];
     const name = nameCol >= 0 ? txt(r[nameCol]) : "";
     const code = codeCol >= 0 ? txt(r[codeCol]) : "";
-    if (!name && !code) continue;                 // итоговая строка отчёта и разделители
+    if (!name && !code) {                         // итоговая строка отчёта и разделители
+      const t = sumCol >= 0 ? num(r[sumCol]) : null;
+      if (t !== null) total = t;
+      continue;
+    }
     const q = num(r[qtyCol]);
     if (q === null) { blanks++; continue; }
+    const s = sumCol >= 0 ? num(r[sumCol]) : null;
     if (q === 0) zeros++;
-    if (q < 0) negatives.push({ code, name, qty: q });
-    rows.push({ code, name, qty: Math.max(q, 0), neg: q < 0, store: storeCol >= 0 ? txt(r[storeCol]) : "" });
+    if (q < 0) negatives.push({ code, name, qty: q, sum: s });
+    rows.push({ code, name, qty: Math.max(q, 0), sum: s, neg: q < 0, store: storeCol >= 0 ? txt(r[storeCol]) : "" });
   }
 
   // Склады: в отчёте iiko — из строки шапки «Склад: …», в универсальном листе — из колонки.
   // Лист iiko с несколькими складами — сводный: остатки в строке сложены, и разложить их
   // обратно нечем. Такой лист не отвергается, а помечается: грузить его целиком на один
   // склад форма разрешает только после явного подтверждения.
-  let stores = [];
+  // Конец периода отчёта («За период: с 01.07.2026 по 31.07.2026») — дата остатков на конец:
+  // форма предупредит, если документ датирован другим днём.
+  let stores = [], periodTo = null;
   if (mode === "iiko") {
     for (let i = 0; i < hdr; i++) {
-      const c = (g[i] || []).map(txt).find((x) => /^склад\s*:/i.test(x));
-      if (c) { stores = c.replace(/^склад\s*:/i, "").split(",").map((x) => x.trim()).filter(Boolean); break; }
+      const cells = (g[i] || []).map(txt);
+      const c = cells.find((x) => /^склад\s*:/i.test(x));
+      if (c && !stores.length) stores = c.replace(/^склад\s*:/i, "").split(",").map((x) => x.trim()).filter(Boolean);
+      const p = cells.map((x) => /по\s+(\d{2})\.(\d{2})\.(\d{4})/i.exec(x)).find(Boolean);
+      if (p && !periodTo) periodTo = `${p[3]}-${p[2]}-${p[1]}`;
     }
   } else if (storeCol >= 0) {
     stores = [...new Set(rows.map((x) => x.store).filter(Boolean))];
   }
   return { ok: true, mode, stores, combined: mode === "iiko" && stores.length > 1,
-    has_store_col: mode !== "iiko" && storeCol >= 0, rows, warnings, zeros, negatives, blanks };
+    has_store_col: mode !== "iiko" && storeCol >= 0, has_sum: sumCol >= 0, total, period_to: periodTo,
+    rows, warnings, zeros, negatives, blanks };
 }
 
 // Склады в названиях сравниваются без регистра и лишних пробелов: в справочнике есть

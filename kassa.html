@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="theme-color" content="#1F3864">
 <title>Тандем KZ — касса</title>
-<link rel="stylesheet" href="kassa.css?v=20">
+<link rel="stylesheet" href="kassa.css?v=21">
 <style>
   /* «Смена»: заголовки блоков «Не на сервере» (очередь планшета любой даты) и «На сервере» */
   .shift .qhead{font-size:15px;color:var(--ink2);margin:16px 0 8px}
@@ -15,7 +15,7 @@
 <body>
 <div id="login" class="login" hidden>
   <h1>Касса · Тандем KZ</h1>
-  <p class="sub">Вход для продавца · сборка 20</p>
+  <p class="sub">Вход для продавца · сборка 21</p>
   <label for="lpoint">Точка</label>
   <select id="lpoint"><option value="">Загружаю точки…</option></select>
   <label for="lpin">Код точки</label>
@@ -40,8 +40,11 @@
       <button id="tab-shift" aria-selected="false">Смена</button>
     </nav>
     <div class="sync" id="sync" role="status"></div>
+    <button class="link" id="fbbtn" title="Сообщить о проблеме или неудобстве">Замечание</button>
     <button class="link" id="logout">Выйти</button>
   </header>
+  <!-- Смена уже закрыта, а продажа идёт: полоса видна всё время, пока открыт экран продажи -->
+  <div id="closedbar" class="closedbar" role="alert" hidden></div>
 
   <main id="sale" class="sale">
     <section class="menu" aria-label="Меню точки">
@@ -75,6 +78,7 @@
   <div id="cashbox" class="cashbox" hidden role="dialog" aria-label="Оплата наличными">
     <div class="cashcard">
       <div class="cashrow"><span>К оплате</span><b id="cashsum"></b></div>
+      <div class="cashwarn" id="cashwarn" hidden></div>
       <label for="cashgot">Дал покупатель, ₸</label>
       <input id="cashgot" inputmode="decimal" autocomplete="off">
       <div class="cashquick" id="cashquick"></div>
@@ -84,7 +88,8 @@
   </div>
 </div>
 <div id="toast" class="toast" hidden></div>
-<script src="config.js?v=20"></script>
-<script type="module" src="js/kassa/app.js?v=20"></script>
+<script src="config.js?v=21"></script>
+<script src="js/feedback.js?v=21"></script>
+<script type="module" src="js/kassa/app.js?v=21"></script>
 </body>
 </html>

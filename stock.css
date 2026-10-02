@@ -6,6 +6,9 @@ body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.45 -apple-system
 .screen{max-width:560px;margin:0 auto;padding:14px 12px 90px}
 header{padding-bottom:10px;border-bottom:2px solid var(--accent);margin-bottom:14px}
 header.top{display:flex;justify-content:space-between;align-items:center;gap:10px}
+/* Справа в шапке две ссылки: «замечание» и «сменить склад»; на 360 px встают в столбик, а не наезжают на название. */
+.hacts{display:flex;flex-wrap:wrap;justify-content:flex-end;align-items:center;flex:none;max-width:55%}
+.hacts button.link{padding:4px 6px}
 h1{font-size:19px;margin:0;color:var(--accent)}.brand{font-weight:700;color:var(--accent);font-size:17px}
 .sub{font-size:12.5px;color:var(--muted);margin-top:2px}
 label{display:block;font-size:12.5px;color:var(--ink2);margin:12px 0 5px;font-weight:600}
@@ -26,19 +29,28 @@ button:disabled{opacity:.5}
 /* Плитка с длинным названием не должна вылезать за карточку на 360 px. */
 .fav button{width:auto;flex:0 1 auto;max-width:100%;padding:10px 13px;font-size:14px;min-height:44px;
   text-align:left;overflow-wrap:anywhere;background:#EEF2F8;color:var(--accent);border:1px solid #D6DFEC}
+.fav button.more{background:#fff;border-style:dashed}
 .favh{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);font-weight:700;margin-top:10px}
 .sres{margin-top:6px;max-height:260px;overflow-y:auto;border:1px solid var(--line);border-radius:10px;background:#fff}
 .sres:empty{display:none}
-.sitem{display:flex;justify-content:space-between;width:100%;text-align:left;background:#fff;border:none;border-bottom:1px solid var(--line);border-radius:0;padding:12px;color:var(--ink);font-weight:500;font-size:15px;min-height:44px}
-.sitem:last-child{border-bottom:none}.sitem i{font-style:normal;color:var(--muted);font-size:13px}
-.lrow{display:grid;gap:6px;align-items:center;padding:8px 0;border-bottom:1px solid var(--line)}
+.sitem{display:flex;justify-content:space-between;align-items:baseline;gap:8px;width:100%;text-align:left;background:#fff;border:none;border-bottom:1px solid var(--line);border-radius:0;padding:12px;color:var(--ink);font-weight:500;font-size:15px;min-height:44px}
+.sitem:last-child{border-bottom:none}.sitem i{font-style:normal;color:var(--muted);font-size:13px;flex:none}
+.sitem span{min-width:0;overflow-wrap:anywhere}
+.lrow{display:grid;gap:6px;align-items:center;padding:8px 0;border-bottom:1px solid var(--line);scroll-margin:120px 0 90px}
+/* Строка, к которой перешли поиском («уже в списке»), на миг подсвечивается — глаз находит её сразу. */
+.lrow.flash{animation:flash 1.8s ease-out}
+@keyframes flash{0%,40%{background:#FFF1BF}100%{background:transparent}}
+.lhead{display:grid;gap:6px;padding:2px 0 4px;border-bottom:1px solid var(--line);font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);font-weight:700}
 /* Длинное название не растягивает строку: колонка ужимается, слово переносится. */
 .lrow .ln{font-size:14.5px;line-height:1.25;min-width:0;overflow-wrap:anywhere}
 .lrow .ln i{display:block;font-style:normal;font-size:11.5px;color:var(--muted)}
 /* Приёмка: три поля в один ряд с названием не влезают в 360 px — название занимает
-   свою строку, количество/цена/сумма идут под ним, крестик остаётся справа сверху. */
-.lrow.two{grid-template-columns:1fr 1fr minmax(56px,auto) 44px;
+   свою строку, количество/цена/сумма идут под ним (у каждого подпись сверху), крестик — справа сверху. */
+.lrow.two{grid-template-columns:1fr 1fr minmax(64px,auto) 44px;
   grid-template-areas:"n n n x" "c0 c1 c2 ."}
+.lrow .fld{display:block;margin:0;min-width:0;font-weight:400}
+.lrow .fld span{display:block;font-size:11.5px;color:var(--muted);font-weight:600;margin:0 0 2px}
+.lrow .fld .num{min-height:44px;display:flex;align-items:center;justify-content:flex-end;font-size:15px;white-space:nowrap}
 .lrow.two .ln{grid-area:n}
 .lrow.two .c0{grid-area:c0}.lrow.two .c1{grid-area:c1}.lrow.two .c2{grid-area:c2}
 .lrow.two button.x{grid-area:x;align-self:start}
@@ -55,6 +67,53 @@ button:disabled{opacity:.5}
 .toast{position:fixed;left:50%;bottom:90px;transform:translateX(-50%);background:var(--ink);color:#fff;padding:10px 16px;border-radius:9px;font-size:14px;z-index:10;max-width:90%}
 .toast.bad{background:var(--bad)}
 table{width:100%;border-collapse:collapse;font-size:14.5px}td,th{padding:8px 6px;border-bottom:1px solid var(--line);text-align:left}th{font-size:11px;text-transform:uppercase;color:var(--muted)}
-/* Сводка инвентаризации — пять колонок; на узком экране прокручивается сама, а не страница. */
-.tscroll{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:0 -4px}
-.tscroll td,.tscroll th{padding:8px 4px;overflow-wrap:anywhere}
+/* Пересчёт: поиск и «только пересчитанные» прилипают к верху, пока листают список в сотни строк. */
+.tools.sticky{position:sticky;top:0;z-index:3;background:var(--card);margin:8px -14px 0;padding:8px 14px 2px;border-bottom:1px solid var(--line)}
+.trow{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap}
+label.chk{display:flex;align-items:center;gap:8px;margin:0;min-height:44px;font-size:14px;font-weight:500;color:var(--ink)}
+label.chk input{width:22px;height:22px;min-height:0;margin:0;padding:0;flex:none;accent-color:var(--accent)}
+.cnt{font-size:13px}
+.empty{padding:12px 0;color:var(--ink2);font-size:14px}
+.empty button{margin-top:8px}
+/* Даты приёмки: быстрые «сегодня» / «вчера» под полем. */
+.chips{display:flex;gap:6px;margin-top:6px;flex-wrap:wrap}
+.chips button{width:auto;min-height:40px;padding:6px 12px;font-size:14px;font-weight:500;background:#EEF2F8;color:var(--accent);border:1px solid #D6DFEC}
+.chips button.on{background:var(--accent);color:#fff;border-color:var(--accent)}
+/* Сводка пересчёта: карточка на позицию — название целиком, под ним четыре числа с подписями,
+   два ряда по два («Факт · Расчёт», «Разница · Сумма»): в четыре колонки на 360 px длинные числа
+   наезжали друг на друга. Числа не переносятся (в таблице они рвались по буквам: «214,3 / 4», «ФАК Т»). */
+.disc{padding:9px 0;border-bottom:1px solid var(--line)}
+.disc .dn{font-size:14.5px;font-weight:600;line-height:1.25;overflow-wrap:break-word}
+.disc .dn i{font-style:normal;font-weight:400;color:var(--muted);font-size:12.5px}
+.disc .dg{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:2px 18px;margin-top:4px}
+.disc .dg div{display:flex;justify-content:space-between;align-items:baseline;gap:6px;min-width:0}
+.disc .dg span{font-size:12px;color:var(--muted);white-space:nowrap}
+.disc-tot span{display:block;font-size:11px;color:var(--muted)}
+.disc .dg b{font-weight:600;font-size:14.5px;white-space:nowrap;font-variant-numeric:tabular-nums}
+.disc .bad b,.disc-tot b.bad{color:var(--bad)}.disc .ok b,.disc-tot b.ok{color:var(--ok)}
+.disc-tot{display:flex;gap:16px;justify-content:flex-end;padding:10px 0 2px;text-align:right}
+.disc-tot b{font-size:16px;white-space:nowrap;font-variant-numeric:tabular-nums}
+/* Что изменилось после проведения (например, «теперь продаются готовыми»): не ошибка — свой цвет. */
+.infobox{background:#EAF1FB;color:#1F3864;border-radius:10px;padding:10px 12px;margin-top:10px;font-size:14px}
+/* Остаток в подсказке поиска (перемещение, списание): есть — зелёный, ноль — серый, минус — красный. */
+.sitem i b.stk{font-weight:600}.sitem i b.stk.pos{color:var(--ok)}.sitem i b.stk.neg{color:var(--bad)}
+/* «Итого по накладной (на бумаге)» в приёмке: поле и живая сверка рядом. */
+.paper{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.2fr);gap:8px;align-items:center}
+.pnote{font-size:13.5px;font-weight:600;line-height:1.25;padding:6px 10px;border-radius:8px}
+.pnote:empty{display:none}
+.pnote.ok{background:var(--okbg);color:var(--ok)}.pnote.bad{background:var(--badbg);color:var(--bad)}
+/* Окно «Уйдут в минус» — снизу экрана, под большим пальцем; поверх панели «В меню / Провести». */
+.sheet-bg{position:fixed;inset:0;z-index:20;background:rgba(27,36,48,.5);display:flex;align-items:flex-end;justify-content:center}
+.sheet{width:100%;max-width:560px;max-height:88vh;overflow-y:auto;background:var(--card);border-radius:16px 16px 0 0;
+  padding:16px 14px calc(14px + env(safe-area-inset-bottom));box-shadow:0 -6px 24px rgba(27,36,48,.25)}
+.sheet h2{margin:0;font-size:19px;color:var(--warn)}
+.sheet .warnbox{margin-top:8px}
+.mlist{margin-top:6px}
+.mrow{padding:9px 0;border-bottom:1px solid var(--line)}
+.mrow .mn{font-size:15px;font-weight:600;line-height:1.25;overflow-wrap:anywhere}
+.mrow .mn i{display:block;font-style:normal;font-weight:400;font-size:12.5px;color:var(--muted)}
+.mrow .mq{display:flex;justify-content:space-between;gap:10px;margin-top:3px;font-variant-numeric:tabular-nums;font-size:14.5px}
+.mrow .mq span{color:var(--ink2)}.mrow .mq b{color:var(--bad);white-space:nowrap}
+.macts{display:flex;flex-direction:column;gap:8px;margin-top:14px}
+.macts button{margin:0}
+.macts button.ghost{min-height:44px;font-size:15px;border-color:var(--line);color:var(--ink2)}

@@ -1,5 +1,5 @@
 // Вызовы бэк-офиса: токен сессии в payload, хранение сессии в localStorage.
-export const BUILD = 20;
+export const BUILD = 21;
 const API = (typeof window !== "undefined" && window.TANDEM_API_URL) || "https://qeehxcnnuzuwskznhdyg.supabase.co/functions/v1/uchet";   // адрес меняется в config.js
 const KEY = "tandem_office";
 const TIMEOUT_MS = 20000;
@@ -28,6 +28,8 @@ export function can(section, action) {
 // непонятно, сохранилось ли.
 // Протухшая сессия (unauthorized) больше не перезагружает страницу: api() шлёт событие
 // tandem:unauthorized, бэк-офис показывает поверх окно входа, а введённое в формах остаётся.
+// opts.quiet — фоновый запрос (счётчик новых замечаний раз в 10 минут): протухшая сессия не поднимает
+// окно входа сама по себе, его покажет первое действие человека.
 export async function api(action, payload, opts) {
   const body = { action: "office_" + action, payload: { ...(payload || {}) } };
   const s = session();
@@ -45,7 +47,7 @@ export async function api(action, payload, opts) {
   } catch { j = null; }
   finally { clearTimeout(timer); }
   if (!j || typeof j !== "object") return network;
-  if (!j.ok && j.error === "unauthorized" && action !== "login" && typeof window !== "undefined" && window.dispatchEvent) {
+  if (!j.ok && j.error === "unauthorized" && action !== "login" && !(opts && opts.quiet) && typeof window !== "undefined" && window.dispatchEvent) {
     window.dispatchEvent(new CustomEvent("tandem:unauthorized", { detail: { message: j.message } }));
   }
   return j;

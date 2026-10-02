@@ -38,6 +38,98 @@ var parseDate = function (s) {
   var p = String(s || '').split('-');
   return p.length === 3 ? new Date(+p[0], +p[1] - 1, +p[2]) : new Date();
 };
+// ГГГГ-ММ-ДД (или отметка времени) → ДД.ММ.ГГГГ: на экране даты как в iiko и в бэк-офисе.
+var dmy = function (s) {
+  var p = String(s || '').slice(0, 10).split('-');
+  return p.length === 3 ? p[2] + '.' + p[1] + '.' + p[0] : String(s || '');
+};
+// Количество (вес, штуки, расход сырья): до 3 знаков, запятая — «0,35», а не «0.35».
+var fmtQty = function (n) {
+  n = Number(n || 0);
+  return (Math.round(n * 1000) / 1000).toLocaleString('ru-RU', { maximumFractionDigits: 3 });
+};
+// Число в поле ввода — с запятой, как его набирает человек («2,5»); num() и numOrNull() читают и точку, и запятую.
+var numStr = function (v) {
+  return v === null || v === undefined ? '' : String(v).replace('.', ',');
+};
+// «1 чек», «2 чека», «5 чеков».
+var plural = function (n, one, few, many) {
+  var a = Math.abs(n) % 100, b = a % 10;
+  return a > 10 && a < 20 ? many : b === 1 ? one : b >= 2 && b <= 4 ? few : many;
+};
+// Расхождение кассы словами: diff_cash = должно − пересчитано, плюс — денег меньше, чем должно.
+var cashDiffText = function (d) {
+  d = Math.round(num(d) * 100) / 100;
+  return d > 0 ? 'Недостача ' + fmt(d) + ' ₸' : d < 0 ? 'Излишек ' + fmt(-d) + ' ₸' : 'Касса сходится';
+};
+// Доля в процентах — с запятой, как остальные числа: «0,3 %», «10,8 %» (было «10.8 %»).
+var pctText = function (p) {
+  p = Math.abs(num(p));
+  return p > 0 && p < 0.05 ? 'меньше 0,1 %'
+    : (Math.round(p * 10) / 10).toLocaleString('ru-RU', { maximumFractionDigits: 1 }) + ' %';
+};
+var round2 = function (v) { return Math.round(num(v) * 100) / 100; };
+
+/* Чеки после закрытия смены (касса, миграция 0047 / K1). Такой чек касса принимает, и он сразу входит
+   в деньги дня (check_rollup на каждом чеке), а пересчёт кассы и выписки остались от закрытия — поэтому
+   «должно» и недостача, посчитанные по строке дня, завышены на поздние чеки (ложная недостача, owner Д1).
+   lateOf — сколько их и на сколько по способам оплаты; known — сервер отдал разбивку (late_cash и др.):
+   без неё «на момент закрытия» не посчитать, и цифры остаются как есть (старый сервер). */
+function lateOf(x) {
+  var n = x && x.closed_at ? num(x.late_checks) : 0;
+  if (!(n > 0)) return null;
+  return { n: n, sum: num(x.late_sum), known: x.late_cash !== undefined && x.late_cash !== null,
+           cash: num(x.late_cash), kaspi: num(x.late_kaspi), card: num(x.late_card), transfer: num(x.late_transfer) };
+}
+// Отчёт кассы на момент закрытия: из денег и расхождений вычтены поздние чеки. Повторное закрытие смены
+// сворачивает их в отчёт (late_checks снова 0) — тогда это просто цифры отчёта. null в расхождении —
+// «не сверяли» (выписки или пересчёта нет) и остаётся null.
+function closeView(x) {
+  var L = lateOf(x), k = L && L.known ? L : { cash: 0, kaspi: 0, transfer: 0, card: 0 };
+  var sub = function (v, d) { return v === null || v === undefined ? null : round2(num(v) - d); };
+  return {
+    late: L, shifted: !!(L && L.known),
+    cash: round2(num(x.cash) - k.cash), kaspi: round2(num(x.kaspi_qr) - k.kaspi),
+    transfer: round2(num(x.transfer) - k.transfer), card: round2(num(x.card) - k.card),
+    expected: round2(num(x.cash_expected) - k.cash),
+    diffCash: sub(x.diff_cash, k.cash), diffQr: sub(x.diff_qr, k.kaspi), diffTr: sub(x.diff_transfer, k.transfer)
+  };
+}
+/* «Смену сдал» у кассы при повторном закрытии (kassa Д6, owner У9): в поле — кто закрывает сейчас
+   (продавец, вошедший в кассу на этом планшете), а кто закрыл первым — сохраняется в том же поле
+   хвостом « · первым закрыл: …»: отдельной колонки у отчёта нет, а собственник должен видеть обоих. */
+var FIRST_BY = ' · первым закрыл: ';
+function splitBy(s) {
+  s = String(s || '').trim();
+  var i = s.indexOf(FIRST_BY.trim());
+  if (i < 0) return { who: s, first: '' };
+  return { who: s.slice(0, i).replace(/[\s·]+$/, ''), first: s.slice(i + FIRST_BY.trim().length).trim() };
+}
+function withFirstBy(who, first) {
+  who = String(who || '').trim(); first = String(first || '').trim();
+  if (!who || !first || splitBy(who).first) return who;
+  return norm(who) === norm(first) ? who : who + FIRST_BY + first;
+}
+// Продавец, вошедший в кассу на этом устройстве (js/kassa/app.js пишет его при входе и «Сменить продавца»).
+function kassaSeller() {
+  try { return String(JSON.parse(localStorage.getItem('tandem_kassa_seller') || '""') || '').trim(); } catch (e) { return ''; }
+}
+/* Поле количества или суммы — как numInput бэк-офиса: при входе значение выделяется (новое число
+   набирается поверх старого), Enter ведёт к следующему полю строки, с последнего — в поиск позиции.
+   Колёсико число не меняет: поля текстовые (inputmode=decimal), запятую понимают при любом языке. */
+function numField(inp, next) {
+  if (!inp) return;
+  inp.addEventListener('focus', function () {
+    var t = this;
+    setTimeout(function () { try { if (document.activeElement === t) t.select(); } catch (e) { } }, 0);
+  });
+  inp.addEventListener('keydown', function (e) {
+    if (e.key !== 'Enter' || e.isComposing) return;
+    e.preventDefault();
+    var n = typeof next === 'function' ? next() : next;
+    if (n && !n.disabled) n.focus(); else this.blur();
+  });
+}
 var newUid = function () {
   return crypto.randomUUID ? crypto.randomUUID()
     : '10000000-1000-4000-8000-100000000000'.replace(/[018]/g, function (c) {
@@ -85,10 +177,20 @@ function initLogin() {
       o.textContent = pts[i].name;
       sel.appendChild(o);
     }
-    var saved = null;
-    try { saved = JSON.parse(localStorage.getItem('tandem_login') || 'null'); } catch (e) { saved = null; }
-    if (saved && saved.point_id) { sel.value = saved.point_id; $('lpin').value = saved.pin || ''; }
+    var saved = savedLogin();
+    if (saved && saved.point_id) sel.value = saved.point_id;   // точки из памяти может уже не быть в списке
+    if (saved && saved.point_id && sel.value === saved.point_id) $('lpin').value = saved.pin || '';
   });
+}
+function savedLogin() {
+  try { return JSON.parse(localStorage.getItem('tandem_login') || 'null'); } catch (e) { return null; }
+}
+/* Сменили точку в списке — код прежней точки из поля убирается (kassa У2: поверх 1008 дописывали 1006 и
+   получали «Неверный код»). Запомненный код подставляется, только если выбрана та же точка, что в памяти. */
+function pointChanged() {
+  var saved = savedLogin();
+  $('lpin').value = saved && saved.point_id && saved.point_id === $('lpoint').value ? saved.pin || '' : '';
+  $('lerr').textContent = '';
 }
 
 function doLogin(asOwner) {
@@ -122,10 +224,55 @@ function logout() {
   $('opin').value = '';
   $('screen-login').hidden = false; $('screen-form').hidden = true;
   $('screen-dash').hidden = true; $('screen-driver').hidden = true;
+  showFeedback(false);
+}
+
+/* ── Замечания (js/feedback.js) ───────────────────────────────────────────
+   Кнопка видна только после входа: замечание уходит с текущим кодом (точки, собственника или
+   водителя) — без кода сервер его не примет. Сам код в сведения не кладём: screen() — только
+   экран, точка и дата; feedback.js берёт адрес страницы без строки запроса. */
+var FB = { mounted: false };
+// Номер сборки — из адреса своего же скрипта (app.js?v=N): отдельной константы, которую надо
+// не забыть поменять при выпуске, нет.
+var BUILD = (function () {
+  var s = document.querySelector('script[src*="app.js?v="]');
+  var m = s && /[?&]v=(\d+)/.exec(s.getAttribute('src') || '');
+  return m ? m[1] : '';
+})();
+function fbSource() {
+  return S.role === 'owner' ? 'owner' : S.role === 'driver' ? 'driver' : 'point';
+}
+function fbScreen() {
+  if (S.role === 'owner') {
+    return 'Сводка собственника · ' + dmy($('dfrom').value) + '–' + dmy($('dto').value);
+  }
+  if (S.role === 'driver') return 'Журнал развоза';
+  if (S.point) {
+    return 'Дневной отчёт · ' + S.point.name + ' · ' + $('fmode').textContent + ' · ' + dmy($('date').value);
+  }
+  return 'Вход';
+}
+function showFeedback(on) {
+  if (!window.TandemFeedback) return;   // скрипт замечаний не загрузился — страница работает и без него
+  if (on && !FB.mounted) {
+    FB.mounted = true;
+    window.TandemFeedback.mount({
+      source: 'point', build: BUILD, corner: 'bl',   // слева: справа в строках поля и «×»
+      screen: fbScreen,
+      send: function (message, context) {
+        if (!S.pin) return Promise.resolve({ ok: false, error: 'Сначала войдите — замечание отправляется с кодом входа' });
+        return post('feedback', { pin: S.pin, point_id: S.point ? S.point.id : null, source: fbSource(),
+          message: message, page: fbScreen(), context: context });
+      }
+    });
+  }
+  var b = document.querySelector('.tfb-btn');
+  if (b) b.hidden = !on;
 }
 
 function showForm() {
   $('screen-login').hidden = true; $('screen-form').hidden = false; $('screen-dash').hidden = true;
+  showFeedback(true);
   $('fpoint').textContent = S.point.name;
   $('fmode').textContent = S.mode === 'takeout' ? 'заборный лист' :
     S.mode === 'position' ? 'продажи по позициям' :
@@ -167,6 +314,8 @@ function loadItems() {
    она неактивна: save_report заменяет отчёт целиком, и пустая форма затёрла бы уже сданный. */
 function say(text, bad) {
   var m = $('savemsg'); m.textContent = text || ''; m.className = 'msg' + (bad ? ' bad' : '');
+  // Ошибку, которую видел человек, замечание приложит само (js/feedback.js).
+  if (bad && text && window.TandemFeedback) window.TandemFeedback.noteError(text);
 }
 function lockSave(text) {
   S.ready = false;
@@ -262,15 +411,16 @@ function itemByCode(code) {
   return null;
 }
 
-/* Расход сырья: по калькуляциям из iiko считаем, сколько продуктов должно было
+/* Расход сырья: по техкартам считаем, сколько продуктов должно было
    уйти на пробитое за смену. Это ответ на вопрос «спекли 200 пирожков — сколько
-   ушло муки и мяса», и материал для сверки с фактическим списанием. */
+   ушло муки и мяса», и материал для сверки с фактическим списанием.
+   Единица — из строки карты (поле u, если сервер его отдаёт): брутто записано в единице ингредиента. */
 function drawRaw() {
   var box = $('raw'), card = $('block-raw');
   if (!box || !card) return;
   if (!S.charts) { card.hidden = true; return; }
 
-  var used = {};
+  var used = {}, units = {};
   var lines = S.mode === 'takeout'
     ? S.takeout.map(function (t) { return { code: t.item_code, qty: soldOf(t) }; })
     : S.sales.map(function (s) { return { code: s.item_code, qty: num(s.qty) }; });
@@ -285,6 +435,7 @@ function drawRaw() {
     for (var k = 0; k < chart.length; k++) {
       var n = chart[k].n;
       used[n] = (used[n] || 0) + Number(chart[k].a) * lines[i].qty;
+      if (chart[k].u) units[n] = chart[k].u;
     }
   }
 
@@ -294,15 +445,16 @@ function drawRaw() {
 
   var html = '';
   for (var j = 0; j < names.length && j < 20; j++) {
-    var v = used[names[j]];
-    html += '<div class="rrow"><span>' + esc(names[j]) + '</span><b>' +
-      (v < 1 ? (Math.round(v * 1000) / 1000) : fmt(Math.round(v * 100) / 100)) + '</b></div>';
+    // Через fmtQty: «0,6» и «4,53» одинаково с запятой (раньше дробь меньше единицы шла с точкой).
+    html += '<div class="rrow"><span>' + esc(names[j]) + '</span><b>' + fmtQty(used[names[j]]) +
+      (units[names[j]] ? ' ' + esc(units[names[j]]) : '') + '</b></div>';
   }
   if (names.length > 20) {
     html += '<div class="empty">и ещё ' + (names.length - 20) + ' позиций сырья</div>';
   }
-  html += '<div class="hint" style="margin-top:10px">Карты нашлись у ' + covered + ' позиций из ' + total +
-    '. Для остальных калькуляции в iiko пока нет.</div>';
+  html += '<div class="hint" style="margin-top:10px">' + (covered === total ? 'Техкарты есть у всех проданных позиций.'
+    : 'Техкарты нашлись у ' + covered + ' ' + plural(covered, 'позиции', 'позиций', 'позиций') + ' из ' + total +
+      '. У остальных техкарты пока нет — их расход здесь не посчитан.') + '</div>';
   box.innerHTML = html;
 }
 
@@ -310,15 +462,38 @@ var MONEY_FIELDS = ['cash', 'kaspi_qr', 'transfer', 'card', 'qr_statement', 'tr_
 function fillMoney(rep) {
   for (var i = 0; i < MONEY_FIELDS.length; i++) {
     var v = rep ? rep[MONEY_FIELDS[i]] : null;
-    $(MONEY_FIELDS[i]).value = v !== null && v !== undefined ? v : '';
+    $(MONEY_FIELDS[i]).value = numStr(v);
   }
-  if (S.mode === 'checks') $('kcount').textContent = rep ? rep.checks_count : '0';
+  // Касса: поздние чеки дня и значения сверки, с которыми смену закрыли, — пока их не меняли,
+  // проверки считаются на момент закрытия (recalc), после правки — по всему дню (повторное закрытие).
+  S.late = S.mode === 'checks' ? lateOf(rep) : null;
+  S.closedAt = rep && rep.closed_at ? rep.closed_at : null;
+  S.atClose = { cash_counted: $('cash_counted').value, qr_statement: $('qr_statement').value, tr_statement: $('tr_statement').value };
+  if (S.mode === 'checks') { $('kcount').textContent = rep ? rep.checks_count : '0'; drawLate(); }
+}
+/* Касса: чеки, пробитые после закрытия смены (late_* в отчёте дня, миграция 0047).
+   Касса такой чек принимает (продажа не теряется), но закрытый отчёт его не видел — смену надо
+   закрыть заново. Старый сервер поля не отдаёт — полосы нет. */
+function drawLate() {
+  var box = $('klate'); if (!box) return;
+  box.hidden = !S.late;
+  box.textContent = S.late ? lateText(S.late) : '';
+}
+// Под полем «Смену сдал» у кассы, если смену уже закрывали: кто закрыл первым и когда.
+function drawFirstBy() {
+  var box = $('firstby'); if (!box) return;
+  var t = S.mode === 'checks' && S.firstBy
+    ? 'Смену уже закрывали — ' + (S.firstSure ? 'первым закрыл: ' : 'последним закрыл: ') + S.firstBy +
+      (S.firstAt ? ' (' + whenShort(S.firstAt, $('date').value) + ')' : '') + '. В поле «Смену сдал» — кто закрывает сейчас.'
+    : '';
+  box.textContent = t; box.hidden = !t;
 }
 
 function loadReport() {
   if (!S.itemsOk) { reloadForm(); return; }   // отчёт загрузится следом за списком позиций
   var seq = ++S.loadSeq, date = $('date').value;
-  lockSave('Загружаю отчёт за ' + date.split('-').reverse().join('.') + '…');
+  S.late = null; S.firstBy = ''; S.firstSure = false; drawLate(); drawFirstBy();   // пометки прошлого дня не должны висеть над другим днём
+  lockSave('Загружаю отчёт за ' + dmy(date) + '…');
   api('get_report', { date: date }).then(function (r) {
     if (seq !== S.loadSeq) return;   // пока грузилось, выбрали другой день
     if (!r.ok) { loadFailed('Отчёт не загрузился: ' + (r.offline ? 'нет связи с сервером' : (r.error || 'ошибка сервера'))); return; }
@@ -350,8 +525,22 @@ function loadReport() {
     var kassaOpen = S.mode === 'checks' && !!rep && !rep.closed_at;
     restoreDraft(!rep || kassaOpen, kassaOpen);
     if (S.mode === 'checks') {
-      // Имя продавца уже введено в кассе — не заставляем набирать второй раз.
-      if (!$('shift_by').value) { try { $('shift_by').value = JSON.parse(localStorage.getItem('tandem_kassa_seller') || '""') || ''; } catch (e) { } }
+      // Имя продавца уже введено в кассе — не заставляем набирать второй раз. Смену уже закрывали
+      // (повторное закрытие или открыта собственником для исправления): сдаёт тот, кто за кассой сейчас,
+      // а не тот, кто закрыл первым (kassa Д6); первый — строкой под полем и в сохранённом отчёте.
+      // shift_by у кассы пишет только закрытие смены, поэтому непустое поле — признак, что закрывали.
+      var seller = kassaSeller(), prev = splitBy(rep && rep.shift_by);
+      if (rep && (rep.closed_at || rep.first_saved_at || prev.who)) {
+        // Кто закрыл первым, известно точно, если это записано хвостом поля или смену закрывали один раз.
+        // Отчёт, уже пересохранённый до этой сборки, хранит только последнего — его и называем последним.
+        var once = !rep.edited_at && !(rep.closed_at && rep.first_saved_at &&
+          Math.abs(new Date(rep.closed_at) - new Date(rep.first_saved_at)) > 60000);
+        S.firstSure = !!prev.first || once;
+        S.firstBy = prev.first || prev.who;
+        S.firstAt = S.firstSure ? rep.first_saved_at || rep.closed_at || null : rep.closed_at || null;
+        $('shift_by').value = seller || prev.who;
+      } else if (!$('shift_by').value) $('shift_by').value = seller;
+      drawFirstBy();
       $('saved').textContent = rep && rep.closed_at ? 'Смена за этот день уже закрыта — можно поправить и закрыть заново'
         : (rep ? '' : 'За этот день чеков ещё нет');
       drawKassaQueue();
@@ -418,10 +607,17 @@ function drawExp() {
     var row = document.createElement('div'); row.className = 'erow';
     row.innerHTML =
       '<input class="ep" placeholder="Кому и на что" value="' + esc(e.purpose) + '">' +
-      '<input class="ea" inputmode="decimal" placeholder="Сумма" value="' + esc(e.amount) + '">' +
+      '<input class="ea" inputmode="decimal" autocomplete="off" placeholder="Сумма" value="' + esc(numStr(e.amount)) + '">' +
       '<input class="er" placeholder="№ чека" value="' + esc(e.receipt_no) + '">' +
-      '<button class="x" type="button">×</button>';
+      '<button class="x" type="button" tabindex="-1" aria-label="Убрать">×</button>';
     (function (idx, row) {
+      numField(row.querySelector('.ea'), row.querySelector('.er'));
+      row.querySelector('.ep').onkeydown = function (ev) { if (ev.key === 'Enter') { ev.preventDefault(); row.querySelector('.ea').focus(); } };
+      row.querySelector('.er').onkeydown = function (ev) {
+        if (ev.key !== 'Enter') return;
+        ev.preventDefault();
+        var nx = row.nextElementSibling; (nx && nx.querySelector('.ep') || $('addexp')).focus();
+      };
       row.querySelector('.ep').oninput = function () { S.expenses[idx].purpose = this.value; };
       row.querySelector('.ea').oninput = function () { S.expenses[idx].amount = this.value; recalc(); };
       row.querySelector('.er').oninput = function () { S.expenses[idx].receipt_no = this.value; recalc(); };
@@ -494,16 +690,20 @@ function drawTakeout() {
     var row = document.createElement('div'); row.className = 'trow';
     row.innerHTML =
       '<span class="tn">' + esc(t.item_name) + '<i>' + sub + '</i></span>' +
-      '<input class="ti" inputmode="decimal" value="' + esc(t.issued || '') + '">' +
-      '<input class="tr" inputmode="decimal" value="' + esc(t.returned || '') + '">' +
+      '<input class="ti" inputmode="decimal" autocomplete="off" aria-label="Выдано: ' + esc(t.item_name) + '" value="' + esc(numStr(t.issued || '')) + '">' +
+      '<input class="tr" inputmode="decimal" autocomplete="off" aria-label="Остаток: ' + esc(t.item_name) + '" value="' + esc(numStr(t.returned || '')) + '">' +
       '<span class="tp"></span>' +
-      '<button class="x" type="button">×</button>';
+      '<button class="x" type="button" tabindex="-1" aria-label="Убрать">×</button>';
     paintTakeoutRow(row, t);
     // Ввод цифры обновляет только «продано» в своей строке и итоги: пересоздание строк на каждую
     // цифру уводило фокус и закрывало клавиатуру телефона. Полная перерисовка — при добавлении/удалении.
     (function (idx, row) {
-      row.querySelector('.ti').oninput = function () { S.takeout[idx].issued = this.value; takeoutChanged(row, idx); };
-      row.querySelector('.tr').oninput = function () { S.takeout[idx].returned = this.value; takeoutChanged(row, idx); };
+      var ti = row.querySelector('.ti'), tr = row.querySelector('.tr');
+      numField(ti, tr);
+      // С остатка — в «выдано» следующей строки (короткий лист подставлен заранее), с последней — в поиск.
+      numField(tr, function () { var nx = row.nextElementSibling; return (nx && nx.querySelector('.ti')) || $('tq'); });
+      ti.oninput = function () { S.takeout[idx].issued = this.value; takeoutChanged(row, idx); };
+      tr.oninput = function () { S.takeout[idx].returned = this.value; takeoutChanged(row, idx); };
       row.querySelector('.x').onclick = function () { S.takeout.splice(idx, 1); drawTakeout(); };
     })(i, row);
     w.appendChild(row);
@@ -557,21 +757,30 @@ function drawSales() {
     if ($('stotal')) $('stotal').textContent = '0 ₸';
     drawRaw(); recalc(); return;
   }
+  // Подписи колонок (Д17): два поля в строке без подписей не отличить — где количество, где цена.
+  var head = document.createElement('div'); head.className = 'srow th';
+  head.innerHTML = '<span class="sn">Позиция</span><span class="hq">Кол-во</span><span class="hp">Цена</span><span class="ssum">Сумма</span>';
+  w.appendChild(head);
   for (var i = 0; i < S.sales.length; i++) {
     var s = S.sales[i];
     var row = document.createElement('div'); row.className = 'srow';
+    // «−», «+» и «×» вне порядка Tab: Tab и Enter идут кол-во → цена → поиск, без остановок на кнопках.
     row.innerHTML =
       '<span class="sn">' + esc(s.item_name) + '<i></i></span>' +
-      '<button class="pm minus" type="button">−</button>' +
-      '<input class="sq" inputmode="decimal" value="' + esc(s.qty) + '">' +
-      '<button class="pm plus" type="button">+</button>' +
-      '<input class="sq sp" inputmode="decimal" value="' + esc(s.price) + '">' +
-      '<button class="x" type="button">×</button>';
+      '<button class="pm minus" type="button" tabindex="-1" aria-label="Меньше">−</button>' +
+      '<input class="sq sqty" inputmode="decimal" autocomplete="off" aria-label="Кол-во: ' + esc(s.item_name) + '" value="' + esc(numStr(s.qty)) + '">' +
+      '<button class="pm plus" type="button" tabindex="-1" aria-label="Больше">+</button>' +
+      '<input class="sq sp" inputmode="decimal" autocomplete="off" aria-label="Цена: ' + esc(s.item_name) + '" value="' + esc(numStr(s.price)) + '">' +
+      '<span class="ssum"></span>' +
+      '<button class="x" type="button" tabindex="-1" aria-label="Убрать">×</button>';
     paintSaleRow(row, s);
     // Как в заборном листе: ввод обновляет свою строку и итог, не пересоздавая поля под пальцем.
     (function (idx, row) {
-      row.querySelector('.sq').oninput = function () { S.sales[idx].qty = this.value; salesChanged(row, idx); };
-      row.querySelector('.sp').oninput = function () { S.sales[idx].price = this.value; salesChanged(row, idx); };
+      var q = row.querySelector('.sqty'), p = row.querySelector('.sp');
+      q.oninput = function () { S.sales[idx].qty = this.value; salesChanged(row, idx); };
+      p.oninput = function () { S.sales[idx].price = this.value; salesChanged(row, idx); };
+      numField(q, p);
+      numField(p, function () { return $('sq'); });
       row.querySelector('.minus').onclick = function () { chgSale(idx, -1); };
       row.querySelector('.plus').onclick = function () { chgSale(idx, +1); };
       row.querySelector('.x').onclick = function () { S.sales.splice(idx, 1); drawSales(); };
@@ -589,6 +798,7 @@ function paintSaleRow(row, s) {
     num(s.price) !== num(s.price_list);
   row.querySelector('.sn i').textContent = (s.unit || '') + (changed ? ' · по прайсу ' + fmt(s.price_list) + ' ₸' : '');
   row.querySelector('.sp').classList.toggle('spc', changed);
+  row.querySelector('.ssum').textContent = fmt(num(s.qty) * num(s.price)) + ' ₸';
 }
 function salesChanged(row, idx) {
   paintSaleRow(row, S.sales[idx]);
@@ -883,6 +1093,7 @@ function applyImport() {
 function showDriver() {
   $('screen-login').hidden = true; $('screen-form').hidden = true;
   $('screen-dash').hidden = true; $('screen-driver').hidden = false;
+  showFeedback(true);
   $('rdate').value = today();
   loadRealization();
 }
@@ -954,27 +1165,55 @@ function recalc() {
   }
   $('podotchet').textContent = fmt(pod) + ' ₸';
 
+  // «Должно» — по всему дню, с поздними чеками: с этим числом сверяют новый пересчёт при повторном закрытии.
   var expected = num($('cash_open').value) + cash - num($('cash_handed').value) - pod;
   $('cash_expected').textContent = fmt(expected) + ' ₸';
 
   var checks = [];
   var qs = $('qr_statement').value, ts = $('tr_statement').value, cc = $('cash_counted').value;
+  // Касса, смена закрыта, после закрытия пробиты чеки (owner Д1, kassa Д1). Пересчёт и выписки в полях —
+  // с закрытия, а суммы по каналам уже с поздними чеками. Пока пересчёт (выписку) не меняли, сверяем на
+  // момент закрытия — без поздних чеков; новый пересчёт сверяется со всем днём («как сейчас»).
+  var L = S.mode === 'checks' ? S.late : null, LK = L && L.known ? L : null, at = S.atClose || {};
+  var closedHm = S.closedAt ? hhmm(S.closedAt) : '';
+  var lc = $('klatecash');
+  if (lc) {
+    lc.hidden = !LK;
+    lc.textContent = LK ? 'Сюда уже вошли наличные чеков после закрытия: ' + fmt(LK.cash) + ' ₸. На момент закрытия' +
+      (closedHm ? ' (' + closedHm + ')' : '') + ' должно было быть ' + fmt(expected - LK.cash) + ' ₸.' : '';
+  }
   if (qs === '' && ts === '') {
     checks.push(['wait', 'Сверка с выписками не заполнена']);
   } else {
-    var dq = qs === '' ? 0 : qr - num(qs);
-    var dt = ts === '' ? 0 : tr - num(ts);
-    if (dq === 0 && dt === 0) checks.push(['ok', 'Выручка сходится с выписками']);
-    else checks.push(['bad', 'Расхождение с выписками: QR ' + fmt(dq) + ', переводы ' + fmt(dt)]);
+    var qAt = !!LK && qs === at.qr_statement, tAt = !!LK && ts === at.tr_statement;
+    var dq = qs === '' ? 0 : round2(qr - (qAt ? LK.kaspi : 0) - num(qs));
+    var dt = ts === '' ? 0 : round2(tr - (tAt ? LK.transfer : 0) - num(ts));
+    // «На момент закрытия» — только если каждая внесённая выписка сверяется с закрытием; выписку, которую
+    // поправили, программа сверяет со всем днём — тогда подпись вводила бы в заблуждение.
+    var atTxt = (qAt || tAt) && (qs === '' || qAt) && (ts === '' || tAt) ? ' на момент закрытия' : '';
+    if (dq === 0 && dt === 0) checks.push(['ok', 'Выручка сходится с выписками' + atTxt]);
+    else checks.push(['bad', 'Расхождение с выписками' + atTxt + ': Kaspi QR ' + fmt(dq) + ' ₸, переводы ' + fmt(dt) + ' ₸']);
+    // Повторное закрытие сверит выписку со всем днём — напоминаем внести её заново, если пришли поздние оплаты.
+    var more = [];
+    if (qAt && LK.kaspi) more.push('Kaspi QR ' + fmt(LK.kaspi) + ' ₸');
+    if (tAt && LK.transfer) more.push('переводами ' + fmt(LK.transfer) + ' ₸');
+    if (more.length) checks.push(['wait', 'После закрытия пришло ещё ' + more.join(', ') + ' — перед повторным закрытием внесите выписку заново']);
   }
   if (cc === '') checks.push(['wait', 'Касса не пересчитана']);
-  else {
-    var dc = expected - num(cc);
-    if (dc === 0) checks.push(['ok', 'Касса сходится']);
-    else checks.push(['bad', 'Расхождение по кассе: ' + fmt(dc) + ' ₸']);
+  else if (L && !LK && cc === at.cash_counted) {
+    // Старый сервер: разбивки поздних чеков нет — «на момент закрытия» не посчитать, а сравнивать старый
+    // пересчёт со всем днём — ложная недостача. Просим пересчитать заново.
+    checks.push(['wait', 'Пересчёт кассы сделан при закрытии, а после него пробиты чеки — пересчитайте кассу заново: сейчас должно быть ' + fmt(expected) + ' ₸']);
+  } else {
+    // Словами, а не «расхождение 60 ₸»: недостача — денег меньше, чем должно, излишек — больше.
+    var cAt = !!LK && cc === at.cash_counted, exp2 = cAt ? expected - LK.cash : expected;
+    var dc = round2(exp2 - num(cc));
+    checks.push([dc === 0 ? 'ok' : 'bad', (cAt ? 'На момент закрытия' + (closedHm ? ' (' + closedHm + ')' : '') + ': ' +
+      cashDiffText(dc).toLowerCase() : cashDiffText(dc)) +
+      (dc ? ' (должно ' + fmt(exp2) + ' ₸, пересчитано ' + fmt(num(cc)) + ' ₸)' : '')]);
   }
-  if (noReceipt > 0) checks.push(['bad', 'Строк подотчёта без номера чека: ' + noReceipt]);
-  else if (pod > 0) checks.push(['ok', 'Подотчёт подтверждён чеками']);
+  if (noReceipt > 0) checks.push(['bad', 'Расходов из кассы без номера чека: ' + noReceipt]);
+  else if (pod > 0) checks.push(['ok', 'Расходы из кассы подтверждены чеками']);
 
   // Сверка ассортимента с деньгами — до сохранения, чтобы кассир увидел сразу.
   // Загруженный лист продаж сверяется так же, как набранные позиции: потерянная строка файла видна сразу.
@@ -987,12 +1226,14 @@ function recalc() {
     } else if (total === 0) {
       checks.push(['wait', 'Выручка не заполнена — сверить не с чем']);
     } else {
-      var d = byItems - total;
+      // «Сходится» — только при разнице до 1 ₸ (округление цен); раньше зелёным шло всё меньше 0,5 %,
+      // и на выручке 300 000 ₸ пряталось до 1 500 ₸ (kassa Д2). До 5 % — жёлтое, больше — красное.
+      var d = round2(byItems - total);
       var pct = Math.abs(d) / total * 100;
-      if (pct < 0.5) checks.push(['ok', 'Сумма по ' + label + ' сходится с выручкой']);
+      if (Math.abs(d) <= 1) checks.push(['ok', 'Сумма по ' + label + ' сходится с выручкой' + (d ? ' (разница ' + fmt(Math.abs(d)) + ' ₸ — округление)' : '')]);
       else checks.push([pct <= 5 ? 'wait' : 'bad',
         'По ' + label + ' ' + fmt(byItems) + ' ₸, в кассе ' + fmt(total) +
-        ' ₸ — расхождение ' + fmt(d) + ' ₸ (' + (Math.round(pct * 10) / 10) + ' %)']);
+        ' ₸ — расхождение ' + fmt(Math.abs(d)) + ' ₸ (' + pctText(pct) + ')']);
     }
   }
 
@@ -1063,6 +1304,8 @@ function saveReport() {
   }
   var fields = {};
   ['shift_by', 'comment'].concat(MONEY_FIELDS).forEach(function (id) { fields[id] = $(id).value; });
+  // Повторное закрытие смены другим продавцом: первый закрывший остаётся в отчёте (собственник видит обоих).
+  if (S.mode === 'checks' && S.firstBy && S.firstSure) fields.shift_by = withFirstBy(fields.shift_by, S.firstBy);
   var b = buildReport(date, fields, S.expenses, S.takeout, S.sales);
   if (b.error) { say(b.error, true); return; }
   var before = num($('cash').value) + num($('kaspi_qr').value) + num($('transfer').value) + num($('card').value);
@@ -1096,6 +1339,14 @@ function saveReport() {
     }
     $('saved').textContent = S.mode === 'checks' ? 'Смена за этот день уже закрыта — можно поправить и закрыть заново'
       : 'Отчёт за этот день уже был сохранён — можно поправить';
+    // Закрыли впервые — следующее закрытие в этом сеансе уже повторное, и первый известен точно.
+    // Первый неизвестен (старый пересохранённый отчёт) — «последним закрыл» теперь тот, кто закрыл сейчас.
+    if (S.mode === 'checks' && (!S.firstBy || !S.firstSure)) {
+      var firstNow = !S.firstBy, nowAt = new Date().toISOString();
+      S.firstBy = splitBy(b.p.shift_by).who; S.firstSure = firstNow;
+      S.firstAt = (r.report && (firstNow ? r.report.first_saved_at || r.report.closed_at : r.report.closed_at)) || nowAt;
+      drawFirstBy();
+    }
     recalc();
     clearDraft();   // отчёт на сервере; recalc только что записал черновик заново
     say(msg, changed);
@@ -1109,16 +1360,23 @@ function saveReport() {
 function showDash() {
   $('screen-login').hidden = true; $('screen-form').hidden = true;
   $('screen-driver').hidden = true; $('screen-dash').hidden = false;
-  setPeriod('week');
+  showFeedback(true);
+  // Как в отчётах бэк-офиса: по умолчанию — этот месяц, иначе цифры сводки и «Прибыли по точкам» не сравнить.
+  setPeriod('month');
 }
 
-/* Быстрые периоды: сегодня, вчера, неделя, месяц. Произвольный — через поля С/По.
+/* Быстрые периоды: сегодня, вчера, неделя (7 дней), этот месяц (с 1-го по сегодня) и прошлый месяц
+   целиком — те же даты, что у кнопок отчётов бэк-офиса. Произвольный — через поля С/По.
    Даты — по часам устройства: toISOString до 05:00 по Алматы давал «сегодня» вчерашним числом. */
 function setPeriod(per) {
   var to = new Date(), from = new Date();
   if (per === 'yesterday') { from.setDate(from.getDate() - 1); to = new Date(from); }
   if (per === 'week') from.setDate(from.getDate() - 6);
-  if (per === 'month') from.setDate(from.getDate() - 29);
+  if (per === 'month') from = new Date(to.getFullYear(), to.getMonth(), 1);
+  if (per === 'prevmonth') {
+    from = new Date(to.getFullYear(), to.getMonth() - 1, 1);
+    to = new Date(to.getFullYear(), to.getMonth(), 0);   // нулевое число месяца — последний день прошлого
+  }
   $('dfrom').value = isoDate(from);
   $('dto').value = isoDate(to);
   markPeriod(per);
@@ -1169,6 +1427,127 @@ function wasNow(v) {
   };
 }
 
+/* Цифры сводки по ответу dashboard — отдельно от отрисовки (проверяются node-скриптом без экрана).
+   Сдан — отчёт точки без кассы (его строку создаёт только сохранение) или закрытая смена кассы (строку
+   кассы создаёт первый чек дня, и до закрытия день не сдан). Выручка незакрытой смены в итог идёт.
+   «Не сдано» — дни без сданного отчёта по вчерашний день (сегодняшний ещё идёт), начиная с первого
+   отчёта точки: до него точка в программе не работала (points[].first_report, миграция 0047; null —
+   отчётов ещё не было). Старый сервер first_report не отдаёт — тогда с начала периода, как раньше. */
+function dashStats(r, from, to, todayIso) {
+  var rows = r.rows || [], pts = r.points || [];
+  var hasFirst = pts.some(function (p) { return p && Object.prototype.hasOwnProperty.call(p, 'first_report'); });
+  var st = { tot: 0, totPod: 0, flags: 0, submitted: 0, checks: 0, checksTotal: 0,
+             hasChecks: Array.isArray(r.checks), hasFirst: hasFirst, list: [] };
+  var byId = {};
+  var P = function (id, name, mode) {
+    if (!byId[id]) {
+      byId[id] = { id: id, name: name, mode: mode, first: undefined, rev: 0, rowDays: 0, days: 0, dates: {},
+                   badDays: 0, diff: 0, checks: null, missed: 0 };
+      st.list.push(byId[id]);
+    }
+    return byId[id];
+  };
+  pts.forEach(function (p) { P(p.id, p.name, p.mode).first = hasFirst ? (p.first_report || null) : undefined; });
+  rows.forEach(function (x) {
+    var p = P(x.point_id, x.point_name, x.mode);
+    st.tot += num(x.revenue_total); st.totPod += num(x.podotchet);
+    p.rev += num(x.revenue_total); p.rowDays++;
+    if (x.mode === 'checks' && !x.closed_at) return;   // смена идёт: сверять и считать сданным рано
+    // Расхождения — на момент закрытия: чеки после закрытия не делают ложной недостачи (owner Д1).
+    var v = closeView(x);
+    var diffSum = Math.abs(num(v.diffQr)) + Math.abs(num(v.diffTr)) + Math.abs(num(v.diffCash));
+    if (diffSum > 0 || num(x.expenses_no_receipt) > 0) { st.flags++; p.badDays++; }
+    p.diff += diffSum;
+    p.days++; p.dates[String(x.report_date).slice(0, 10)] = true; st.submitted++;
+  });
+  if (st.hasChecks) {
+    r.checks.forEach(function (c) {
+      var p = P(c.point_id, c.point_name, 'checks');
+      p.checks = { n: num(c.checks), total: num(c.total), avg: num(c.avg) };
+      st.checks += p.checks.n; st.checksTotal += p.checks.total;
+    });
+  }
+  var y = parseDate(todayIso); y.setDate(y.getDate() - 1);
+  var end = isoDate(y) < to ? isoDate(y) : to;   // ГГГГ-ММ-ДД сравниваются как строки
+  st.list.forEach(function (p) {
+    var start = from;
+    if (p.first === null) { p.missed = null; return; }   // точка ещё ни разу не сдавала отчёт
+    if (p.first && p.first > start) start = p.first;
+    var n = 0;
+    for (var d = parseDate(start), k = 0; isoDate(d) <= end && k < 3700; d.setDate(d.getDate() + 1), k++) {
+      if (!p.dates[isoDate(d)]) n++;
+    }
+    p.missed = n;
+  });
+  st.list.sort(function (a, b) { return b.rev - a.rev; });
+  return st;
+}
+function drawPointsTable(st) {
+  var R = ' style="text-align:right"';
+  $('phead').innerHTML = '<tr><th>Точка</th><th' + R + '>Выручка</th>' +
+    (st.hasChecks ? '<th' + R + '>Чеков</th><th' + R + '>Средний чек</th>' : '') +
+    '<th' + R + '>Сдано дней</th><th' + R + '>Не сдано</th><th' + R + '>В среднем в день</th>' +
+    '<th' + R + '>Дней с расхождением</th><th' + R + '>Расхождение, ₸</th></tr>';
+  var pb = $('pbody'); pb.innerHTML = '';
+  if (!st.list.length) pb.innerHTML = '<tr><td colspan="' + (st.hasChecks ? 9 : 7) + '" class="empty">Отчётов пока нет</td></tr>';
+  st.list.forEach(function (p) {
+    var tr = document.createElement('tr');
+    tr.innerHTML = '<td>' + esc(p.name) + '</td><td class="n b">' + fmt(p.rev) + '</td>' +
+      (st.hasChecks
+        ? '<td class="n">' + (p.checks ? p.checks.n : (p.mode === 'checks' ? '0' : '—')) + '</td>' +
+          '<td class="n">' + (p.checks && p.checks.n ? fmt(p.checks.avg) : '—') + '</td>'
+        : '') +
+      '<td class="n">' + p.days + '</td>' +
+      '<td class="n">' + (p.missed === null ? '<span title="Точка ещё не сдавала отчётов">—</span>'
+        : p.missed ? '<span style="color:var(--bad);font-weight:700">' + p.missed + '</span>' : '0') + '</td>' +
+      '<td class="n">' + fmt(p.rowDays ? p.rev / p.rowDays : 0) + '</td>' +
+      '<td class="n">' + (p.badDays ? '<span style="color:var(--warn);font-weight:700">' + p.badDays + '</span>' : '—') + '</td>' +
+      '<td class="n">' + (p.diff ? '<span style="color:var(--bad)">' + fmt(p.diff) + '</span>' : '—') + '</td>';
+    pb.appendChild(tr);
+  });
+  $('phint').textContent = (st.hasChecks ? '«Чеков» и «Средний чек» — по чекам кассы (отменённые не считаются); у точек без кассы чеков нет. ' : '') +
+    '«Не сдано» — дни без сданного отчёта ' + (st.hasFirst ? 'с первого отчёта точки' : 'с начала периода') +
+    ' по вчерашний день; смена кассы считается сданной после закрытия.';
+}
+// 'master' — общий счётчик неверных кодов. Старый сервер называл его «общий замок входа собственника
+// и водителя» — непонятно; пишем, что он делает (порог — в tandem_gate: 10 неверных за 5 минут).
+function pinName(x) {
+  if (x.key === 'master' && /общий замок/.test(x.name || '')) {
+    return 'все неверные коды вместе (точки, собственник, водитель): после 10 ошибок за 5 минут вход собственника и водителя закрывается на 5 минут';
+  }
+  return x.name || x.key || '';
+}
+// Активные чеки, пришедшие после закрытия смены (L — из lateOf). kind: 'pill' — пометка в списке
+// отчётов, 'owner' — раскрытый отчёт у собственника, иначе — полоса на экране закрытия смены.
+function lateText(L, kind) {
+  var what = L.n + ' ' + plural(L.n, 'чек', 'чека', 'чеков') + ' на ' + fmt(L.sum) + ' ₸' +
+    (L.known ? ', наличными ' + fmt(L.cash) + ' ₸' : '');
+  if (kind === 'pill') return 'после закрытия: ' + what + ' — закрыть смену заново';
+  if (kind === 'owner') {
+    return 'После закрытия смены пробито ' + what + (L.known
+      ? ' — в «должно» и сверке выше их нет, это цифры на момент закрытия'
+      : ' — они уже в суммах отчёта, а пересчёт кассы сделан до них') + '. Касса должна закрыть смену заново.';
+  }
+  return 'После закрытия пробито ' + what + ' — пересчитайте кассу и закройте смену заново';
+}
+// Время правки: в день отчёта — «ЧЧ:ММ», позже — «ДД.ММ, ЧЧ:ММ».
+function whenShort(at, day) {
+  var d = at ? new Date(at) : null;
+  if (!d || isNaN(d)) return '';
+  return isoDate(d) === String(day || '').slice(0, 10) ? hhmm(at) : dayTime(at);
+}
+// Пометки строки дня (миграция 0047): чеки после закрытия смены и правка уже сданного отчёта.
+// Старый сервер этих полей не отдаёт — пометок нет.
+function reportMarks(y) {
+  var out = '', L = lateOf(y);
+  if (L) out += ' <span class="pill bad">' + esc(lateText(L, 'pill')) + '</span>';
+  if (y.edited_at) {
+    out += ' <span class="pill warn" title="' + esc('Первая сдача ' + (dayTime(y.first_saved_at) || '—') +
+      ', последнее изменение ' + dayTime(y.edited_at)) + '">исправлен ' + esc(whenShort(y.edited_at, y.report_date)) + '</span>';
+  }
+  return out;
+}
+
 // Возвращает обещание: true — сводка перерисована этим запросом (по нему раскрывается отчёт после
 // «Открыть смену для исправления»), false — не обновилась или устарела.
 function loadDash() {
@@ -1183,47 +1562,17 @@ function loadDash() {
     $('derr').textContent = '';
     S.dash = r;
     var rows = r.rows || [];
-    var byPoint = {}, tot = 0, totPod = 0, flags = 0;
-    // Сколько дней в периоде — чтобы посчитать несданные отчёты по каждой точке (даты местные)
-    var dFrom = parseDate($('dfrom').value), dTo = parseDate($('dto').value), dNow = parseDate(today());
-    var periodDays = Math.max(1, Math.round((Math.min(dTo, dNow) - dFrom) / 86400000) + 1);
-    for (var i = 0; i < rows.length; i++) {
-      var x = rows[i];
-      tot += num(x.revenue_total); totPod += num(x.podotchet);
-      var diffSum = Math.abs(num(x.diff_qr)) + Math.abs(num(x.diff_transfer)) + Math.abs(num(x.diff_cash));
-      var bad = diffSum > 0 || num(x.expenses_no_receipt) > 0;
-      if (bad) flags++;
-      if (!byPoint[x.point_name]) byPoint[x.point_name] = { rev: 0, days: 0, badDays: 0, diff: 0 };
-      byPoint[x.point_name].rev += num(x.revenue_total);
-      byPoint[x.point_name].days++;
-      if (bad) byPoint[x.point_name].badDays++;
-      byPoint[x.point_name].diff += diffSum;
-    }
-    // точки без единого отчёта тоже должны быть видны
-    (r.points || []).forEach(function (p) {
-      if (!byPoint[p.name]) byPoint[p.name] = { rev: 0, days: 0, badDays: 0, diff: 0 };
-    });
-    $('k1').textContent = fmt(tot) + ' ₸';
-    $('k2').textContent = rows.length;
-    $('k3').textContent = fmt(totPod) + ' ₸';
-    $('k4').textContent = flags;
-    $('k4').className = 'kv' + (flags ? ' bad' : ' ok');
+    var stats = dashStats(r, $('dfrom').value, $('dto').value, today());
+    $('k1').textContent = fmt(stats.tot) + ' ₸';
+    $('k2').textContent = stats.submitted;
+    $('k3').textContent = fmt(stats.totPod) + ' ₸';
+    $('k4').textContent = stats.flags;
+    $('k4').className = 'kv' + (stats.flags ? ' bad' : ' ok');
+    // Чеки и средний чек — только когда сервер их считает (миграция 0047) и в периоде были чеки кассы.
+    $('k5c').hidden = !stats.hasChecks || !stats.checks;
+    $('k5').textContent = stats.checks ? stats.checks + ' · ' + fmt(stats.checksTotal / stats.checks) + ' ₸' : '—';
 
-    var pb = $('pbody'); pb.innerHTML = '';
-    var names = Object.keys(byPoint).sort(function (a, b) { return byPoint[b].rev - byPoint[a].rev; });
-    if (!names.length) pb.innerHTML = '<tr><td colspan="7" class="empty">Отчётов пока нет</td></tr>';
-    for (var n = 0; n < names.length; n++) {
-      var p = byPoint[names[n]];
-      var missed = Math.max(0, periodDays - p.days);
-      var tr2 = document.createElement('tr');
-      tr2.innerHTML = '<td>' + esc(names[n]) + '</td><td class="n b">' + fmt(p.rev) + '</td>' +
-        '<td class="n">' + p.days + '</td>' +
-        '<td class="n">' + (missed ? '<span style="color:var(--bad);font-weight:700">' + missed + '</span>' : '0') + '</td>' +
-        '<td class="n">' + fmt(p.days ? p.rev / p.days : 0) + '</td>' +
-        '<td class="n">' + (p.badDays ? '<span style="color:var(--warn);font-weight:700">' + p.badDays + '</span>' : '—') + '</td>' +
-        '<td class="n">' + (p.diff ? '<span style="color:var(--bad)">' + fmt(p.diff) + '</span>' : '—') + '</td>';
-      pb.appendChild(tr2);
-    }
+    drawPointsTable(stats);
 
     // ── Неверные коды за сутки ──
     var pins = r.pin_failures || [];
@@ -1233,7 +1582,7 @@ function loadDash() {
       var s = document.createElement('span');
       s.className = 'pill ' + (x.count >= 10 ? 'bad' : 'warn');
       s.style.margin = '0 6px 6px 0';
-      s.textContent = x.name + ': ' + x.count + ', последняя в ' + hhmm(x.last);
+      s.textContent = pinName(x) + ': ' + x.count + ', последняя в ' + hhmm(x.last);
       $('dpins').appendChild(s);
     });
 
@@ -1258,7 +1607,7 @@ function loadDash() {
     var vb = $('dvoids'); vb.innerHTML = '';
     voids.forEach(function (v) {
       var tr = document.createElement('tr'), wn = wasNow(v);
-      tr.innerHTML = '<td>' + esc(v.date) + ' ' + esc(hhmm(v.at)) + '</td><td>' + esc(v.point_name) + '</td>' +
+      tr.innerHTML = '<td>' + esc(dmy(v.date)) + ' ' + esc(hhmm(v.at)) + '</td><td>' + esc(v.point_name) + '</td>' +
         '<td>' + (v.kind === 'void' ? '<span class="pill bad">отменён</span>' : '<span class="pill warn">исправлен</span>') + '</td>' +
         '<td class="n">' + (v.no === null || v.no === undefined ? '—' : '№ ' + esc(v.no)) + '</td>' +
         '<td class="n b">' + esc(wn.sum) + '</td><td>' + esc(wn.pay) + '</td>' +
@@ -1292,9 +1641,12 @@ function loadDash() {
     if (!(r.top_items || []).length) tb.innerHTML = '<tr><td colspan="4" class="empty">Позиционных данных за период нет</td></tr>';
 
     // ── Расход сырья ──
+    // Единица — ингредиента (брутто в техкарте в ней же): яйца в штуках, чай в пачках. Старый сервер
+    // единицу не отдаёт — тогда без единицы, а не «кг» всем подряд, как было.
     $('draw').innerHTML = (r.raw_usage || []).length
       ? r.raw_usage.map(function (u) {
-          return '<div class="rrow"><span>' + esc(u.name) + '</span><b>' + fmt(u.amount) + ' кг</b></div>';
+          return '<div class="rrow"><span>' + esc(u.name) + '</span><b>' + fmtQty(u.amount) +
+            (u.unit_id ? ' ' + esc(u.unit_id) : '') + '</b></div>';
         }).join('')
       : '<div class="empty">Продаж с техкартами за период нет</div>';
 
@@ -1310,21 +1662,27 @@ function loadDash() {
     if (!rows.length) { b.innerHTML = '<tr><td colspan="10" class="empty">Отчётов за период нет</td></tr>'; return true; }
     for (var j = 0; j < rows.length; j++) {
       var y = rows[j];
-      var issues = [];
-      if (y.diff_qr !== null && num(y.diff_qr) !== 0) issues.push('QR ' + fmt(y.diff_qr));
-      if (y.diff_transfer !== null && num(y.diff_transfer) !== 0) issues.push('перевод ' + fmt(y.diff_transfer));
-      if (y.diff_cash !== null && num(y.diff_cash) !== 0) issues.push('касса ' + fmt(y.diff_cash));
+      // Расхождения — на момент закрытия (closeView): чеки после закрытия — отдельной пометкой, не недостачей.
+      // «QR 660» было непонятно (owner У1) — пишем, с чем не сошлось.
+      var issues = [], cv = closeView(y);
+      if (num(cv.diffQr) !== 0) issues.push('Kaspi QR: расхождение с выпиской ' + fmt(Math.abs(cv.diffQr)) + ' ₸');
+      if (num(cv.diffTr) !== 0) issues.push('переводы: расхождение с выпиской ' + fmt(Math.abs(cv.diffTr)) + ' ₸');
+      if (num(cv.diffCash) !== 0) issues.push(cashDiffText(cv.diffCash).toLowerCase());
       if (num(y.expenses_no_receipt) > 0) issues.push('без чека: ' + num(y.expenses_no_receipt));
       if (y.qr_statement === null && y.tr_statement === null) issues.push('нет сверки');
       var vbadge = voidBadge(y);
+      var open = y.mode === 'checks' && !y.closed_at;   // касса: строку создал первый чек, смена ещё идёт
       var trr = document.createElement('tr');
       trr.style.cursor = 'pointer';
       trr.dataset.key = y.point_id + '|' + y.report_date;
-      trr.innerHTML = '<td>' + esc(y.report_date) + '</td><td>' + esc(y.point_name) + '</td>' +
+      trr.innerHTML = '<td>' + esc(dmy(y.report_date)) + '</td><td>' + esc(y.point_name) + '</td>' +
         '<td class="n">' + fmt(y.cash) + '</td><td class="n">' + fmt(y.kaspi_qr) + '</td>' +
         '<td class="n">' + fmt(y.transfer) + '</td><td class="n">' + fmt(y.card) + '</td><td class="n b">' + fmt(y.revenue_total) + '</td>' +
         '<td class="n">' + fmt(y.cash_handed) + '</td><td class="n">' + fmt(y.podotchet) + '</td>' +
-        '<td>' + (issues.length ? '<span class="pill bad">' + esc(issues.join(' · ')) + '</span>' : '<span class="pill ok">ОК</span>') +
+        // У незакрытой смены сверки и пересчёта ещё нет по определению — «нет сверки» там шум.
+        '<td>' + (open ? '<span class="pill warn">смена не закрыта</span>'
+          : issues.length ? '<span class="pill bad">' + esc(issues.join(' · ')) + '</span>' : '<span class="pill ok">ОК</span>') +
+        reportMarks(y) +
         (vbadge ? ' <span class="pill warn">' + esc(vbadge) + '</span>' : '') + '</td>';
       (function (row, tr) { tr.onclick = function () { toggleReportDetail(tr, row); }; })(y, trr);
       b.appendChild(trr);
@@ -1385,7 +1743,7 @@ function toggleReportDetail(tr, row, note) {
       html += '<div class="rrow"><span><b>Итого по листу</b></span><b>' + fmt(tTot) + ' ₸</b></div></div>';
     }
     if (ex.length) {
-      html += H('Расходы под отчёт');
+      html += H('Расходы из кассы (изъятие)');
       html += '<div style="margin:6px 0 12px">';
       ex.forEach(function (x) {
         html += '<div class="rrow"><span>' + esc(x.purpose || '—') +
@@ -1413,12 +1771,51 @@ function toggleReportDetail(tr, row, note) {
     }
     var rep = d.report || {};
     var isKassa = (rep.mode || row.mode) === 'checks';
+    // Пометки дня (миграция 0047) get_report отдаёт в report, строка сводки — тоже; report свежее.
+    var src = {}, kk;
+    for (kk in row) src[kk] = row[kk];
+    for (kk in rep) src[kk] = rep[kk];
+    var cv = closeView(src), late = cv.late, edited = src.edited_at;
     html += H('Деньги') + '<div style="margin:6px 0 0">';
-    html += '<div class="rrow"><span>Сдал: ' + esc(rep.shift_by || '—') + '</span><span></span></div>';
-    html += '<div class="rrow"><span>Касса: должно ' + fmt(rep.cash_expected) + ' ₸, пересчитано ' +
-      (rep.cash_counted === null || rep.cash_counted === undefined ? 'не пересчитана' : fmt(rep.cash_counted) + ' ₸') + '</span>' +
-      (num(rep.diff_cash) !== 0 && rep.diff_cash !== null ? '<b style="color:var(--bad)">' + fmt(rep.diff_cash) + ' ₸</b>' : '<b style="color:var(--ok)">ок</b>') + '</div>';
-    if (rep.comment) html += '<div class="rrow"><span>Комментарий: ' + esc(rep.comment) + '</span><span></span></div>';
+    var by = splitBy(src.shift_by);
+    html += '<div class="rrow"><span>Сдал: ' + esc(by.who || '—') + (by.first ? ' · первым закрыл: ' + esc(by.first) +
+      (src.first_saved_at ? ' (' + esc(whenShort(src.first_saved_at, src.report_date)) + ')' : '') : '') + '</span><span></span></div>';
+    // Чеки после закрытия смены (owner Д1): ниже — цифры на момент закрытия, поздние чеки — отдельной строкой.
+    if (cv.shifted) {
+      html += '<div class="hint" style="margin:2px 0 4px">Сверка и касса — на момент закрытия смены' +
+        (src.closed_at ? ' ' + esc(whenShort(src.closed_at, src.report_date)) : '') + ': чеки после закрытия в них не входят.</div>';
+    }
+    // Сверка с выписками словами (owner У1): «Kaspi QR: по чекам X, по выписке Y — расхождение Z» вместо «QR 660».
+    var stLine = function (title, sum, st, diff) {
+      if (!num(sum) && (st === null || st === undefined)) return '';
+      var noSt = st === null || st === undefined;
+      return '<div class="rrow"><span>' + title + ': ' + (isKassa ? 'по чекам ' : 'по отчёту ') + fmt(sum) + ' ₸' +
+        (noSt ? ' · по выписке не сверяли' : ', по выписке ' + fmt(st) + ' ₸') + '</span>' +
+        (noSt ? '<b style="color:var(--muted)">—</b>'
+          : num(diff) ? '<b style="color:var(--bad)">расхождение ' + fmt(Math.abs(diff)) + ' ₸</b>'
+          : '<b style="color:var(--ok)">сходится</b>') + '</div>';
+    };
+    html += stLine('Kaspi QR', cv.kaspi, src.qr_statement, cv.diffQr);
+    html += stLine('Переводы', cv.transfer, src.tr_statement, cv.diffTr);
+    // «Должно» с расшифровкой: без неё «должно 11 460 ₸» при наличных 2 960 ₸ непонятно, откуда взялось.
+    var counted = src.cash_counted !== null && src.cash_counted !== undefined;
+    var dc = num(cv.diffCash);
+    html += '<div class="rrow"><span>Касса: должно ' + fmt(cv.expected) + ' ₸ = размен ' + fmt(src.cash_open) +
+      ' + наличные ' + fmt(cv.cash) + (num(src.cash_handed) ? ' − сдано ' + fmt(src.cash_handed) : '') +
+      ' − расходы из кассы ' + fmt(src.podotchet) + ' · пересчитано ' +
+      (counted ? fmt(src.cash_counted) + ' ₸' : 'не пересчитана') + '</span>' +
+      (!counted ? '<b style="color:var(--muted)">—</b>'
+        : dc > 0 ? '<b style="color:var(--bad)">' + cashDiffText(dc) + '</b>'
+        : dc < 0 ? '<b style="color:var(--warn)">' + cashDiffText(dc) + '</b>'
+        : '<b style="color:var(--ok)">сходится</b>') + '</div>';
+    if (late) {
+      html += '<div class="rrow"><span style="color:var(--bad);font-weight:600">' + esc(lateText(late, 'owner')) + '</span><span></span></div>';
+    }
+    if (src.comment) html += '<div class="rrow"><span>Комментарий: ' + esc(src.comment) + '</span><span></span></div>';
+    if (edited) {
+      html += '<div class="rrow"><span style="color:var(--warn)">Отчёт исправлен ' + esc(dayTime(edited)) +
+        ' (первая сдача ' + esc(dayTime(rep.first_saved_at || row.first_saved_at) || '—') + ')</span><span></span></div>';
+    }
     html += '</div>';
     if (!sl.length && !tk.length && !ex.length && !isKassa) {
       html += '<div class="hint">Позиций в этом отчёте нет — точка сдала только суммы.</div>';
@@ -1446,7 +1843,7 @@ function toggleReportDetail(tr, row, note) {
    с отчёта кассы за этот день — касса снова принимает правки и отмены чеков, точка потом закрывает смену
    заново. После ответа сводка перечитывается (день снова не сдан, значки отмен) и отчёт раскрывается обновлённым. */
 function reopenShift(row, btn, msg) {
-  var day = String(row.report_date || '').split('-').reverse().join('.');
+  var day = dmy(row.report_date);
   if (!window.confirm('Открыть смену «' + (row.point_name || '') + '» за ' + day + ' для исправления?\n\n' +
       'Касса снова сможет исправлять и отменять чеки этого дня. Потом точка должна закрыть смену заново — ' +
       'до этого день считается несданным.')) return;
@@ -1482,14 +1879,22 @@ function reopenShift(row, btn, msg) {
 function exportCsv() {
   if (!S.dash || !S.dash.rows) return;
   var rows = S.dash.rows;
-  var head = ['Дата', 'Точка', 'Наличные', 'Kaspi QR', 'Перевод', 'Карта', 'Итого', 'Сдано', 'Подотчёт', 'Расх. QR', 'Расх. перевод', 'Расх. касса'];
+  var head = ['Дата', 'Точка', 'Наличные', 'Kaspi QR', 'Перевод', 'Карта', 'Итого', 'Сдано', 'Расходы из кассы',
+    'Расх. QR', 'Расх. перевод', 'Касса: недостача (+) / излишек (−)', 'Чеков после закрытия', 'Чеки после закрытия, ₸',
+    'Отчёт исправлен'];
+  // Расхождения — на момент закрытия смены, как на экране (closeView); суммы по каналам — весь день.
+  // Точка с запятой — разделитель колонок для русского Excel: в названиях и тексте её заменяем запятой.
+  // Числа — с запятой: «1234.5» русский Excel читает как текст или дату.
+  var cell = function (v) {
+    if (v === null || v === undefined) return '';
+    return typeof v === 'number' ? numStr(v) : String(v).replace(/[;\r\n]+/g, ', ');
+  };
   var lines = [head.join(';')];
   for (var i = 0; i < rows.length; i++) {
-    var x = rows[i];
-    lines.push([x.report_date, x.point_name, x.cash, x.kaspi_qr, x.transfer, x.card, x.revenue_total,
-    x.cash_handed, x.podotchet, x.diff_qr === null ? '' : x.diff_qr,
-    x.diff_transfer === null ? '' : x.diff_transfer,
-    x.diff_cash === null ? '' : x.diff_cash].join(';'));
+    var x = rows[i], cv = closeView(x);
+    lines.push([dmy(x.report_date), x.point_name, x.cash, x.kaspi_qr, x.transfer, x.card, x.revenue_total,
+      x.cash_handed, x.podotchet, cv.diffQr, cv.diffTr, cv.diffCash,
+      cv.late ? cv.late.n : '', cv.late ? cv.late.sum : '', x.edited_at ? dayTime(x.edited_at) : ''].map(cell).join(';'));
   }
   var blob = new Blob(['﻿' + lines.join('\n')], { type: 'text/csv;charset=utf-8' });
   var a = document.createElement('a');
@@ -1502,7 +1907,25 @@ window.addEventListener('DOMContentLoaded', function () {
   initLogin();
   $('btn-login').onclick = function () { doLogin(false); };
   $('btn-owner').onclick = function () { doLogin(true); };
-  $('btn-owner-toggle').onclick = function () { $('ownerbox').hidden = !$('ownerbox').hidden; };
+  $('btn-owner-toggle').onclick = function () {
+    $('ownerbox').hidden = !$('ownerbox').hidden;
+    if (!$('ownerbox').hidden) $('opin').focus();
+  };
+  // Enter в поле кода — вход, как кнопка рядом (owner У6): без мыши.
+  var enterTo = function (id, asOwner) {
+    $(id).addEventListener('keydown', function (e) {
+      if (e.key !== 'Enter' || e.isComposing) return;
+      e.preventDefault();
+      if (!$(asOwner ? 'btn-owner' : 'btn-login').disabled) doLogin(asOwner);
+    });
+    // Новый код набирается поверх старого, а не дописывается к нему.
+    $(id).addEventListener('focus', function () {
+      var t = this;
+      setTimeout(function () { try { if (document.activeElement === t) t.select(); } catch (e) { } }, 0);
+    });
+  };
+  enterTo('opin', true); enterTo('lpin', false);
+  $('lpoint').addEventListener('change', pointChanged);
   $('date').onchange = loadReport;
   $('addexp').onclick = addExp;
   $('savebtn').onclick = saveReport;
@@ -1524,5 +1947,15 @@ window.addEventListener('DOMContentLoaded', function () {
   })();
   $('dcsv').onclick = exportCsv;
   var ids = ['cash', 'kaspi_qr', 'transfer', 'card', 'qr_statement', 'tr_statement', 'cash_open', 'cash_handed', 'cash_counted'];
-  for (var i = 0; i < ids.length; i++) { $(ids[i]).oninput = recalc; }
+  for (var i = 0; i < ids.length; i++) {
+    $(ids[i]).oninput = recalc;
+    // Enter — к следующему изменяемому полю денег (у кассы суммы по каналам только для чтения), с последнего — в комментарий.
+    (function (k) {
+      numField($(ids[k]), function () {
+        for (var j = k + 1; j < ids.length; j++) { if (!$(ids[j]).readOnly) return $(ids[j]); }
+        return $('comment');
+      });
+    })(i);
+  }
+  ['rdeliv', 'rpaid', 'rret'].forEach(function (id, k, a) { numField($(id), $(a[k + 1] || 'rnote')); });
 });
