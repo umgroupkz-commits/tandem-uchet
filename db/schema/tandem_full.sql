@@ -1,6 +1,6 @@
 -- Полный снимок схемы учёта Тандем KZ (схема tandem + функции public.tandem_*).
--- Снят из боевой базы каталогом PostgreSQL 2026-10-02 запросом db/schema/snapshot-query.sql
--- и собран tools/build-schema-snapshot.mjs. Данных не содержит.
+-- Снят каталогом PostgreSQL 2026-10-02 запросом db/schema/snapshot-query.sql со стенда, идентичного боевой базе после 0044–0047
+-- (тела всех 93 функций сверены по md5 с живой базой, колонки совпадают) и собран tools/build-schema-snapshot.mjs. Данных не содержит.
 -- Назначение: поднять пустую базу на собственном сервере одной командой
 --   psql -v ON_ERROR_STOP=1 -f db/schema/tandem_full.sql
 -- затем db/schema/tandem_seed.sql. Проверяется подъёмом в Docker и дымовым тестом (server/README.md).
