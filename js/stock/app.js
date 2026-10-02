@@ -1,6 +1,6 @@
-import { api, session, setSession } from "../office/api.js?v=19";
-import { el, toast } from "../office/ui.js?v=19";
-import { ask, clearDraftsAll } from "./common.js?v=19";
+import { api, session, setSession } from "../office/api.js?v=20";
+import { el, toast } from "../office/ui.js?v=20";
+import { ask, clearDraftsAll } from "./common.js?v=20";
 
 const $ = (id) => document.getElementById(id);
 const SCENARIOS = [
@@ -11,7 +11,8 @@ const SCENARIOS = [
 ];
 // stores — все действующие склады (куда перемещать), mine — те, от имени которых работает
 // пользователь: закреплённые за ним в бэк-офисе, а без закрепления — все.
-const ctx = { store: null, stores: [], mine: [], home, result };
+// resume — чей экран остался под входом после истёкшей сессии (см. tandem:unauthorized).
+const ctx = { store: null, stores: [], mine: [], home, result, resume: null };
 function show(id) { for (const s of ["login", "pinchange", "shell"]) $(s).hidden = s !== id; }
 const perms = () => (session() && session().permissions) || [];
 
@@ -22,9 +23,16 @@ async function doLogin() {
   let r;
   try { r = await api("login", { login: $("llogin").value, pin: $("lpin").value }); }
   catch (e) { $("lerr").textContent = "Нет связи с сервером"; return; }
-  if (!r.ok) { $("lerr").textContent = r.message || "Не пустило"; return; }
+  if (r.error === "network") { $("lerr").textContent = "Нет связи с сервером"; return; }
+  if (!r.ok) { $("lerr").textContent = r.message || r.error || "Не пустило"; return; }
   setSession({ token: r.token, user: r.user, permissions: r.permissions, must_change_pin: r.must_change_pin });
   try { localStorage.setItem("tandem_stock_login", $("llogin").value.trim()); } catch {}
+  // Вошёл тот же человек, у которого истекла сессия, — возвращаем его экран как был:
+  // введённое не пропадает. Другой человек начинает заново, со своими складами.
+  const same = ctx.resume && r.user && ctx.resume === r.user.id && !r.must_change_pin;
+  ctx.resume = null;
+  if (same) { show("shell"); return; }
+  ctx.stores = []; ctx.mine = []; ctx.store = null;
   start();
 }
 async function doChangePin() {
@@ -101,24 +109,45 @@ function home() {
 async function openScenario(id) {
   const main = $("main"); main.innerHTML = '<div class="dim">Загрузка…</div>';
   try {
-    const mod = await import(`./${id}.js?v=19`);
+    const mod = await import(`./${id}.js?v=20`);
     main.innerHTML = ""; await mod.mount(main, ctx);
   } catch (e) { main.innerHTML = ""; main.append(el("div", { class: "err" }, "Сценарий не открылся: " + e.message)); }
 }
 
-// Экран результата после проведения.
-function result({ title, lines = [], again, warnings = [] }) {
+// Экран результата после проведения. bad — не успех, а предупреждение (документ проведён в другом
+// виде, V22); buttons — свои действия вместо «Ещё»: [{ label, onclick, ghost }].
+function result({ title, lines = [], again, warnings = [], bad = false, buttons = null }) {
   const main = $("main"); main.innerHTML = "";
-  main.append(el("div", { class: "okbox" }, title), ...lines.map((t) => el("div", { class: "dim", style: "margin-top:6px" }, t)));
+  main.append(bad ? el("div", { class: "warnbox", style: "font-size:16px;font-weight:600" }, title) : el("div", { class: "okbox" }, title),
+    ...lines.map((t) => el("div", { class: "dim", style: "margin-top:6px" }, t)));
   if (warnings.length) main.append(el("div", { class: "warnbox" }, warnings.join("; ")));
-  main.append(el("div", { class: "bar" }, el("button", { onclick: again }, "Ещё"), el("button", { class: "ghost", onclick: home }, "В меню")));
+  const acts = buttons ? buttons.map((b) => el("button", b.ghost ? { class: "ghost", onclick: b.onclick } : { onclick: b.onclick }, b.label))
+    : [el("button", { onclick: again }, "Ещё")];
+  main.append(el("div", { class: "bar" }, ...acts, el("button", { class: "ghost", onclick: home }, "В меню")));
 }
 
 $("lbtn").addEventListener("click", doLogin);
 $("lpin").addEventListener("keydown", (e) => { if (e.key === "Enter") doLogin(); });
 $("nbtn").addEventListener("click", doChangePin);
 $("changestore").addEventListener("click", chooseStore);
+// Сессия истекла посреди работы: api() не перезагружает страницу, а шлёт это событие.
+// Показываем вход поверх; экран сценария остаётся в DOM, черновики — в телефоне.
+window.addEventListener("tandem:unauthorized", (e) => {
+  const s = session();
+  if (!$("shell").hidden && s && s.user) ctx.resume = s.user.id;
+  setSession(null);
+  show("login");
+  $("lpin").value = "";
+  try { $("llogin").value = localStorage.getItem("tandem_stock_login") || $("llogin").value; } catch {}
+  $("lerr").textContent = (e.detail && e.detail.message) || "Сессия истекла — войдите снова";
+});
 (async () => {
-  if (session()) { try { const r = await api("me", {}); if (r.ok) setSession({ ...session(), user: r.user, permissions: r.permissions, must_change_pin: r.must_change_pin }); } catch (e) { toast("Нет связи: " + e.message, "bad"); } }
+  if (session()) {
+    try {
+      const r = await api("me", {});
+      if (r.ok) setSession({ ...session(), user: r.user, permissions: r.permissions, must_change_pin: r.must_change_pin });
+      else if (r.error === "network") toast("Нет связи с сервером", "bad");
+    } catch (e) { toast("Нет связи: " + e.message, "bad"); }
+  }
   start();
 })();

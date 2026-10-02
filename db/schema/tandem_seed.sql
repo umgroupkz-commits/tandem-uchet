@@ -1,5 +1,7 @@
 -- Обязательные справочные данные для пустой базы: единицы измерения, права ролей, настройки.
--- Применяется после tandem_full.sql. Коды в settings — заглушки: ЗАМЕНИТЕ их сразу после установки.
+-- Применяется после tandem_full.sql. Коды собственника и водителя в settings — случайные, их не знает никто
+-- (файл лежит в публичном репозитории, постоянная заглушка работала бы как код): задайте свои
+-- по server/README.md ДО открытия сервера в интернет.
 
 insert into tandem.units (id, name, iiko_id, precision) values
   ('шт','штука','cd19b5ea-1b32-a6e5-1df7-5d2784a0549a',0),('кг','килограмм','7ba81c3a-8de5-8f9d-fb9f-e39efcbc57cc',3),
@@ -95,7 +97,7 @@ insert into tandem.role_permissions (role, section, action) values
 on conflict do nothing;
 
 insert into tandem.settings (key, value) values
-  ('owner_pin', 'CHANGE-ME-OWNER'), ('driver_pin', 'CHANGE-ME-DRIVER'), ('foodcost_alert', '35')
+  ('owner_pin', encode(gen_random_bytes(12), 'hex')), ('driver_pin', encode(gen_random_bytes(12), 'hex')), ('foodcost_alert', '35')
 on conflict (key) do nothing;
 
 -- Служебная выключенная точка дымового теста (см. миграцию 0023).

@@ -1,15 +1,21 @@
-import { api, can } from "./api.js?v=19";
-import { el, fmt, toast, debounce, modal } from "./ui.js?v=19";
-import { loadXlsx } from "./stock.js?v=19";
+import { api, can } from "./api.js?v=20";
+import { el, fmt, toast, debounce, modal, errText, saveFailed } from "./ui.js?v=20";
+import { loadXlsx } from "./stock.js?v=20";
 
 const TYPES = { goods: "товар", dish: "блюдо", prepared: "полуфабрикат", service: "услуга" };
 let groups = [], state = { q: "", group_id: "", item_type: "", active: "true", page: 1 };
+// Список групп загрузился. Без него (сбой, истёкшая сессия при открытии раздела) карточка не
+// даёт менять группу: иначе «— без группы —» в селекте уходило бы на сервер и стирало группу.
+let groupsOk = false;
+// Неудачное перечитывание не затирает уже загруженный список (дерево не пустеет после обрыва).
+async function loadGroups() { const g = await api("groups_list", {}); if (g.ok) { groups = g.groups || []; groupsOk = true; } }
 let tree, table, pager, root;
+// Номер последнего запроса списка: ответ на устаревший поиск не рисуется поверх нового.
+let listSeq = 0;
 
 export async function mount(r) {
   root = r;
-  const g = await api("groups_list", {});
-  groups = g.groups || [];
+  await loadGroups();
   tree = el("div", { class: "card tree" });
   const tools = el("div", { class: "tools" },
     el("input", { placeholder: "Поиск: название, артикул, код", value: state.q,
@@ -47,8 +53,9 @@ function drawTree() {
     }
   };
   walk(null, 0);
-  if (can("nomenclature", "edit")) tree.append(el("button", { class: "link", onclick: () => editGroup(null) }, "+ Группа"),
-    state.group_id ? el("button", { class: "link", onclick: () => editGroup(groups.find((g) => g.id === state.group_id)) }, "Переименовать / переместить") : null);
+  // append(null) вывел бы текст «null» под кнопкой — вторая кнопка только при выбранной группе
+  if (can("nomenclature", "edit")) tree.append(...[el("button", { class: "link", onclick: () => editGroup(null) }, "+ Группа"),
+    state.group_id ? el("button", { class: "link", onclick: () => editGroup(groups.find((g) => g.id === state.group_id)) }, "Переименовать / переместить") : null].filter(Boolean));
 }
 
 function pick(id) { state.group_id = id; state.page = 1; drawTree(); load(); }
@@ -56,8 +63,10 @@ function pick(id) { state.group_id = id; state.page = 1; drawTree(); load(); }
 async function load() {
   const p = { q: state.q, group_id: state.group_id || null, item_type: state.item_type || null, page: state.page };
   if (state.active !== "") p.active = state.active === "true";
+  const n = ++listSeq;
   const r = await api("items_search", p);
-  if (!r.ok) { toast(r.message, "bad"); return; }
+  if (n !== listSeq) return;
+  if (!r.ok) { toast(errText(r), "bad"); return; }
   table.innerHTML = "";
   table.append(el("tr", {}, ...["Код", "Название", "Артикул", "Тип", "Ед.", "Группа", "Цена", ""].map((h, i) => el("th", { class: i === 6 ? "num" : "" }, h))));
   for (const it of r.rows) {
@@ -79,21 +88,35 @@ async function editItem(code) {
   let item = { item_type: "dish", unit_id: "шт", group_id: state.group_id || "", active: true, for_sale: false }, points = [], r = null;
   if (code) {
     r = await api("item_get", { code });
-    if (!r.ok) { toast(r.message, "bad"); return; }
+    if (!r.ok) { toast(errText(r), "bad"); return; }
     item = r.item; points = r.points;
   }
+  // Список групп не загрузился при открытии раздела (сессия истекла, и вход был поверх страницы) или
+  // группу позиции завели позже (другой пользователь, перенос из iiko) — перечитываем его, прежде
+  // чем строить селект группы.
+  if (!groupsOk || (item.group_id && !groups.some((g) => g.id === item.group_id))) { await loadGroups(); if (groupsOk) drawTree(); }
   const ro = !can("nomenclature", "edit");
-  const m = modal(code ? `Позиция ${code}` : "Новая позиция");
+  // Форма с вводом по фону не закрывается; «Отмена» при изменениях переспрашивает.
+  const m = modal(code ? `Позиция ${code}` : "Новая позиция", { keep: !ro });
   const f = {};
   const field = (key, label, node) => { f[key] = node; return el("div", {}, el("label", {}, label), node); };
-  const groupSel = el("select", { disabled: ro }, el("option", { value: "" }, "— без группы —"),
-    ...groups.map((g) => el("option", { value: g.id, selected: g.id === item.group_id }, g.name)));
+  // Группы позиции может не быть в загруженном списке: список не загрузился или группу завели
+  // после открытия раздела (другой пользователь, перенос из iiko). Тогда селект выключен и
+  // показывает текущую группу, а group_id на сервер не уходит — группа остаётся как была.
+  const curGroup = item.group_id || "";
+  const groupKnown = groupsOk && (!curGroup || groups.some((g) => g.id === curGroup));
+  const groupSel = el("select", { disabled: ro || !groupKnown }, el("option", { value: "" }, "— без группы —"),
+    ...groups.map((g) => el("option", { value: g.id, selected: g.id === curGroup }, g.name)),
+    curGroup && !groups.some((g) => g.id === curGroup) ? el("option", { value: curGroup, selected: true }, item.group_name || "текущая группа") : null);
   m.root.append(el("div", { class: "grid2" },
     field("name", "Название", el("input", { value: item.name || "", readonly: ro })),
     field("artikul", "Артикул", el("input", { value: item.artikul || "", readonly: ro })),
     field("item_type", "Тип", select(TYPES, item.item_type, () => {}, ro)),
     field("unit_id", "Единица", select({ "шт": "шт", "кг": "кг", "л": "л", "порц": "порц" }, item.unit_id, () => {}, ro)),
-    field("group_id", "Группа", groupSel),
+    el("div", {}, el("label", {}, "Группа"), (f.group_id = groupSel),
+      ro || groupKnown ? null : el("div", { class: "dim" }, groupsOk
+        ? "Этой группы нет в списке — обновите страницу, чтобы сменить группу"
+        : "Список групп не загрузился — обновите страницу, чтобы выбрать группу")),
     field("price", "Цена по умолчанию", el("input", { type: "number", step: "0.01", value: item.price ?? "", readonly: ro })),
     field("pack_factor", "Фасовка: множитель", el("input", { type: "number", step: "0.001", value: item.pack_factor ?? "", readonly: ro })),
     field("pack_unit", "Фасовка: единица", el("input", { value: item.pack_unit || "", readonly: ro })),
@@ -134,28 +157,41 @@ async function editItem(code) {
       const bt = el("table"); bt.append(el("tr", {}, el("th", {}, "Склад"), el("th", { class: "num" }, "Остаток"), el("th", { class: "num" }, "Средняя")));
       for (const b of st.balances) bt.append(el("tr", {}, el("td", {}, b.store_name), el("td", { class: "num" + (Number(b.qty) < 0 ? " bad" : "") }, fmt(b.qty)), el("td", { class: "num" }, fmt(b.avg_cost))));
       const mt = el("table"); mt.append(el("tr", {}, el("th", {}, "Дата"), el("th", {}, "Документ"), el("th", {}, "Склад"), el("th", { class: "num" }, "Кол-во")));
-      for (const mv of st.moves.slice(0, 10)) mt.append(el("tr", {}, el("td", {}, mv.move_date), el("td", {}, mv.number), el("td", { class: "dim" }, mv.store_name), el("td", { class: "num" + (Number(mv.qty) < 0 ? " bad" : "") }, fmt(mv.qty))));
+      // Строка без количества — переоценка: приход на ушедший в минус остаток поправил его стоимость.
+      for (const mv of st.moves.slice(0, 10)) mt.append(el("tr", {}, el("td", {}, mv.move_date), el("td", {}, mv.number), el("td", { class: "dim" }, mv.store_name),
+        Number(mv.qty) === 0 ? el("td", { class: "num dim" }, "переоценка" + (mv.adj != null ? " " + fmt(mv.adj) + " ₸" : ""))
+          : el("td", { class: "num" + (Number(mv.qty) < 0 ? " bad" : "") }, fmt(mv.qty))));
       m.root.append(el("h2", { style: "margin-top:16px" }, "Остатки по складам"), bt, el("h2", { style: "margin-top:12px" }, "Последние движения"), mt);
     }
   }
   const err = el("div", { class: "err" });
   m.root.append(err, el("div", { class: "actions" },
     ro ? null : el("button", { onclick: save }, "Сохранить"),
-    el("button", { class: "ghost", onclick: m.close }, ro ? "Закрыть" : "Отмена")));
-  async function save() {
+    el("button", { class: "ghost", onclick: m.cancel }, ro ? "Закрыть" : "Отмена")));
+  async function save(e) {
+    // Учётная цена уходит, только если её правили: сервер на любую присланную цену ставит
+    // источник «вручную» и сегодняшнюю дату, и цена из накладной теряла бы своё происхождение.
+    // Группа — так же, только если её сменили: сервер применяет присланный group_id (пустой снимает
+    // группу и category, и позиция пропадает с точек), а селект мог не знать текущей группы.
+    // Артикул уходит всегда, пустым тоже: очистка артикула — тоже правка.
+    const costChanged = f.cost_price && f.cost_price.value !== String(item.cost_price ?? "");
+    const groupChanged = !code || (!f.group_id.disabled && f.group_id.value !== curGroup);
     const p = { code: code || undefined, name: f.name.value, artikul: f.artikul.value, item_type: f.item_type.value, unit_id: f.unit_id.value,
-      group_id: f.group_id.value || null, price: f.price.value, pack_factor: f.pack_factor.value, pack_unit: f.pack_unit.value,
-      pack_price: f.pack_price.value, note: f.note.value, cost_price: f.cost_price ? f.cost_price.value : undefined,
+      group_id: groupChanged ? f.group_id.value || null : undefined, price: f.price.value, pack_factor: f.pack_factor.value, pack_unit: f.pack_unit.value,
+      pack_price: f.pack_price.value, note: f.note.value, cost_price: costChanged ? f.cost_price.value : undefined,
       active: f.active.checked, for_sale: f.for_sale.checked };
+    // Кнопка выключена до ответа: второе нажатие новой позиции заводило дубль с другим кодом.
+    const b = e.target; b.disabled = true;
     const r = await api("item_save", p);
-    if (!r.ok) { err.textContent = r.message; return; }
+    // Новая позиция после обрыва связи: повтор «Сохранить» завёл бы вторую с другим кодом.
+    if (!r.ok) { if (saveFailed(r, !code, b, err)) load(); return; }
     if (f._prices) {
       const prices = Object.entries(f._prices).map(([point_id, inp]) => ({ point_id, price: inp.value === "" ? null : Number(inp.value) }));
       const r2 = await api("item_prices_save", { code: r.code, prices });
-      if (!r2.ok) { err.textContent = r2.message; return; }
+      if (!r2.ok) { b.disabled = false; err.textContent = errText(r2); return; }
     }
     m.close();
-    const g = await api("groups_list", {}); groups = g.groups || []; drawTree(); load();
+    await loadGroups(); drawTree(); load();
     // Цены по точкам привязаны к коду позиции, а у новой его до сохранения нет — поэтому
     // новая карточка сразу открывается снова, уже с таблицей цен (раньше — только со второго раза).
     if (!code) { toast("Позиция создана — задайте цены по точкам"); editItem(r.code); } else toast("Сохранено");
@@ -163,7 +199,7 @@ async function editItem(code) {
 }
 
 async function editGroup(g) {
-  const m = modal(g ? "Группа" : "Новая группа");
+  const m = modal(g ? "Группа" : "Новая группа", { keep: true });
   const name = el("input", { value: g ? g.name : "" });
   const parent = el("select", {}, el("option", { value: "" }, "— верхний уровень —"),
     ...groups.filter((x) => !g || x.id !== g.id).map((x) => el("option", { value: x.id, selected: g && x.id === g.parent_id }, x.name)));
@@ -171,12 +207,15 @@ async function editGroup(g) {
   const err = el("div", { class: "err" });
   m.root.append(el("label", {}, "Название"), name, el("label", {}, "Родитель"), parent,
     el("div", { class: "actions" }, el("label", {}, active, " активна")), err,
-    el("div", { class: "actions" }, el("button", { onclick: async () => {
+    el("div", { class: "actions" }, el("button", { onclick: async (e) => {
+      e.target.disabled = true;
       const r = await api("group_save", { id: g ? g.id : undefined, name: name.value, parent_id: parent.value || null, active: active.checked });
-      if (!r.ok) { err.textContent = r.message; return; }
+      // Новая группа после обрыва связи: повтор завёл бы вторую такую же — сначала проверить дерево.
+      if (!r.ok) { if (saveFailed(r, !g, e.target, err)) { await loadGroups(); drawTree(); } return; }
+      e.target.disabled = false;
       toast("Сохранено"); m.close();
-      const gl = await api("groups_list", {}); groups = gl.groups || []; drawTree(); load();
-    } }, "Сохранить"), el("button", { class: "ghost", onclick: m.close }, "Отмена")));
+      await loadGroups(); drawTree(); load();
+    } }, "Сохранить"), el("button", { class: "ghost", onclick: m.cancel }, "Отмена")));
   name.focus();
 }
 
@@ -186,7 +225,7 @@ async function editGroup(g) {
 // по названию (сопоставление, подтверждённое Андреем 19.09.2026).
 const DEP_HINTS = [[/ЕНЕШКА/i, ["eneshka"]], [/^Буфеты/i, ["univer_b", "kmk"]], [/Тандем Университет/i, ["univer_s"]], [/^Актау/i, ["aktau"]]];
 function importPrices() {
-  const m = modal("Загрузить прейскурант");
+  const m = modal("Загрузить прейскурант", { keep: true });
   const file = el("input", { type: "file", accept: ".xlsx,.xls" });
   const body = el("div");
   const err = el("div", { class: "err" });
@@ -230,7 +269,7 @@ function importPrices() {
       let loaded = 0, unmatched = 0, sample = [];
       for (let i = 0; i < data.length; i += 1000) {
         const r = await api("item_prices_import", { rows: data.slice(i, i + 1000) });
-        if (!r.ok) { err.textContent = r.message; go.disabled = false; go.textContent = "Загрузить цены"; return; }
+        if (!r.ok) { err.textContent = errText(r); go.disabled = false; go.textContent = "Загрузить цены"; return; }
         loaded += r.loaded; unmatched = Math.max(unmatched, r.unmatched); sample = sample.length ? sample : r.unmatched_sample;
       }
       body.innerHTML = "";

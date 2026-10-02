@@ -1,8 +1,10 @@
-import { api, can } from "./api.js?v=19";
-import { el, toast, debounce, modal } from "./ui.js?v=19";
+import { api, can } from "./api.js?v=20";
+import { el, toast, debounce, modal, errText, saveFailed } from "./ui.js?v=20";
 
 const KINDS = { supplier: "поставщик", customer: "покупатель", employee: "сотрудник", other: "прочее" };
 let root, state = { q: "", kind: "", page: 1 }, table, pager;
+// Номер последнего запроса списка: ответ на устаревший поиск не рисуется поверх нового.
+let listSeq = 0;
 
 export async function mount(r) {
   root = r;
@@ -19,8 +21,10 @@ export async function mount(r) {
 }
 
 async function load() {
+  const n = ++listSeq;
   const r = await api("counteragents_list", { q: state.q, kind: state.kind || null, page: state.page });
-  if (!r.ok) { toast(r.message, "bad"); return; }
+  if (n !== listSeq) return;
+  if (!r.ok) { toast(errText(r), "bad"); return; }
   table.innerHTML = "";
   table.append(el("tr", {}, ...["Название", "Вид", "БИН/ИИН", "Телефон", ""].map((h) => el("th", {}, h))));
   for (const c of r.rows) {
@@ -37,7 +41,7 @@ async function load() {
 
 function edit(c) {
   const ro = !can("counteragents", "edit");
-  const m = modal(c ? c.name : "Новый контрагент");
+  const m = modal(c ? c.name : "Новый контрагент", { keep: !ro });
   const f = {
     name: el("input", { value: c ? c.name : "", readonly: ro }),
     kind: el("select", { disabled: ro }, ...Object.entries(KINDS).map(([v, t]) => el("option", { value: v, selected: c ? c.kind === v : v === "supplier" }, t))),
@@ -54,10 +58,13 @@ function edit(c) {
     el("label", {}, "Заметка"), f.note,
     el("div", { class: "actions" }, el("label", {}, f.active, " активен")), err,
     el("div", { class: "actions" },
-      ro ? null : el("button", { onclick: async () => {
+      ro ? null : el("button", { onclick: async (e) => {
+        e.target.disabled = true;   // второе нажатие до ответа заводило дубль контрагента
         const r = await api("counteragent_save", { id: c ? c.id : undefined, name: f.name.value, kind: f.kind.value, bin: f.bin.value, phone: f.phone.value, note: f.note.value, active: f.active.checked });
-        if (!r.ok) { err.textContent = r.message; return; }
+        // новый контрагент после обрыва связи: повтор завёл бы второго — сначала проверить список
+        if (!r.ok) { if (saveFailed(r, !c, e.target, err)) load(); return; }
+        e.target.disabled = false;
         toast("Сохранено"); m.close(); load();
       } }, "Сохранить"),
-      el("button", { class: "ghost", onclick: m.close }, ro ? "Закрыть" : "Отмена")));
+      el("button", { class: "ghost", onclick: m.cancel }, ro ? "Закрыть" : "Отмена")));
 }

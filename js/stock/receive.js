@@ -1,13 +1,13 @@
 import { ask, el, fmt, today, toast, debounce, itemPicker, linesTable, drafts, warningsText,
-  withBusy, saveDoc, draftHint, okNum, numOf } from "./common.js?v=19";
+  withBusy, saveDoc, postDoc, showPosted, newKey, draftHint, okNum, numOf } from "./common.js?v=20";
 
 const SCN = "receive";
 export async function mount(root, ctx) {
   root.innerHTML = "";
   const st = ctx.store;
-  const d = drafts.load(SCN, st.id) || { supplier: null, ext_number: "", lines: [], server_id: null };
+  const d = drafts.load(SCN, st.id) || { supplier: null, ext_number: "", lines: [], server_id: null, client_key: newKey() };
   const lines = d.lines;
-  const save = () => drafts.save(SCN, st.id, { supplier: d.supplier, ext_number: d.ext_number, lines, server_id: d.server_id || null });
+  const save = () => drafts.save(SCN, st.id, { supplier: d.supplier, ext_number: d.ext_number, lines, server_id: d.server_id || null, client_key: d.client_key });
   // поставщик
   const sup = el("input", { id: "r_sup", placeholder: "Поставщик: начните вводить", value: d.supplier ? d.supplier.name : "", autocomplete: "off" });
   const supRes = el("div", { class: "sres" });
@@ -53,13 +53,15 @@ export async function mount(root, ctx) {
       try {
         s = await saveDoc(d, { doc_type: "invoice_in", doc_date: today(), store_to: st.id, counteragent_id: d.supplier.id,
           ext_number: d.ext_number || null, lines: lines.map((l) => ({ item_code: l.item_code, qty: numOf(l.qty), price: numOf(l.price) })) }, save);
+        if (s.already) return showPosted(ctx, SCN, st.id, s, () => mount(root, ctx), d);
         d.server_id = s.id; save();
-        const p = await ask("doc_post", { id: s.id });
+        const p = await postDoc(s.id);
+        if (p.already) return showPosted(ctx, SCN, st.id, p, () => mount(root, ctx), d);
         drafts.clear(SCN, st.id);
         ctx.result({ title: "Проведено: " + s.number, lines: [d.supplier.name + " → " + st.name, lines.length + " поз., сумма " + fmt(p.total_sum) + " ₸"],
           warnings: warningsText(p.warnings) ? [warningsText(p.warnings)] : [], again: () => mount(root, ctx) });
       } catch (e) {
-        err.textContent = e.message + draftHint(s && s.number);
+        err.textContent = e.message + draftHint(s && s.number, e);
       }
     });
   }

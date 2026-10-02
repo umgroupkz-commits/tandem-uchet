@@ -1,8 +1,6 @@
 -- Полный снимок схемы учёта Тандем KZ (схема tandem + функции public.tandem_*).
--- Снят из боевой базы каталогом PostgreSQL 2026-09-18 запросом db/schema/snapshot-query.sql
--- и собран tools/build-schema-snapshot.mjs. Данных не содержит.
--- Миграции 0033 (касса, чеки, канал «карта») 0034 (расход для 1С) 0035 (точки) 0036 (прейскурант) 0037 (отчёты) 0038 (заявки) 0039 (неверные коды в сводке) и 0040 (исправления заявок по ревью) внесены в снимок тем же содержанием без полного снятия каталога;
--- тела функций сверены с базой по md5. Следующее полное снятие перезапишет файл целиком.
+-- Снят каталогом PostgreSQL 2026-10-02 запросом db/schema/snapshot-query.sql со стенда, идентичного боевой базе после 0041–0043
+-- (тела всех 76 функций и все колонки сверены по md5 с живой базой) и собран tools/build-schema-snapshot.mjs. Данных не содержит.
 -- Назначение: поднять пустую базу на собственном сервере одной командой
 --   psql -v ON_ERROR_STOP=1 -f db/schema/tandem_full.sql
 -- затем db/schema/tandem_seed.sql. Проверяется подъёмом в Docker и дымовым тестом (server/README.md).
@@ -34,6 +32,13 @@ create table if not exists tandem.cash_expenses (
   receipt_no text
 );
 
+create table if not exists tandem.catalog_1c (
+  code text not null,
+  name text not null,
+  unit text,
+  account text
+);
+
 create table if not exists tandem.chart_lines (
   id uuid default gen_random_uuid() not null,
   chart_id uuid not null,
@@ -61,13 +66,6 @@ create table if not exists tandem.charts (
   updated_at timestamp with time zone default now() not null
 );
 
-create table if not exists tandem.catalog_1c (
-  code text not null,
-  name text not null,
-  unit text,
-  account text
-);
-
 create table if not exists tandem.check_lines (
   id bigint generated always as identity not null,
   check_id bigint not null,
@@ -91,7 +89,9 @@ create table if not exists tandem.checks (
   void_reason text,
   edited boolean default false not null,
   created_at timestamp with time zone default now() not null,
-  updated_at timestamp with time zone default now() not null
+  updated_at timestamp with time zone default now() not null,
+  first_total numeric,
+  first_pay_kind text
 );
 
 create table if not exists tandem.counteragents (
@@ -143,7 +143,8 @@ create table if not exists tandem.document_lines (
   fact_qty numeric,
   calc_qty numeric,
   note text,
-  sort_order integer default 0 not null
+  sort_order integer default 0 not null,
+  prev_cost jsonb
 );
 
 create table if not exists tandem.documents (
@@ -168,7 +169,8 @@ create table if not exists tandem.documents (
   source_id text,
   ext_number text,
   ext_date date,
-  sync_note text
+  sync_note text,
+  client_key text
 );
 
 create table if not exists tandem.item_aliases (
@@ -231,14 +233,36 @@ create table if not exists tandem.items (
   cost_date date,
   cost_source text,
   code_1c text,
-  k_1c numeric,
-  sell_from_stock boolean default false not null
+  k_1c numeric
+);
+
+create table if not exists tandem.order_lines (
+  order_id bigint not null,
+  item_code text not null,
+  qty numeric not null
+);
+
+create table if not exists tandem.order_plan (
+  for_date date not null,
+  item_code text not null,
+  fact_qty numeric
+);
+
+create table if not exists tandem.orders (
+  id bigint generated always as identity not null,
+  point_id text not null,
+  for_date date not null,
+  sent_by text,
+  comment text,
+  created_at timestamp with time zone default now() not null,
+  updated_at timestamp with time zone default now() not null
 );
 
 create table if not exists tandem.pin_failures (
   id bigint generated always as identity not null,
   key text not null,
-  at timestamp with time zone default now() not null
+  at timestamp with time zone default now() not null,
+  ip text
 );
 
 create table if not exists tandem.points (
@@ -271,7 +295,8 @@ create table if not exists tandem.realization_ledger (
   returned numeric default 0 not null,
   note text,
   created_by text,
-  created_at timestamp with time zone default now()
+  created_at timestamp with time zone default now(),
+  uid uuid
 );
 
 create table if not exists tandem.role_permissions (
@@ -307,7 +332,8 @@ create table if not exists tandem.stock_balances (
   item_code text not null,
   qty numeric default 0 not null,
   avg_cost numeric default 0 not null,
-  updated_at timestamp with time zone default now() not null
+  updated_at timestamp with time zone default now() not null,
+  value numeric default 0 not null
 );
 
 create table if not exists tandem.stock_moves (
@@ -319,7 +345,16 @@ create table if not exists tandem.stock_moves (
   qty numeric not null,
   unit_cost numeric default 0 not null,
   move_date date not null,
-  posted_at timestamp with time zone default now() not null
+  posted_at timestamp with time zone default now() not null,
+  adj numeric default 0 not null
+);
+
+create table if not exists tandem.store_ready (
+  store_id uuid not null,
+  item_code text not null,
+  date_from date not null,
+  source text default 'manual'::text not null,
+  created_at timestamp with time zone default now() not null
 );
 
 create table if not exists tandem.stores (
@@ -373,6 +408,7 @@ create table if not exists tandem.users (
 alter table tandem.assets add constraint assets_pkey PRIMARY KEY (name);
 alter table tandem.cash_expenses add constraint cash_expenses_amount_check CHECK ((amount > (0)::numeric));
 alter table tandem.cash_expenses add constraint cash_expenses_pkey PRIMARY KEY (id);
+alter table tandem.catalog_1c add constraint catalog_1c_pkey PRIMARY KEY (code);
 alter table tandem.chart_lines add constraint chart_lines_brutto_check CHECK ((brutto >= (0)::numeric));
 alter table tandem.chart_lines add constraint chart_lines_netto_check CHECK ((netto >= (0)::numeric));
 alter table tandem.chart_lines add constraint chart_lines_output_check CHECK ((output >= (0)::numeric));
@@ -383,10 +419,6 @@ alter table tandem.charts add constraint charts_no_overlap EXCLUDE USING gist (i
 alter table tandem.charts add constraint charts_output_amount_check CHECK ((output_amount > (0)::numeric));
 alter table tandem.charts add constraint charts_pkey PRIMARY KEY (id);
 alter table tandem.charts add constraint charts_source_check CHECK ((source = ANY (ARRAY['office'::text, 'iiko'::text])));
-alter table tandem.counteragents add constraint counteragents_iiko_id_key UNIQUE (iiko_id);
-alter table tandem.counteragents add constraint counteragents_kind_check CHECK ((kind = ANY (ARRAY['supplier'::text, 'customer'::text, 'employee'::text, 'other'::text])));
-alter table tandem.counteragents add constraint counteragents_pkey PRIMARY KEY (id);
-alter table tandem.catalog_1c add constraint catalog_1c_pkey PRIMARY KEY (code);
 alter table tandem.check_lines add constraint check_lines_pkey PRIMARY KEY (id);
 alter table tandem.check_lines add constraint check_lines_price_check CHECK ((price >= (0)::numeric));
 alter table tandem.check_lines add constraint check_lines_qty_check CHECK ((qty > (0)::numeric));
@@ -395,6 +427,9 @@ alter table tandem.checks add constraint checks_pkey PRIMARY KEY (id);
 alter table tandem.checks add constraint checks_point_id_check_date_no_key UNIQUE (point_id, check_date, no);
 alter table tandem.checks add constraint checks_status_check CHECK ((status = ANY (ARRAY['active'::text, 'void'::text])));
 alter table tandem.checks add constraint checks_uid_key UNIQUE (uid);
+alter table tandem.counteragents add constraint counteragents_iiko_id_key UNIQUE (iiko_id);
+alter table tandem.counteragents add constraint counteragents_kind_check CHECK ((kind = ANY (ARRAY['supplier'::text, 'customer'::text, 'employee'::text, 'other'::text])));
+alter table tandem.counteragents add constraint counteragents_pkey PRIMARY KEY (id);
 alter table tandem.daily_reports add constraint daily_reports_pkey PRIMARY KEY (id);
 alter table tandem.daily_reports add constraint daily_reports_point_id_report_date_key UNIQUE (point_id, report_date);
 alter table tandem.doc_counters add constraint doc_counters_pkey PRIMARY KEY (doc_type, year);
@@ -421,6 +456,12 @@ alter table tandem.items add constraint items_cost_source_check CHECK (((cost_so
 alter table tandem.items add constraint items_iiko_id_key UNIQUE (iiko_id);
 alter table tandem.items add constraint items_item_type_check CHECK ((item_type = ANY (ARRAY['goods'::text, 'dish'::text, 'prepared'::text, 'service'::text])));
 alter table tandem.items add constraint items_pkey PRIMARY KEY (code);
+alter table tandem.order_lines add constraint order_lines_pkey PRIMARY KEY (order_id, item_code);
+alter table tandem.order_lines add constraint order_lines_qty_check CHECK ((qty > (0)::numeric));
+alter table tandem.order_plan add constraint order_plan_fact_qty_check CHECK ((fact_qty >= (0)::numeric));
+alter table tandem.order_plan add constraint order_plan_pkey PRIMARY KEY (for_date, item_code);
+alter table tandem.orders add constraint orders_pkey PRIMARY KEY (id);
+alter table tandem.orders add constraint orders_point_id_for_date_key UNIQUE (point_id, for_date);
 alter table tandem.pin_failures add constraint pin_failures_pkey PRIMARY KEY (id);
 alter table tandem.points add constraint points_mode_check CHECK ((mode = ANY (ARRAY['position'::text, 'takeout'::text, 'import'::text, 'manual'::text, 'checks'::text])));
 alter table tandem.points add constraint points_pkey PRIMARY KEY (id);
@@ -434,6 +475,8 @@ alter table tandem.sessions add constraint sessions_pkey PRIMARY KEY (token);
 alter table tandem.settings add constraint settings_pkey PRIMARY KEY (key);
 alter table tandem.stock_balances add constraint stock_balances_pkey PRIMARY KEY (store_id, item_code);
 alter table tandem.stock_moves add constraint stock_moves_pkey PRIMARY KEY (id);
+alter table tandem.store_ready add constraint store_ready_pkey PRIMARY KEY (store_id, item_code);
+alter table tandem.store_ready add constraint store_ready_source_check CHECK ((source = ANY (ARRAY['orders'::text, 'manual'::text])));
 alter table tandem.stores add constraint stores_iiko_id_key UNIQUE (iiko_id);
 alter table tandem.stores add constraint stores_pkey PRIMARY KEY (id);
 alter table tandem.takeout_lines add constraint takeout_lines_pkey PRIMARY KEY (id);
@@ -447,17 +490,20 @@ alter table tandem.users add constraint users_role_check CHECK ((role = ANY (ARR
 
 -- ---------------------------------------------------------------- индексы
 CREATE INDEX chart_lines_chart_idx ON tandem.chart_lines USING btree (chart_id);
-CREATE INDEX check_lines_check_idx ON tandem.check_lines USING btree (check_id);
 CREATE INDEX chart_lines_ingredient_idx ON tandem.chart_lines USING btree (ingredient_code);
 CREATE INDEX charts_item_idx ON tandem.charts USING btree (item_code, date_from DESC);
+CREATE INDEX check_lines_check_idx ON tandem.check_lines USING btree (check_id);
 CREATE INDEX document_lines_doc_idx ON tandem.document_lines USING btree (document_id, line_kind, sort_order);
+CREATE UNIQUE INDEX documents_client_key_idx ON tandem.documents USING btree (client_key) WHERE (client_key IS NOT NULL);
 CREATE INDEX documents_date_idx ON tandem.documents USING btree (doc_date DESC, created_at DESC);
 CREATE UNIQUE INDEX documents_source_idx ON tandem.documents USING btree (source_kind, source_id) WHERE (source_kind IS NOT NULL);
 CREATE INDEX documents_type_status_idx ON tandem.documents USING btree (doc_type, status);
 CREATE INDEX items_group_idx ON tandem.items USING btree (group_name);
 CREATE INDEX items_point_idx ON tandem.items USING btree (point_hint);
 CREATE INDEX pin_failures_at ON tandem.pin_failures USING btree (at);
+CREATE INDEX pin_failures_ip_at ON tandem.pin_failures USING btree (ip, at) WHERE (ip IS NOT NULL);
 CREATE INDEX pin_failures_key_at ON tandem.pin_failures USING btree (key, at);
+CREATE UNIQUE INDEX realization_ledger_uid_key ON tandem.realization_ledger USING btree (uid);
 CREATE INDEX sessions_user_idx ON tandem.sessions USING btree (user_id);
 CREATE INDEX stock_moves_doc_idx ON tandem.stock_moves USING btree (document_id);
 CREATE INDEX stock_moves_replay_idx ON tandem.stock_moves USING btree (store_id, item_code, id);
@@ -470,6 +516,9 @@ alter table tandem.chart_lines add constraint chart_lines_ingredient_code_fkey F
 alter table tandem.charts add constraint charts_created_by_fkey FOREIGN KEY (created_by) REFERENCES tandem.users(id);
 alter table tandem.charts add constraint charts_item_code_fkey FOREIGN KEY (item_code) REFERENCES tandem.items(code);
 alter table tandem.charts add constraint charts_updated_by_fkey FOREIGN KEY (updated_by) REFERENCES tandem.users(id);
+alter table tandem.check_lines add constraint check_lines_check_id_fkey FOREIGN KEY (check_id) REFERENCES tandem.checks(id) ON DELETE CASCADE;
+alter table tandem.check_lines add constraint check_lines_item_code_fkey FOREIGN KEY (item_code) REFERENCES tandem.items(code);
+alter table tandem.checks add constraint checks_point_id_fkey FOREIGN KEY (point_id) REFERENCES tandem.points(id);
 alter table tandem.daily_reports add constraint daily_reports_point_id_fkey FOREIGN KEY (point_id) REFERENCES tandem.points(id);
 alter table tandem.document_lines add constraint document_lines_document_id_fkey FOREIGN KEY (document_id) REFERENCES tandem.documents(id) ON DELETE CASCADE;
 alter table tandem.document_lines add constraint document_lines_item_code_fkey FOREIGN KEY (item_code) REFERENCES tandem.items(code);
@@ -483,8 +532,13 @@ alter table tandem.documents add constraint documents_updated_by_fkey FOREIGN KE
 alter table tandem.item_groups add constraint item_groups_parent_id_fkey FOREIGN KEY (parent_id) REFERENCES tandem.item_groups(id);
 alter table tandem.item_prices add constraint item_prices_point_id_fkey FOREIGN KEY (point_id) REFERENCES tandem.points(id) ON DELETE CASCADE;
 alter table tandem.item_rank add constraint item_rank_point_id_fkey FOREIGN KEY (point_id) REFERENCES tandem.points(id) ON DELETE CASCADE;
+alter table tandem.items add constraint items_code_1c_fkey FOREIGN KEY (code_1c) REFERENCES tandem.catalog_1c(code);
 alter table tandem.items add constraint items_group_id_fkey FOREIGN KEY (group_id) REFERENCES tandem.item_groups(id);
 alter table tandem.items add constraint items_unit_id_fkey FOREIGN KEY (unit_id) REFERENCES tandem.units(id);
+alter table tandem.order_lines add constraint order_lines_item_code_fkey FOREIGN KEY (item_code) REFERENCES tandem.items(code);
+alter table tandem.order_lines add constraint order_lines_order_id_fkey FOREIGN KEY (order_id) REFERENCES tandem.orders(id) ON DELETE CASCADE;
+alter table tandem.order_plan add constraint order_plan_item_code_fkey FOREIGN KEY (item_code) REFERENCES tandem.items(code);
+alter table tandem.orders add constraint orders_point_id_fkey FOREIGN KEY (point_id) REFERENCES tandem.points(id);
 alter table tandem.points add constraint points_default_store_id_fkey FOREIGN KEY (default_store_id) REFERENCES tandem.stores(id);
 alter table tandem.realization_ledger add constraint realization_ledger_client_id_fkey FOREIGN KEY (client_id) REFERENCES tandem.realization_clients(id);
 alter table tandem.sale_lines add constraint sale_lines_item_code_fkey FOREIGN KEY (item_code) REFERENCES tandem.items(code);
@@ -496,43 +550,13 @@ alter table tandem.stock_moves add constraint stock_moves_document_id_fkey FOREI
 alter table tandem.stock_moves add constraint stock_moves_item_code_fkey FOREIGN KEY (item_code) REFERENCES tandem.items(code);
 alter table tandem.stock_moves add constraint stock_moves_line_id_fkey FOREIGN KEY (line_id) REFERENCES tandem.document_lines(id) ON DELETE SET NULL;
 alter table tandem.stock_moves add constraint stock_moves_store_id_fkey FOREIGN KEY (store_id) REFERENCES tandem.stores(id);
+alter table tandem.store_ready add constraint store_ready_item_code_fkey FOREIGN KEY (item_code) REFERENCES tandem.items(code) ON DELETE CASCADE;
+alter table tandem.store_ready add constraint store_ready_store_id_fkey FOREIGN KEY (store_id) REFERENCES tandem.stores(id) ON DELETE CASCADE;
 alter table tandem.stores add constraint stores_point_id_fkey FOREIGN KEY (point_id) REFERENCES tandem.points(id);
 alter table tandem.takeout_lines add constraint takeout_lines_item_code_fkey FOREIGN KEY (item_code) REFERENCES tandem.items(code);
 alter table tandem.takeout_lines add constraint takeout_lines_report_id_fkey FOREIGN KEY (report_id) REFERENCES tandem.daily_reports(id) ON DELETE CASCADE;
 alter table tandem.user_stores add constraint user_stores_store_id_fkey FOREIGN KEY (store_id) REFERENCES tandem.stores(id) ON DELETE CASCADE;
 alter table tandem.user_stores add constraint user_stores_user_id_fkey FOREIGN KEY (user_id) REFERENCES tandem.users(id) ON DELETE CASCADE;
-alter table tandem.items add constraint items_code_1c_fkey FOREIGN KEY (code_1c) REFERENCES tandem.catalog_1c(code);
-alter table tandem.check_lines add constraint check_lines_check_id_fkey FOREIGN KEY (check_id) REFERENCES tandem.checks(id) ON DELETE CASCADE;
-alter table tandem.check_lines add constraint check_lines_item_code_fkey FOREIGN KEY (item_code) REFERENCES tandem.items(code);
-alter table tandem.checks add constraint checks_point_id_fkey FOREIGN KEY (point_id) REFERENCES tandem.points(id);
-
--- заявки точек (миграция 0038): таблицы со своими ключами — после ключей справочников
-create table if not exists tandem.orders (
-  id         bigint generated always as identity primary key,
-  point_id   text not null references tandem.points(id),
-  for_date   date not null,
-  sent_by    text,
-  comment    text,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now(),
-  unique (point_id, for_date)
-);
-create table if not exists tandem.order_lines (
-  order_id  bigint not null references tandem.orders(id) on delete cascade,
-  item_code text not null references tandem.items(code),
-  qty       numeric not null check (qty > 0),
-  primary key (order_id, item_code)
-);
--- Факт выпуска по плану дня: пекарь отмечает утром, расхождение с заявленным видно сразу.
-create table if not exists tandem.order_plan (
-  for_date  date not null,
-  item_code text not null references tandem.items(code),
-  fact_qty  numeric check (fact_qty >= 0),
-  primary key (for_date, item_code)
-);
-alter table tandem.orders enable row level security;
-alter table tandem.order_lines enable row level security;
-alter table tandem.order_plan enable row level security;
 
 -- ---------------------------------------------------------------- владельцы последовательностей
 alter sequence tandem.stock_moves_id_seq owned by tandem.stock_moves.id;
@@ -557,6 +581,12 @@ declare
   v_q          text := btrim(coalesce(payload->>'q',''));
   v_from       date;
   v_to         date;
+  v_today      date := tandem.local_now()::date;   -- местная дата (UTC+5): «сегодня» и «вчера» точек и сводки
+  v_exp        jsonb;
+  v_tko        jsonb;
+  v_sal        jsonb;
+  v_lbl        text;
+  v_val        text;
 begin
   select value into v_owner_pin  from tandem.settings where key = 'owner_pin';
   select value into v_driver_pin from tandem.settings where key = 'driver_pin';
@@ -630,12 +660,13 @@ begin
   end if;
 
   if action = 'get_report' then
-    v_date := (payload->>'date')::date;
+    v_date := tandem.to_date(payload->>'date');
+    if v_date is null then return jsonb_build_object('ok', false, 'error', 'Неверная дата отчёта'); end if;
     select to_jsonb(v) into v_res from tandem.v_daily v
       where v.point_id = v_point and v.report_date = v_date;
     if v_res is null then
       return jsonb_build_object('ok', true, 'report', null, 'expenses','[]'::jsonb,
-                                'takeout','[]'::jsonb, 'sales','[]'::jsonb);
+                                'takeout','[]'::jsonb, 'sales','[]'::jsonb, 'voids','[]'::jsonb);
     end if;
     select id into v_id from tandem.daily_reports
       where point_id = v_point and report_date = v_date;
@@ -650,26 +681,84 @@ begin
       'sales', (select coalesce(jsonb_agg(jsonb_build_object(
           'item_code',item_code,'item_name',item_name,'qty',qty,
           'price',price,'price_list',price_list) order by id),'[]'::jsonb)
-        from tandem.sale_lines where report_id = v_id));
+        from tandem.sale_lines where report_id = v_id),
+      -- Отменённые и исправленные чеки дня (касса): кто, когда, на сколько и почему. first_total и
+      -- first_pay_kind — как чек был пробит впервые (было → стало); edited — правили ли и отменённый чек.
+      'voids', (select coalesce(jsonb_agg(jsonb_build_object(
+          'kind', case when c.status = 'void' then 'void' else 'edited' end, 'no', c.no, 'total', c.total,
+          'pay_kind', c.pay_kind, 'first_total', coalesce(c.first_total, c.total),
+          'first_pay_kind', coalesce(c.first_pay_kind, c.pay_kind), 'edited', c.edited,
+          'reason', c.void_reason, 'seller', c.seller, 'at', c.updated_at)
+          order by c.updated_at desc), '[]'::jsonb)
+        from tandem.checks c
+        where c.point_id = v_point and c.check_date = v_date and (c.status = 'void' or c.edited)));
   end if;
 
   if action = 'save_report' then
-    v_date := (payload->>'date')::date;
+    -- Всё, что может отказать, проверяется до записи; ни одно присланное поле не роняет функцию исключением.
+    v_date := tandem.to_date(payload->>'date');
+    if v_date is null then return jsonb_build_object('ok', false, 'error', 'Не указана дата отчёта'); end if;
+    if not exists (select 1 from tandem.points where id = v_point) then
+      return jsonb_build_object('ok', false, 'error', 'Не указана точка'); end if;
+    v_exp := tandem.jlist(payload->'expenses');
+    v_tko := tandem.jlist(payload->'takeout');
+    v_sal := tandem.jlist(payload->'sales');
+    if v_exp is null or v_tko is null or v_sal is null then
+      return jsonb_build_object('ok', false, 'error', 'Неверный формат отчёта: расходы, заборный лист и продажи — списками'); end if;
+
+    -- Числа: пробелы и запятая — как на экране точки (num()), мусор — отказ с именем поля.
+    select f.label, f.val into v_lbl, v_val from (
+      select 0 as g, v.n::bigint as ord, v.label, v.val from (values
+        (1, 'Наличные'::text, payload->>'cash'), (2, 'Kaspi QR', payload->>'kaspi_qr'),
+        (3, 'Перевод на счёт', payload->>'transfer'), (4, 'Карта через терминал', payload->>'card'),
+        (5, 'QR по выписке', payload->>'qr_statement'), (6, 'Переводы по выписке', payload->>'tr_statement'),
+        (7, 'Остаток на начало', payload->>'cash_open'), (8, 'Сдано / инкассация', payload->>'cash_handed'),
+        (9, 'Фактически пересчитано', payload->>'cash_counted')) v(n, label, val)
+      union all
+      select 1, e.ord, 'Расходы, ' || coalesce(nullif(left(btrim(e.x->>'purpose'), 40), ''), 'строка ' || e.ord) || ': сумма', e.x->>'amount'
+        from jsonb_array_elements(v_exp) with ordinality e(x, ord)
+      union all
+      select 2, t.ord * 10 + c.n, 'Заборный лист, ' || coalesce(i.name, left(btrim(t.x->>'item_name'), 40)) || ': ' || c.label, c.val
+        from jsonb_array_elements(v_tko) with ordinality t(x, ord)
+        left join tandem.items i on i.code = nullif(btrim(t.x->>'item_code'), '')
+        cross join lateral (values (1, 'выдано'::text, t.x->>'issued'), (2, 'остаток', t.x->>'returned'), (3, 'цена', t.x->>'price')) c(n, label, val)
+       where coalesce(i.name, nullif(btrim(t.x->>'item_name'), '')) is not null
+      union all
+      select 3, s.ord * 10 + c.n, 'Продажи, ' || coalesce(i.name, left(btrim(s.x->>'item_name'), 40)) || ': ' || c.label, c.val
+        from jsonb_array_elements(v_sal) with ordinality s(x, ord)
+        left join tandem.items i on i.code = nullif(btrim(s.x->>'item_code'), '')
+        cross join lateral (values (1, 'количество'::text, s.x->>'qty'), (2, 'цена', s.x->>'price'), (3, 'цена прейскуранта', s.x->>'price_list')) c(n, label, val)
+       where coalesce(i.name, nullif(btrim(s.x->>'item_name'), '')) is not null
+    ) f where not tandem.num_ok(f.val) order by f.g, f.ord limit 1;
+    if v_lbl is not null then
+      return jsonb_build_object('ok', false, 'error', 'Неверное число в поле «' || v_lbl || '»: ' || left(v_val, 40));
+    end if;
+
+    -- Код позиции, которой нет в справочнике, раньше ронял сохранение ошибкой внешнего ключа.
+    select x.code into v_val from (
+      select nullif(btrim(t->>'item_code'), '') as code from jsonb_array_elements(v_tko) t
+      union all
+      select nullif(btrim(s->>'item_code'), '') from jsonb_array_elements(v_sal) s) x
+     where x.code is not null and not exists (select 1 from tandem.items i where i.code = x.code)
+     limit 1;
+    if v_val is not null then
+      return jsonb_build_object('ok', false, 'error', 'Позиции с кодом «' || left(v_val, 40) || '» нет в справочнике — обновите страницу');
+    end if;
 
     insert into tandem.daily_reports as d
       (point_id, report_date, shift_by, cash, kaspi_qr, transfer, card,
        qr_statement, tr_statement, cash_open, cash_handed, cash_counted, comment)
-    values (v_point, v_date, payload->>'shift_by',
-       coalesce((payload->>'cash')::numeric,0),
-       coalesce((payload->>'kaspi_qr')::numeric,0),
-       coalesce((payload->>'transfer')::numeric,0),
-       coalesce((payload->>'card')::numeric,0),
-       nullif(payload->>'qr_statement','')::numeric,
-       nullif(payload->>'tr_statement','')::numeric,
-       coalesce((payload->>'cash_open')::numeric,0),
-       coalesce((payload->>'cash_handed')::numeric,0),
-       nullif(payload->>'cash_counted','')::numeric,
-       payload->>'comment')
+    values (v_point, v_date, left(payload->>'shift_by', 200),
+       coalesce(tandem.to_num(payload->>'cash'), 0),
+       coalesce(tandem.to_num(payload->>'kaspi_qr'), 0),
+       coalesce(tandem.to_num(payload->>'transfer'), 0),
+       coalesce(tandem.to_num(payload->>'card'), 0),
+       tandem.to_num(payload->>'qr_statement'),
+       tandem.to_num(payload->>'tr_statement'),
+       coalesce(tandem.to_num(payload->>'cash_open'), 0),
+       coalesce(tandem.to_num(payload->>'cash_handed'), 0),
+       tandem.to_num(payload->>'cash_counted'),
+       left(payload->>'comment', 2000))
     on conflict (point_id, report_date) do update set
        shift_by = excluded.shift_by, cash = excluded.cash,
        kaspi_qr = excluded.kaspi_qr, transfer = excluded.transfer, card = excluded.card,
@@ -679,27 +768,48 @@ begin
        updated_at = now()
     returning d.id into v_id;
 
+    -- Расход без суммы (пустая добавленная строка) пропускается.
     delete from tandem.cash_expenses where report_id = v_id;
     insert into tandem.cash_expenses (report_id, purpose, amount, receipt_no)
-    select v_id, e->>'purpose', (e->>'amount')::numeric, nullif(e->>'receipt_no','')
-    from jsonb_array_elements(coalesce(payload->'expenses','[]'::jsonb)) e
-    where coalesce((e->>'amount')::numeric,0) > 0;
+    select v_id, left(coalesce(e->>'purpose', ''), 500), tandem.to_num(e->>'amount'), left(nullif(e->>'receipt_no',''), 100)
+    from jsonb_array_elements(v_exp) e
+    where coalesce(tandem.to_num(e->>'amount'), 0) > 0;
 
+    -- Название строки с кодом — из справочника, а не из запроса: текст точки уходит на экран собственника.
+    -- Одна позиция дважды складывается в одну строку (название в отчёте уникально); два кода с одним
+    -- названием различаются кодом в скобках, как в отчёте кассы.
     delete from tandem.takeout_lines where report_id = v_id;
     insert into tandem.takeout_lines (report_id, item_code, item_name, unit, issued, returned, price)
-    select v_id, nullif(t->>'item_code',''), t->>'item_name', coalesce(t->>'unit','шт'),
-           coalesce((t->>'issued')::numeric,0), coalesce((t->>'returned')::numeric,0),
-           nullif(t->>'price','')::numeric
-    from jsonb_array_elements(coalesce(payload->'takeout','[]'::jsonb)) t
-    where coalesce(t->>'item_name','') <> '';
+    select v_id, g.code,
+           case when g.code is not null and count(*) over (partition by g.name) > 1 then g.name || ' [' || g.code || ']' else g.name end,
+           g.unit, g.issued, g.returned, g.price
+      from (select i.code, coalesce(i.name, left(nullif(btrim(t->>'item_name'), ''), 200)) as name,
+                   min(coalesce(i.unit, left(nullif(btrim(t->>'unit'), ''), 20), 'шт')) as unit,
+                   sum(coalesce(tandem.to_num(t->>'issued'), 0)) as issued,
+                   sum(coalesce(tandem.to_num(t->>'returned'), 0)) as returned,
+                   max(tandem.to_num(t->>'price')) as price
+              from jsonb_array_elements(v_tko) t
+              left join tandem.items i on i.code = nullif(btrim(t->>'item_code'), '')
+             group by 1, 2) g
+     where g.name is not null;
 
     delete from tandem.sale_lines where report_id = v_id;
     insert into tandem.sale_lines (report_id, item_code, item_name, qty, price, price_list)
-    select v_id, nullif(s->>'item_code',''), s->>'item_name',
-           coalesce((s->>'qty')::numeric,0), nullif(s->>'price','')::numeric,
-           nullif(s->>'price_list','')::numeric
-    from jsonb_array_elements(coalesce(payload->'sales','[]'::jsonb)) s
-    where coalesce(s->>'item_name','') <> '' and coalesce((s->>'qty')::numeric,0) <> 0;
+    select v_id, g.code,
+           case when g.code is not null and count(*) over (partition by g.name) > 1 then g.name || ' [' || g.code || ']' else g.name end,
+           g.qty, g.price, g.price_list
+      from (select s.code, s.name, sum(s.qty) as qty,
+                   case when count(*) = 1 then max(s.price)
+                        else round(sum(s.qty * s.price) / nullif(sum(s.qty) filter (where s.price is not null), 0), 2) end as price,
+                   max(s.price_list) as price_list
+              from (select i.code, coalesce(i.name, left(nullif(btrim(x->>'item_name'), ''), 200)) as name,
+                           coalesce(tandem.to_num(x->>'qty'), 0) as qty,
+                           tandem.to_num(x->>'price') as price, tandem.to_num(x->>'price_list') as price_list
+                      from jsonb_array_elements(v_sal) x
+                      left join tandem.items i on i.code = nullif(btrim(x->>'item_code'), '')) s
+             where s.name is not null and s.qty <> 0
+             group by s.code, s.name
+            having sum(s.qty) <> 0) g;
 
     -- Касса (режим «чеки»): первичка — чеки. Деньги по каналам и строки продаж отчёта
     -- пересобираются из них, присланное формой не учитывается; сохранение отчёта = закрытие смены.
@@ -729,7 +839,7 @@ begin
 
   -- ---------- заявки точки на завтра (миграция 0038) ----------
   if action = 'order_get' then
-    return tandem.order_get(v_point, coalesce(nullif(payload->>'for_date','')::date, tandem.local_now()::date + 1));
+    return tandem.order_get(v_point, coalesce(tandem.to_date(payload->>'for_date'), v_today + 1));
   end if;
   if action = 'order_save' then return tandem.order_save(v_point, payload); end if;
 
@@ -740,15 +850,32 @@ begin
     end if;
     if action = 'check_save' then return tandem.check_save(v_point, payload); end if;
     if action = 'check_void' then return tandem.check_void(v_point, payload); end if;
-    return tandem.check_list(v_point, coalesce(nullif(payload->>'date','')::date, current_date));
+    return tandem.check_list(v_point, coalesce(tandem.to_date(payload->>'date'), v_today));
+  end if;
+
+  -- ---------- открыть смену кассы заново (собственник) ----------
+  -- Закрытую смену чек уже не меняет (check_save/check_void). Собственник снимает закрытие, касса
+  -- исправляет или отменяет чек (правка видна в voids как «было → стало»), затем закрывает смену снова.
+  if action = 'reopen_shift' then
+    if v_pin is distinct from v_owner_pin then
+      return jsonb_build_object('ok', false, 'error', 'Нет доступа');
+    end if;
+    v_date := tandem.to_date(payload->>'date');
+    if v_date is null then return jsonb_build_object('ok', false, 'error', 'Неверная дата отчёта'); end if;
+    update tandem.daily_reports set closed_at = null, updated_at = now()
+     where point_id = v_point and report_date = v_date and closed_at is not null
+    returning id into v_id;
+    if v_id is null then return jsonb_build_object('ok', false, 'error', 'Смена не закрыта'); end if;
+    return jsonb_build_object('ok', true);
   end if;
 
   if action = 'dashboard' then
     if v_pin is distinct from v_owner_pin then
       return jsonb_build_object('ok', false, 'error', 'Нет доступа');
     end if;
-    v_from := coalesce((payload->>'from')::date, current_date - 30);
-    v_to   := coalesce((payload->>'to')::date, current_date);
+    -- Даты периода фронт шлёт местные; по умолчанию — местные же, не дата сервера (UTC).
+    v_from := coalesce(tandem.to_date(payload->>'from'), v_today - 30);
+    v_to   := coalesce(tandem.to_date(payload->>'to'), v_today);
     return jsonb_build_object('ok', true,
       'rows', (select coalesce(jsonb_agg(to_jsonb(v) order by v.report_date desc, v.point_name), '[]'::jsonb)
                from tandem.v_daily v
@@ -785,14 +912,25 @@ begin
             where d.report_date between v_from and v_to
           ) u group by item_name order by amt desc limit 20
         ) t),
-      -- Кто не сдал отчёт за вчера
+      -- Кто не сдал отчёт за вчера — по местной дате: ночью до 05:00 «вчера» по UTC — это позавчера.
       'missing', (select coalesce(jsonb_agg(jsonb_build_object('id', p.id, 'name', p.name) order by p.sort_order), '[]'::jsonb)
         from tandem.points p
         where p.active and not exists (
           select 1 from tandem.daily_reports d
-          where d.point_id = p.id and d.report_date = current_date - 1
+          where d.point_id = p.id and d.report_date = v_today - 1
             -- у кассы строка отчёта появляется с первым чеком; сданным он считается после закрытия смены
             and (p.mode <> 'checks' or d.closed_at is not null))),
+      -- Отмены и исправления чеков кассы за период: «пробил, взял наличные, отменил» больше не проходит без следа.
+      'voids', (select coalesce(jsonb_agg(x.j order by x.t_at desc), '[]'::jsonb)
+        from (select jsonb_build_object('kind', case when c.status = 'void' then 'void' else 'edited' end,
+                  'point_id', c.point_id, 'point_name', p.name, 'date', c.check_date, 'no', c.no, 'total', c.total,
+                  'pay_kind', c.pay_kind, 'first_total', coalesce(c.first_total, c.total),
+                  'first_pay_kind', coalesce(c.first_pay_kind, c.pay_kind), 'edited', c.edited,
+                  'reason', c.void_reason, 'seller', c.seller, 'at', c.updated_at) as j,
+                  c.updated_at as t_at
+                from tandem.checks c join tandem.points p on p.id = c.point_id
+               where c.check_date between v_from and v_to and (c.status = 'void' or c.edited)
+               order by c.updated_at desc limit 300) x),
       -- Расход сырья по техкартам за период: топ-15
       'raw_usage', (select coalesce(jsonb_agg(jsonb_build_object(
           'name', t.ingredient_name, 'amount', t.total) order by t.total desc), '[]'::jsonb)
@@ -813,11 +951,18 @@ begin
           join tandem.items ing on ing.code = cl.ingredient_code
           group by ing.name order by total desc limit 15
         ) t),
-      -- Неверные коды за сутки (счётчик единого входа, 0029): кто-то подбирает код точки или собственника.
+      -- Неверные коды за сутки (счётчик единого входа, 0029/0042): кто-то подбирает код точки, собственника
+      -- или PIN бэк-офиса. 'master' — общий счётчик всех неверных кодов сети (он запирает вход собственника и водителя).
       'pin_failures', (select coalesce(jsonb_agg(jsonb_build_object('key', f.key, 'count', f.n, 'last', f.last,
-          'name', coalesce(p.name, case f.key when 'service' then 'служебный ключ' when '-' then 'вход без точки (собственник, водитель)' else f.key end))
+          'name', coalesce(p.name, case
+            when f.key = 'service' then 'служебный ключ'
+            when f.key = '-' then 'вход без точки (собственник, водитель)'
+            when f.key = 'master' then 'все неверные коды точек, собственника и водителя (общий замок входа собственника и водителя)'
+            when f.key like 'office:%' then 'бэк-офис, логин «' || substr(f.key, 8) || '»'
+            else f.key end))
           order by f.n desc), '[]'::jsonb)
-        from (select key, count(*) n, max(at) last from tandem.pin_failures where at > now() - interval '24 hours' group by key) f
+        from (select key, count(*) n, max(at) last from tandem.pin_failures where at > now() - interval '24 hours'
+               group by key order by count(*) desc limit 30) f
         left join tandem.points p on p.id = f.key),
       -- Долги по реализации
       'realization', (select coalesce(jsonb_agg(jsonb_build_object(
@@ -883,38 +1028,94 @@ CREATE OR REPLACE FUNCTION public.tandem_gate(action text, payload jsonb DEFAULT
 AS $function$
 declare
   v_pin   text := coalesce(payload->>'pin', '');
+  -- IP клиента кладёт Edge Function или прокси своего сервера, перезаписывая присланное клиентом.
+  v_ip    text := left(nullif(btrim(coalesce(payload->>'_ip', '')), ''), 64);
   v_key   text;
   v_res   jsonb;
   v_hash  text;
   v_owner text;
   v_service boolean := action in ('migrate','test_cleanup','sync_items','sync_prices','recalc_ranks','set_packaging','set_short_list');
+  v_busy  jsonb := jsonb_build_object('ok', false, 'error', 'Слишком много неверных кодов. Подождите 5 минут', 'code', 'throttled');
+  v_svc_ok   boolean := false;   -- служебное действие с верным ключом
+  v_point_ok boolean := false;   -- верный код присланной активной точки
+  v_staff    boolean := false;   -- верный код собственника или водителя
 begin
   if action like 'office\_%' then
     -- Токен текущей сессии — в настройку транзакции: триггер смены PIN закроет все сессии
     -- пользователя, кроме этой (см. tandem.users_pin_sessions).
     perform set_config('tandem.token', coalesce(payload->>'token', ''), true);
+    if action = 'office_login' then
+      -- Вход в бэк-офис: у логина свой замок (5 ошибок — 15 минут), сверху — порог по адресу, иначе
+      -- перебор шёл бы по многим логинам параллельно и без конца.
+      if tandem.pin_ip_blocked(v_ip) then
+        return jsonb_build_object('ok', false, 'error', 'throttled', 'code', 'throttled',
+                                  'message', 'Слишком много неверных попыток входа с этого адреса. Подождите 10 минут');
+      end if;
+      v_res := public.tandem_office('login', payload);
+      if (v_res->>'ok') = 'false' then
+        insert into tandem.pin_failures (key, ip)
+          values ('office:' || left(lower(btrim(coalesce(payload->>'login', ''))), 40), v_ip);
+        delete from tandem.pin_failures where at < now() - interval '1 day';
+      end if;
+      return v_res;
+    end if;
     return public.tandem_office(substr(action, 8), payload);
   end if;
 
+  -- Список точек для экрана входа кода не требует и не запирается: иначе чужие ошибки оставили бы
+  -- все точки без выбора точки.
+  if action = 'points' then
+    return public.tandem_api(action, payload);
+  end if;
+
   -- Ключ счётчика — настоящая точка из запроса; всё остальное (вход собственника и водителя,
-  -- выдуманные точки) падает в один общий ключ, чтобы перебор нельзя было размазать по ключам.
+  -- выдуманные точки) падает в общий ключ «-».
   v_key := case when v_service then 'service'
                 else coalesce((select p.id from tandem.points p
                                 where p.id = coalesce(nullif(payload->>'point_id',''), nullif(payload->>'point',''))), '-') end;
-  if (select count(*) from tandem.pin_failures f where f.key = v_key and f.at > now() - interval '5 minutes') >= 10
-     or (select count(*) from tandem.pin_failures f where f.at > now() - interval '5 minutes') >= 60 then
-    return jsonb_build_object('ok', false, 'error', 'Слишком много неверных кодов. Подождите 5 минут',
-                              'code', 'throttled');
+  -- Что из присланного верно — до порогов: порог по адресу и замок 'master' пропускают верный код точки
+  -- и верный служебный ключ, а верный код собственника и водителя не засчитывают неудачей.
+  if v_service then
+    select value into v_hash from tandem.settings where key = 'service_key_hash';
+    v_svc_ok := v_hash is not null and coalesce(payload->>'service_key', '') <> ''
+                and encode(digest(payload->>'service_key', 'sha256'), 'hex') = v_hash;
+  elsif v_pin <> '' and v_pin not ilike 'CHANGE-ME%' then
+    v_point_ok := exists (select 1 from tandem.points p where p.id = v_key and p.pin = v_pin and p.active);
+    v_staff := v_pin in (select value from tandem.settings where key in ('owner_pin', 'driver_pin'));
+  end if;
+  -- 1) адрес клиента: 30 неверных за 10 минут. Верный служебный ключ и верный код присланной активной
+  -- точки проходят: общий адрес (мобильный CGNAT, NAT офиса) не запирает точку и уборку дымового теста.
+  -- Остальное — отказ без записи. Общего порога на всю сеть больше нет: он позволял анонимно запереть
+  -- все точки, в том числе с верным кодом.
+  if not v_svc_ok and not v_point_ok and tandem.pin_ip_blocked(v_ip) then
+    return jsonb_build_object('ok', false, 'error', 'Слишком много неверных кодов с этого адреса. Подождите 10 минут', 'code', 'throttled');
+  end if;
+  -- 2) ключ запроса: 10 за 5 минут.
+  if (select count(*) from tandem.pin_failures f where f.key = v_key and f.at > now() - interval '5 minutes') >= 10 then
+    return v_busy;
+  end if;
+  -- 3) 'master' — все неверные коды сети: любой из них мог быть попыткой кода собственника или водителя,
+  -- и разнести перебор по ключам точек больше нельзя. Пока он заперт, проходит только верный код
+  -- присланной точки: точки работают, а код собственника и водителя получает тот же отказ, что и неверный.
+  -- Неверный код точки при этом засчитывается её ключу — иначе замок дал бы перебирать коды точек даром.
+  -- Верный код собственника или водителя (раскрытие отчёта точки в уже открытой сводке) неудачей не
+  -- считается: иначе обычные клики собственника запирали бы точку и продлевали сам замок.
+  if not v_service and not v_point_ok
+     and (select count(*) from tandem.pin_failures f where f.key = 'master' and f.at > now() - interval '5 minutes') >= 10 then
+    if v_pin <> '' and v_key <> '-' and not v_staff then
+      insert into tandem.pin_failures (key, ip) values (v_key, v_ip), ('master', v_ip);
+    end if;
+    return v_busy;
   end if;
 
   if v_service then
-    select value into v_hash from tandem.settings where key = 'service_key_hash';
-    if v_hash is null or coalesce(payload->>'service_key', '') = ''
-       or encode(digest(payload->>'service_key', 'sha256'), 'hex') <> v_hash then
-      insert into tandem.pin_failures (key) values ('service');
+    if not v_svc_ok then
+      insert into tandem.pin_failures (key, ip) values ('service', v_ip);
       return jsonb_build_object('ok', false, 'error', 'forbidden', 'message', 'Нужен служебный ключ');
     end if;
     select value into v_owner from tandem.settings where key = 'owner_pin';
+    -- Уборка теста снимает и неверные коды служебных точек (см. tandem_test_cleanup): иначе проверка
+    -- счётчика запирала бы следующий прогон и вход собственника.
     v_res := case action
       when 'migrate'        then public.tandem_migrate(v_owner, coalesce(payload->>'kind',''), coalesce(payload->'rows','[]'::jsonb))
       when 'test_cleanup'   then public.tandem_test_cleanup(v_owner)
@@ -924,23 +1125,28 @@ begin
       when 'set_packaging'  then public.tandem_set_packaging(v_owner, coalesce(payload->'data','[]'::jsonb))
       when 'set_short_list' then public.tandem_set_short_list(v_owner, coalesce(payload->>'point',''), coalesce(payload->'codes','[]'::jsonb))
     end;
-    -- Уборка теста снимает и его неверные коды: иначе проверка счётчика запирала бы следующий прогон.
-    if action = 'test_cleanup' then delete from tandem.pin_failures where key in ('zz_test'); end if;
     return v_res;
   end if;
 
-  v_res := case action
-    when 'charts'       then public.tandem_charts(v_pin, coalesce(payload->>'point_id',''))
-    when 'realization'  then public.tandem_realization(v_pin, coalesce(payload->>'op','list'), coalesce(payload->'data','{}'::jsonb))
-    when 'save_aliases' then public.tandem_save_aliases(v_pin, coalesce(payload->>'point_id',''), coalesce(payload->'data','[]'::jsonb))
-    else public.tandem_api(action, payload)
-  end;
+  -- Пустой код и заглушки из публичного seed ('CHANGE-ME-OWNER', 'CHANGE-ME-DRIVER') не открывают ничего,
+  -- даже если в настройках так и остались: при переезде без смены кодов они были бы входом собственником.
+  if v_pin = '' or v_pin ilike 'CHANGE-ME%' then
+    v_res := jsonb_build_object('ok', false, 'error', case when action = 'login' then 'Неверный код' else 'Нет доступа' end);
+  else
+    v_res := case action
+      when 'charts'       then public.tandem_charts(v_pin, coalesce(payload->>'point_id',''))
+      when 'realization'  then public.tandem_realization(v_pin, coalesce(payload->>'op','list'), coalesce(payload->'data','{}'::jsonb))
+      when 'save_aliases' then public.tandem_save_aliases(v_pin, coalesce(payload->>'point_id',''), coalesce(payload->'data','[]'::jsonb))
+      else public.tandem_api(action, payload)
+    end;
+  end if;
 
-  -- Неверный код узнаём по ответу нижележащей функции: их тела не трогаем.
+  -- Неверный код узнаём по ответу нижележащей функции: их тела не трогаем. Две строки — ключ запроса
+  -- и общий 'master' (то же время и адрес: уборка теста снимает их парой).
   if v_pin <> '' and jsonb_typeof(v_res) = 'object' and (v_res->>'ok') = 'false'
      and (v_res->>'error' in ('Неверный код', 'Нет доступа')
           or (v_res->>'error' = 'forbidden' and v_res->>'message' = 'Нет доступа')) then
-    insert into tandem.pin_failures (key) values (v_key);
+    insert into tandem.pin_failures (key, ip) values (v_key, v_ip), ('master', v_ip);
     delete from tandem.pin_failures where at < now() - interval '1 day';
   end if;
   return v_res;
@@ -954,7 +1160,9 @@ CREATE OR REPLACE FUNCTION public.tandem_migrate(p_pin text, p_kind text, p_rows
  SET search_path TO 'tandem', 'public'
 AS $function$
 declare
-  v_owner text; v_ins int := 0; v_upd int := 0; v_skip int := 0; v_total int;
+  v_owner text; v_ins int := 0; v_upd int := 0; v_skip int := 0; v_total int; v_g record;
+  v_warn text[] := '{}';   -- V13: замечания переноса групп (в ответе warnings — только если есть)
+  v_keep uuid[] := '{}';   -- V13: группы, чьё новое имя из iiko занято позициями другой группы
 begin
   select value into v_owner from tandem.settings where key = 'owner_pin';
   if p_pin is distinct from v_owner then
@@ -963,6 +1171,32 @@ begin
   v_total := jsonb_array_length(coalesce(p_rows, '[]'::jsonb));
 
   if p_kind = 'groups' then
+    -- 42: группа, переименованная в iiko, переносит новое имя в category своих позиций и в фильтры
+    -- категорий точек — как group_save в бэк-офисе.
+    -- V13: если новым именем уже помечены позиции другой группы, фильтры точек не трогаются, и имя
+    -- группы с category её позиций остаются прежними — совпадение уходит в warnings. Принять одно имя
+    -- без другого нельзя: точки отбирают позиции по category, и позиции под общим с чужой группой
+    -- именем сразу открылись бы точкам той группы (а свои точки их потеряли бы). Следующий перенос
+    -- попробует снова — пока группу не переименуют в iiko.
+    -- Занятость проверяется в момент переименования, а свободные сначала: цепочка в одной пачке
+    -- («Напитки»→«Чай», «Соки»→«Напитки») проходит целиком при любом порядке строк.
+    for v_g in
+      select g.id, g.name as old_name, n.name as new_name
+      from tandem.item_groups g
+      join (select distinct on (id) (x->>'id')::uuid id, x->>'name' name
+            from jsonb_array_elements(p_rows) x where coalesce(x->>'id','') <> ''
+            order by id, coalesce((x->>'deleted')::boolean,false)) n on g.iiko_id = n.id
+      where n.name is not null and g.name is distinct from n.name
+      order by tandem.group_name_taken(g.id, n.name), n.name, g.id
+    loop
+      if tandem.group_name_taken(v_g.id, v_g.new_name) then
+        v_keep := v_keep || v_g.id;
+        v_warn := v_warn || format('группа «%s»: в iiko она «%s», но этим именем уже помечены позиции другой группы — имя не '
+          'перенесено, иначе точкам открылись бы чужие позиции; переименуйте одну из групп в iiko', v_g.old_name, v_g.new_name);
+      else
+        perform tandem.group_rename_sync(v_g.id, v_g.old_name, v_g.new_name);
+      end if;
+    end loop;
     with inc as (
       select distinct on (id) (x->>'id')::uuid id, x->>'name' name, coalesce((x->>'deleted')::boolean,false) deleted,
              coalesce((x->>'sort')::int, 0) sort
@@ -970,7 +1204,8 @@ begin
       order by id, deleted
     ),
     upd as (
-      update tandem.item_groups g set name = inc.name, active = not inc.deleted, sort_order = inc.sort
+      update tandem.item_groups g set name = case when g.id = any(v_keep) then g.name else inc.name end,   -- V13
+             active = not inc.deleted, sort_order = inc.sort
       from inc where g.iiko_id = inc.id returning 1),
     ins as (
       insert into tandem.item_groups (id, name, active, sort_order, iiko_id)
@@ -1015,6 +1250,8 @@ begin
 
   elsif p_kind = 'items' then
     -- три непересекающихся набора: уже привязанные по iiko_id; старые строки по iiko_code; новые.
+    -- 42: при смене группы category ставится по новой группе (на неё смотрят экраны точки, касса и
+    -- заявки), новая позиция получает category своей группы сразу.
     -- inc убирает дубли по id, inc2 — дубли по code (в обоих случаях живая строка побеждает
     -- удалённую): без этого две строки одной пачки с одинаковым ключом обе метят в insert
     -- и падают сырой ошибкой unique_violation вместо {ok:false,...}.
@@ -1035,18 +1272,23 @@ begin
     upd_id as (
       update tandem.items i set name = inc2.name, artikul = coalesce(inc2.artikul, i.artikul),
              group_id = inc2.group_id, unit_id = inc2.unit, unit = inc2.unit, item_type = inc2.typ,
+             category = case when i.group_id is distinct from inc2.group_id
+                             then (select g.name from tandem.item_groups g where g.id = inc2.group_id) else i.category end,
              active = not inc2.deleted, synced_at = now()
       from inc2 where i.iiko_id = inc2.id and i.source in ('iiko_migrate','iiko_api') returning 1),
     upd_code as (
       update tandem.items i set iiko_id = inc2.id, name = inc2.name, artikul = coalesce(inc2.artikul, i.artikul),
              group_id = inc2.group_id, unit_id = inc2.unit, unit = inc2.unit, item_type = inc2.typ,
+             category = case when i.group_id is distinct from inc2.group_id
+                             then (select g.name from tandem.item_groups g where g.id = inc2.group_id) else i.category end,
              active = not inc2.deleted, synced_at = now()
       from inc2 where i.iiko_id is null and i.iiko_code = inc2.code
                   and i.source in ('iiko_migrate','iiko_api') returning 1),
     ins as (
-      insert into tandem.items (code, name, artikul, iiko_code, iiko_id, group_id, unit_id, unit, step,
+      insert into tandem.items (code, name, artikul, iiko_code, iiko_id, group_id, category, unit_id, unit, step,
                                 item_type, product_type, price, active, for_sale, source, synced_at)
-      select inc2.code, inc2.name, inc2.artikul, inc2.code, inc2.id, inc2.group_id, inc2.unit, inc2.unit,
+      select inc2.code, inc2.name, inc2.artikul, inc2.code, inc2.id, inc2.group_id,
+             (select g.name from tandem.item_groups g where g.id = inc2.group_id), inc2.unit, inc2.unit,
              case when inc2.unit in ('кг','л') then 0.5 else 1 end,
              inc2.typ, upper(inc2.typ), inc2.price, not inc2.deleted, false, 'iiko_migrate', now()
       from inc2
@@ -1071,7 +1313,7 @@ begin
     declare
       v_row jsonb; v_cid uuid; v_code text; v_from date; v_to date; v_out numeric; v_lines jsonb;
       v_bad int; v_skip_lines int := 0; v_unknown text[] := '{}'; v_errors text[] := '{}';
-      v_exists uuid; v_exists_src text; v_c record; v_conf record;
+      v_exists uuid; v_exists_src text; v_c record; v_conf record; v_off record; v_to_in date;
     begin
       for v_row in select * from jsonb_array_elements(coalesce(p_rows, '[]'::jsonb)) loop
         v_cid  := nullif(v_row->>'iiko_id','')::uuid;
@@ -1141,16 +1383,32 @@ begin
           end if;
           continue;
         end if;
+        -- 43: карту офиса перенос не закрывает и не меняет. Офисная версия, начавшаяся раньше и ещё
+        -- действующая на начало iiko-версии, — iiko-версию не пишем, называем в errors. Проверка до
+        -- блока записи: иначе ранние iiko-версии успели бы закрыться ради версии, которой не будет.
+        select id, date_from into v_off from tandem.charts
+          where item_code = v_code and source is distinct from 'iiko' and (v_exists is null or id <> v_exists)
+            and date_from < v_from and daterange(date_from, date_to, '[]') && daterange(v_from, v_to, '[]')
+          order by date_from desc limit 1;
+        if v_off.id is not null then
+          v_skip := v_skip + 1;
+          if coalesce(array_length(v_errors, 1), 0) < 20 then
+            v_errors := v_errors || (v_cid::text || ': пересекается с картой офиса с ' || to_char(v_off.date_from, 'DD.MM.YYYY'));
+          end if;
+          continue;
+        end if;
 
         -- ниже всё пишущее: одна кривая карта не должна ронять всю пачку
         begin
           -- пересечения с другими версиями того же блюда: ранние закрываем днём раньше нашего
           -- начала, из-за поздних укорачиваем себя; равное начало отсеяно выше
+          v_to_in := v_to;
           for v_c in select id, date_from, date_to from tandem.charts
                      where item_code = v_code and (v_exists is null or id <> v_exists)
                        and daterange(date_from, date_to, '[]') && daterange(v_from, v_to, '[]') loop
             if v_c.date_from < v_from then
-              update tandem.charts set date_to = v_from - 1, updated_at = now() where id = v_c.id;
+              -- сюда доходят только карты iiko: офисная с более ранним началом отсеяна выше
+              update tandem.charts set date_to = v_from - 1, updated_at = now() where id = v_c.id and source = 'iiko';
             elsif v_c.date_from > v_from then
               v_to := least(coalesce(v_to, v_c.date_from - 1), v_c.date_from - 1);
             end if;
@@ -1178,6 +1436,13 @@ begin
               select v_exists, x->>'code', coalesce((x->>'brutto')::numeric,0), coalesce((x->>'netto')::numeric,0),
                      coalesce((x->>'output')::numeric,0), coalesce((x->>'sort')::int, 0)
               from jsonb_array_elements(v_lines) x;
+            -- 43: укоротились из-за поздней карты офиса — записано, но называем: дальше действует она
+            if v_to is distinct from v_to_in and coalesce(array_length(v_errors, 1), 0) < 20
+               and exists (select 1 from tandem.charts where item_code = v_code and date_from = v_to + 1
+                             and source is distinct from 'iiko') then
+              v_errors := v_errors || (v_cid::text || ': укорочена до ' || to_char(v_to, 'DD.MM.YYYY')
+                                       || ' — дальше действует карта офиса');
+            end if;
           end if;
         exception when exclusion_violation then
           v_skip := v_skip + 1;
@@ -1213,7 +1478,8 @@ begin
     return jsonb_build_object('ok', false, 'error', 'validation', 'message', 'Неизвестный вид: ' || coalesce(p_kind,''));
   end if;
 
-  return jsonb_build_object('ok', true, 'inserted', v_ins, 'updated', v_upd, 'skipped', v_total - v_ins - v_upd);
+  return jsonb_build_object('ok', true, 'inserted', v_ins, 'updated', v_upd, 'skipped', v_total - v_ins - v_upd)
+         || case when cardinality(v_warn) > 0 then jsonb_build_object('warnings', to_jsonb(v_warn)) else '{}'::jsonb end;
 exception
   when unique_violation then
     return jsonb_build_object('ok', false, 'error', 'validation', 'message', 'Дубли ключей в пачке: ' || sqlerrm);
@@ -1240,6 +1506,7 @@ declare
   v_section  text;
   v_need     text;
   v_attempts int;
+  v_con      text;
 begin
   if action = 'login' then
     v_pin := coalesce(payload->>'pin','');
@@ -1312,7 +1579,35 @@ begin
     if length(v_pin) < 4 or v_pin !~ '^[0-9]+$' then
       return tandem.err('validation', 'PIN — не меньше 4 цифр');
     end if;
-    update tandem.users set pin_hash = crypt(v_pin, gen_salt('bf')), must_change_pin = false
+    if v_user.role in ('admin', 'owner') and length(v_pin) < 6 then
+      return tandem.err('validation', 'PIN администратора и собственника — не меньше 6 цифр');
+    end if;
+    -- Текущий PIN спрашивается всегда, кроме первого входа с временным: оставленная открытой сессия
+    -- или утёкший токен не должны уводить учётную запись навсегда. Подбор текущего PIN через сессию
+    -- ограничен как вход: пять ошибок подряд — вход закрыт на 15 минут, все сессии пользователя закрыты.
+    if not v_user.must_change_pin then
+      if coalesce(payload->>'old_pin', '') = '' then
+        return tandem.err('validation', 'Введите текущий PIN');
+      end if;
+      if crypt(payload->>'old_pin', v_user.pin_hash) <> v_user.pin_hash then
+        -- Счёт — как у входа (храповик): после истёкшего замка начинается заново. Иначе посторонний,
+        -- зная логин, «заряжал» бы счётчик неверными входами, и первая же опечатка владельца сессии
+        -- запирала бы его и закрывала все сессии.
+        v_attempts := case when v_user.locked_until is not null and v_user.locked_until <= now()
+                            then 1 else v_user.failed_attempts + 1 end;
+        update tandem.users set failed_attempts = v_attempts,
+               locked_until = case when v_attempts >= 5 then now() + interval '15 minutes' else null end
+         where id = v_user.id;
+        if v_attempts >= 5 then
+          delete from tandem.sessions where user_id = v_user.id;
+        end if;
+        perform pg_sleep(0.3);
+        return tandem.err('validation', 'Неверный текущий PIN');
+      end if;
+    end if;
+    -- Текущую сессию не закрываем: остальные закроет триггер tandem.users_pin_sessions.
+    update tandem.users set pin_hash = crypt(v_pin, gen_salt('bf')), must_change_pin = false,
+           failed_attempts = 0, locked_until = null
       where id = v_user.id;
     return jsonb_build_object('ok', true, 'must_change_pin', false);
   end if;
@@ -1363,9 +1658,34 @@ exception
   -- транзакция снята Postgres'ом, её документ остался черновиком и проводится заново.
   when deadlock_detected then
     return tandem.err('validation', 'Документ проводится параллельно — повторите');
+  -- Чужой лок не дождались (lock_timeout) или сработал statement_timeout прокси: пересчёт продаж по складу
+  -- (stock_ready_*, doc_sales_sync) ещё идёт в другом запросе. Всё сделанное этим вызовом откатилось.
+  -- query_canceled не входит в others — перехватывается только по имени.
+  when lock_not_available or query_canceled then
+    return tandem.err('validation', 'Пересчёт по этому складу уже идёт — подождите и обновите список');
   -- дата накладной или периода, пришедшая мусором ('31.02.2026', 'вчера').
   when invalid_datetime_format then
     return tandem.err('validation', 'Неверный формат даты');
+  -- Несуществующая дата в верном формате (2026-02-31) — тоже ошибка ввода, не 500.
+  when datetime_field_overflow then
+    return tandem.err('validation', 'Такой даты нет — проверьте число и месяц');
+  -- Отрицательное количество, причина не из списка и прочие ограничения таблиц: всё откатывается,
+  -- человек видит, что исправить, вместо пустой ошибки «база данных».
+  when check_violation then
+    get stacked diagnostics v_con = constraint_name;
+    return tandem.err('validation', case
+      when v_con in ('document_lines_qty_check', 'order_lines_qty_check') then 'Количество не может быть отрицательным'
+      when v_con = 'order_plan_fact_qty_check' then 'Выпуск не может быть отрицательным'
+      when v_con = 'documents_reason_check' then 'Причина списания не из списка'
+      when v_con = 'documents_stores_by_type' then 'Склады не подходят к типу документа'
+      when v_con like 'chart\_lines\_%' then 'Брутто, нетто и выход не могут быть отрицательными'
+      when v_con = 'charts_output_amount_check' then 'Выход блюда должен быть больше нуля'
+      when v_con = 'charts_dates' then 'Дата окончания раньше даты начала'
+      when v_con = 'items_item_type_check' then 'Тип позиции не из списка'
+      when v_con = 'counteragents_kind_check' then 'Вид контрагента не из списка'
+      else 'Недопустимое значение поля' end);
+  when numeric_value_out_of_range then
+    return tandem.err('validation', 'Слишком большое число');
 end $function$
 ;
 
@@ -1379,6 +1699,9 @@ declare
   v_owner  text;
   v_driver text;
   v_who    text;
+  v_uid    uuid;
+  v_date   date;
+  v_lbl    text;
 begin
   select value into v_owner  from tandem.settings where key = 'owner_pin';
   select value into v_driver from tandem.settings where key = 'driver_pin';
@@ -1405,15 +1728,36 @@ begin
   end if;
 
   if p_action = 'add' then
-    insert into tandem.realization_ledger (entry_date, client_id, delivered, paid, returned, note, created_by)
+    -- uid записи генерирует устройство (crypto.randomUUID): ответ потерялся, водитель нажал ещё раз —
+    -- вторая строка не появляется, долг клиента не задваивается.
+    if nullif(btrim(coalesce(p_data->>'uid', '')), '') is not null then
+      begin v_uid := (p_data->>'uid')::uuid;
+      exception when others then
+        return jsonb_build_object('ok', false, 'error', 'Неверный номер записи (uid)');
+      end;
+    end if;
+    if nullif(btrim(coalesce(p_data->>'date', '')), '') is not null then
+      v_date := tandem.to_date(p_data->>'date');
+      if v_date is null then return jsonb_build_object('ok', false, 'error', 'Неверная дата'); end if;
+    end if;
+    select f.label into v_lbl from (values (1, 'Отвёз по накладной'::text, p_data->>'delivered'),
+        (2, 'Принял деньгами', p_data->>'paid'), (3, 'Возврат продукции', p_data->>'returned')) f(n, label, val)
+     where not tandem.num_ok(f.val) order by f.n limit 1;
+    if v_lbl is not null then
+      return jsonb_build_object('ok', false, 'error', 'Неверное число в поле «' || v_lbl || '»'); end if;
+    if not exists (select 1 from tandem.realization_clients where id = p_data->>'client_id') then
+      return jsonb_build_object('ok', false, 'error', 'Выберите, куда возили'); end if;
+    insert into tandem.realization_ledger (uid, entry_date, client_id, delivered, paid, returned, note, created_by)
     values (
-      coalesce(nullif(p_data->>'date','')::date, current_date),
+      v_uid,
+      coalesce(v_date, tandem.local_now()::date),
       p_data->>'client_id',
-      coalesce((p_data->>'delivered')::numeric, 0),
-      coalesce((p_data->>'paid')::numeric, 0),
-      coalesce((p_data->>'returned')::numeric, 0),
-      nullif(p_data->>'note',''),
-      v_who);
+      coalesce(tandem.to_num(p_data->>'delivered'), 0),
+      coalesce(tandem.to_num(p_data->>'paid'), 0),
+      coalesce(tandem.to_num(p_data->>'returned'), 0),
+      left(nullif(p_data->>'note',''), 500),
+      v_who)
+    on conflict (uid) do nothing;
     return public.tandem_realization(p_pin, 'list');
   end if;
 
@@ -1706,14 +2050,38 @@ begin
                  or id in (select l.document_id from tandem.document_lines l join tandem.items i on i.code = l.item_code
                            where i.name like 'ZZ\_TEST\_%' or i.code like 'ZZ\_TEST\_%'));
 
+  -- «Готовым со склада» (0041): строки тестовых складов, складов служебных точек и тестовых позиций —
+  -- до удаления складов и позиций. Без таблицы (база до 0041) шаг пропускается.
+  if to_regclass('tandem.store_ready') is not null then
+    delete from tandem.store_ready
+      where store_id in (select id from tandem.stores where name like 'ZZ\_TEST\_%' or point_id like 'zz\_%')
+         or item_code in (select code from tandem.items where name like 'ZZ\_TEST\_%' or code like 'ZZ\_TEST\_%');
+  end if;
+
   -- Отчёты служебной точки теста zz_test (выключена, на экранах не видна): их продажи сидят
   -- на тестовых складах и уйдут ниже вместе с документами склада. Настоящие точки тест не трогает.
   delete from tandem.checks where point_id = 'zz_kassa';   -- касса теста: чеки, затем отчёты
-  delete from tandem.orders where left(point_id, 3) = 'zz_';   -- заявки теста (строки уходят каскадом)
+  -- Заявки служебных точек: факт выпуска их дней снимается, только если позицию в этот день не заказывала
+  -- ни одна настоящая точка, — чужой план пекаря тест не трогает. Затем сами заявки (строки — каскадом).
+  delete from tandem.order_plan pl
+   where exists (select 1 from tandem.order_lines l join tandem.orders o on o.id = l.order_id
+                  where left(o.point_id, 3) = 'zz_' and o.for_date = pl.for_date and l.item_code = pl.item_code)
+     and not exists (select 1 from tandem.order_lines l join tandem.orders o on o.id = l.order_id
+                      where left(o.point_id, 3) <> 'zz_' and o.for_date = pl.for_date and l.item_code = pl.item_code);
+  delete from tandem.orders where left(point_id, 3) = 'zz_';
   delete from tandem.order_plan where item_code in (select code from tandem.items where name like 'ZZ_TEST_%' or code like 'ZZ_TEST_%');
   update tandem.settings set value = '' where key = 'orders_store_id'
      and value in (select id::text from tandem.stores where name like 'ZZ_TEST_%');
   delete from tandem.daily_reports where point_id in ('zz_test', 'zz_kassa');
+
+  -- Неверные коды служебных точек вместе с парной строкой общего счётчика 'master' (то же время и адрес)
+  -- и неудачные входы тестовых логинов бэк-офиса: замок, который тест ставит себе сам, иначе держал бы
+  -- вход собственника и следующий прогон.
+  with z as (delete from tandem.pin_failures where key like 'zz\_%' returning at, ip)
+  delete from tandem.pin_failures m
+   using (select distinct at, ip from z) zz
+   where m.key = 'master' and m.at = zz.at and m.ip is not distinct from zz.ip;
+  delete from tandem.pin_failures where key like 'office:zz\_test\_%';
 
   -- Документы тестовых складов и позиций уходят первыми: на них ссылаются строки,
   -- а сами документы держат FK на stores и items.
@@ -1789,7 +2157,7 @@ CREATE OR REPLACE FUNCTION tandem.apply_move(p_doc uuid, p_line uuid, p_store uu
  RETURNS void
  LANGUAGE plpgsql
 AS $function$
-declare v_qty numeric; v_avg numeric; v_cost numeric := coalesce(p_cost, 0);
+declare v_qty numeric; v_val numeric; v_avg numeric; v_cost numeric := coalesce(p_cost, 0); s record;
 begin
   if p_qty = 0 then return; end if;
   -- I2: сначала пара (склад, позиция) заводится и берётся под лок, и только потом пишется
@@ -1799,16 +2167,67 @@ begin
   -- к моменту select … for update заведомо существует.
   insert into tandem.stock_balances (store_id, item_code, qty, avg_cost) values (p_store, p_item, 0, 0)
     on conflict (store_id, item_code) do nothing;
-  select qty, avg_cost into v_qty, v_avg from tandem.stock_balances
+  select qty, value, avg_cost into v_qty, v_val, v_avg from tandem.stock_balances
     where store_id = p_store and item_code = p_item for update;
+  -- Стоимость остатка (0041, ревью п. 9, второй круг V2): value — сумма движений пары вместе с
+  -- поправками, правило шага — tandem.move_step, тот же, что в rebuild_balance.
+  select * into s from tandem.move_step(v_qty, v_val, v_avg, p_qty, v_cost);
+  if s.o_adj <> 0 then
+    -- переоценка остатка — отдельной строкой того же документа, строки и даты, до самого прихода
+    insert into tandem.stock_moves (document_id, line_id, store_id, item_code, qty, unit_cost, adj, move_date)
+      values (p_doc, p_line, p_store, p_item, 0, 0, s.o_adj, p_date);
+  end if;
   insert into tandem.stock_moves (document_id, line_id, store_id, item_code, qty, unit_cost, move_date)
     values (p_doc, p_line, p_store, p_item, p_qty, v_cost, p_date);
-  if p_qty > 0 then
-    if v_qty <= 0 then v_avg := v_cost;
-    else v_avg := round((v_qty * v_avg + p_qty * v_cost) / (v_qty + p_qty), 4); end if;
-  end if;
-  update tandem.stock_balances set qty = v_qty + p_qty, avg_cost = v_avg, updated_at = now()
+  update tandem.stock_balances set qty = s.o_qty, value = s.o_val, avg_cost = s.o_avg, updated_at = now()
     where store_id = p_store and item_code = p_item;
+end $function$
+;
+
+CREATE OR REPLACE FUNCTION tandem.chart_date(p text)
+ RETURNS date
+ LANGUAGE plpgsql
+ IMMUTABLE
+AS $function$
+begin
+  if p is null or btrim(p) = '' then return null; end if;
+  if btrim(p) !~ '^\d{4}-\d{2}-\d{2}$' then
+    raise exception using errcode = 'invalid_datetime_format', message = 'Дата — в формате ГГГГ-ММ-ДД';
+  end if;
+  begin
+    return btrim(p)::date;   -- ГГГГ-ММ-ДД читается одинаково при любом DateStyle
+  exception when datetime_field_overflow or invalid_datetime_format then
+    raise exception using errcode = 'invalid_datetime_format', message = 'Дата — в формате ГГГГ-ММ-ДД';
+  end;
+end $function$
+;
+
+CREATE OR REPLACE FUNCTION tandem.chart_reaches_during(p_from text, p_target text, p_d1 date, p_d2 date)
+ RETURNS boolean
+ LANGUAGE plpgsql
+ STABLE
+AS $function$
+declare v_d date;
+begin
+  if tandem.chart_reaches(p_from, p_target, p_d1) then return true; end if;
+  for v_d in
+    with recursive r as (
+      select p_from as node, 0 as depth
+      union
+      select cl.ingredient_code, r.depth + 1
+      from r join tandem.charts c on c.item_code = r.node
+                and daterange(c.date_from, c.date_to, '[]') && daterange(p_d1, p_d2, '[]')
+             join tandem.chart_lines cl on cl.chart_id = c.id
+      where r.depth < 10
+    )
+    select distinct c.date_from from tandem.charts c
+    where c.item_code in (select node from r) and c.date_from > p_d1
+      and (p_d2 is null or c.date_from <= p_d2)
+    order by 1
+  loop
+    if tandem.chart_reaches(p_from, p_target, v_d) then return true; end if;
+  end loop;
+  return false;
 end $function$
 ;
 
@@ -1827,6 +2246,216 @@ AS $function$
   )
   select exists (select 1 from w where node = p_target)
 $function$
+;
+
+CREATE OR REPLACE FUNCTION tandem.check_apply(p_point text, p_date date)
+ RETURNS void
+ LANGUAGE plpgsql
+ SET search_path TO 'tandem', 'public'
+AS $function$
+declare
+  v_id bigint;
+begin
+  v_id := tandem.check_rollup(p_point, p_date);
+  begin
+    perform tandem.sale_sync(v_id);
+  exception when others then
+    begin
+      update tandem.documents set sync_note = 'Сбой при сохранении чека: ' || sqlerrm
+             || ' — нажмите «Провести продажи за период»'
+        where source_kind = 'daily_report' and source_id = v_id::text;
+    exception when others then null;
+    end;
+  end;
+end $function$
+;
+
+CREATE OR REPLACE FUNCTION tandem.check_list(p_point text, p_date date)
+ RETURNS jsonb
+ LANGUAGE sql
+ STABLE
+ SET search_path TO 'tandem', 'public'
+AS $function$
+  select jsonb_build_object('ok', true, 'date', p_date,
+    'closed_at', (select closed_at from tandem.daily_reports where point_id = p_point and report_date = p_date),
+    'totals', (select jsonb_build_object(
+        'count', count(*), 'total', coalesce(sum(total), 0),
+        'cash', coalesce(sum(total) filter (where pay_kind = 'cash'), 0),
+        'kaspi_qr', coalesce(sum(total) filter (where pay_kind = 'kaspi_qr'), 0),
+        'transfer', coalesce(sum(total) filter (where pay_kind = 'transfer'), 0),
+        'card', coalesce(sum(total) filter (where pay_kind = 'card'), 0))
+      from tandem.checks where point_id = p_point and check_date = p_date and status = 'active'),
+    'checks', (select coalesce(jsonb_agg(jsonb_build_object(
+        'uid', c.uid, 'no', c.no, 'seller', c.seller, 'pay_kind', c.pay_kind, 'total', c.total,
+        'status', c.status, 'void_reason', c.void_reason, 'edited', c.edited, 'created_at', c.created_at,
+        'lines', (select coalesce(jsonb_agg(jsonb_build_object('item_code', l.item_code, 'item_name', l.item_name,
+                    'qty', l.qty, 'price', l.price, 'price_list', l.price_list) order by l.id), '[]'::jsonb)
+                  from tandem.check_lines l where l.check_id = c.id)) order by c.no desc), '[]'::jsonb)
+      from tandem.checks c where c.point_id = p_point and c.check_date = p_date));
+$function$
+;
+
+CREATE OR REPLACE FUNCTION tandem.check_rollup(p_point text, p_date date)
+ RETURNS bigint
+ LANGUAGE plpgsql
+ SET search_path TO 'tandem', 'public'
+AS $function$
+declare
+  v_id bigint;
+begin
+  insert into tandem.daily_reports (point_id, report_date) values (p_point, p_date)
+    on conflict (point_id, report_date) do nothing;
+  select id into v_id from tandem.daily_reports where point_id = p_point and report_date = p_date for update;
+  update tandem.daily_reports d set
+      cash     = coalesce((select sum(total) from tandem.checks where point_id = p_point and check_date = p_date and status = 'active' and pay_kind = 'cash'), 0),
+      kaspi_qr = coalesce((select sum(total) from tandem.checks where point_id = p_point and check_date = p_date and status = 'active' and pay_kind = 'kaspi_qr'), 0),
+      transfer = coalesce((select sum(total) from tandem.checks where point_id = p_point and check_date = p_date and status = 'active' and pay_kind = 'transfer'), 0),
+      card     = coalesce((select sum(total) from tandem.checks where point_id = p_point and check_date = p_date and status = 'active' and pay_kind = 'card'), 0),
+      updated_at = now()
+    where d.id = v_id;
+  delete from tandem.sale_lines where report_id = v_id;
+  insert into tandem.sale_lines (report_id, item_code, item_name, qty, price, price_list)
+    -- Одна строка на позицию (в sale_lines название уникально внутри отчёта): цена — средняя по чекам,
+    -- скидка видна как разница с ценой прейскуранта. Два кода с одним названием различаются кодом в скобках.
+    select v_id, g.item_code,
+           g.item_name || case when count(*) over (partition by g.item_name) > 1 then ' [' || g.item_code || ']' else '' end,
+           g.qty, g.price, g.price_list
+      from (select l.item_code, min(l.item_name) as item_name, sum(l.qty) as qty,
+                   round(sum(l.qty * l.price) / sum(l.qty), 2) as price, max(l.price_list) as price_list
+              from tandem.check_lines l join tandem.checks c on c.id = l.check_id
+             where c.point_id = p_point and c.check_date = p_date and c.status = 'active'
+             group by l.item_code) g
+     order by g.item_name;
+  return v_id;
+end $function$
+;
+
+CREATE OR REPLACE FUNCTION tandem.check_save(p_point text, payload jsonb)
+ RETURNS jsonb
+ LANGUAGE plpgsql
+ SET search_path TO 'tandem', 'public'
+AS $function$
+declare
+  v_uid   uuid;
+  v_date  date := tandem.to_date(payload->>'date');
+  v_pay   text := payload->>'pay_kind';
+  v_chk   tandem.checks;
+  v_id    bigint;
+  v_bad   text;
+  v_total numeric;
+  v_was   text;
+  v_new   text;
+  v_today date := tandem.local_now()::date;   -- окно дат — по местному времени, не по часам сервера (UTC)
+begin
+  begin v_uid := (payload->>'uid')::uuid; exception when others then v_uid := null; end;
+  if v_uid is null then return jsonb_build_object('ok', false, 'error', 'У чека нет номера устройства (uid)'); end if;
+  if v_pay is null or v_pay not in ('cash','kaspi_qr','transfer','card') then
+    return jsonb_build_object('ok', false, 'error', 'Не выбран способ оплаты'); end if;
+  if jsonb_typeof(payload->'lines') is distinct from 'array' or jsonb_array_length(payload->'lines') = 0 then
+    return jsonb_build_object('ok', false, 'error', 'В чеке нет позиций'); end if;
+  -- Числа строк — безопасным разбором: мусор вместо числа — отказ, а не исключение.
+  if exists (select 1 from jsonb_array_elements(payload->'lines') x
+              where not tandem.num_ok(x->>'qty') or not tandem.num_ok(x->>'price')
+                 or coalesce(tandem.to_num(x->>'qty'), 0) <= 0 or coalesce(tandem.to_num(x->>'price'), 0) < 0) then
+    return jsonb_build_object('ok', false, 'error', 'Количество должно быть больше нуля, цена — не меньше нуля'); end if;
+  select string_agg(coalesce(x->>'item_code', '—'), ', ') into v_bad
+    from jsonb_array_elements(payload->'lines') x
+    left join tandem.items i on i.code = x->>'item_code' and i.active and i.for_sale
+   where i.code is null;
+  if v_bad is not null then
+    return jsonb_build_object('ok', false, 'error', 'Позиции нет в продаже: ' || v_bad); end if;
+
+  perform 1 from tandem.points where id = p_point for update;   -- нумерация чеков дня — по очереди
+  select * into v_chk from tandem.checks where uid = v_uid;
+  if v_chk.id is not null and v_chk.point_id <> p_point then
+    return jsonb_build_object('ok', false, 'error', 'Чек принадлежит другой точке'); end if;
+  if v_chk.id is not null and v_chk.status = 'void' then
+    return jsonb_build_object('ok', false, 'error', 'Чек отменён, исправить его нельзя'); end if;
+  if v_chk.id is null then
+    -- День чека присылает планшет; принимаем только соседние с местным сегодняшним. Новый чек в закрытую
+    -- смену принимается: это опоздавшая досылка, продажа не должна теряться.
+    if v_date is null or v_date < v_today - 2 or v_date > v_today + 1 then
+      return jsonb_build_object('ok', false, 'error', 'Дата чека не похожа на сегодняшнюю — проверьте дату на планшете'); end if;
+    insert into tandem.checks (uid, point_id, check_date, no, seller, pay_kind, first_pay_kind)
+      values (v_uid, p_point, v_date,
+              coalesce((select max(no) from tandem.checks where point_id = p_point and check_date = v_date), 0) + 1,
+              left(nullif(btrim(coalesce(payload->>'seller','')), ''), 100), v_pay, v_pay)
+      returning id into v_id;
+  else
+    v_id := v_chk.id; v_date := v_chk.check_date;
+    -- «Исправлен» ставится, только если чек действительно изменился: досылка после обрыва связи — не правка.
+    select v_chk.pay_kind || '|' || string_agg(item_code || ':' || qty::text || ':' || price::text, ',' order by id) into v_was
+      from tandem.check_lines where check_id = v_id;
+    -- Закрытую смену и старые дни чек уже не меняет: деньги и продажа такого дня сданы, иначе «пробил,
+    -- взял наличные, исправил» прошло бы без следа задним числом. Досылка без изменений — проходит.
+    if exists (select 1 from tandem.daily_reports where point_id = p_point and report_date = v_date and closed_at is not null)
+       or v_date < v_today - 2 then
+      select v_pay || '|' || string_agg(i.code || ':' || tandem.to_num(x->>'qty')::text || ':'
+                                        || coalesce(tandem.to_num(x->>'price'), pp.price, i.price, 0)::text, ',' order by ord) into v_new
+        from jsonb_array_elements(payload->'lines') with ordinality t(x, ord)
+        join tandem.items i on i.code = x->>'item_code'
+        left join tandem.item_prices pp on pp.item_code = i.code and pp.point_id = p_point;
+      if v_new is not distinct from v_was then
+        return jsonb_build_object('ok', true, 'check', (select jsonb_build_object('uid', uid, 'no', no, 'total', total,
+                 'date', check_date, 'edited', edited) from tandem.checks where id = v_id));
+      end if;
+      if exists (select 1 from tandem.daily_reports where point_id = p_point and report_date = v_date and closed_at is not null) then
+        return jsonb_build_object('ok', false, 'error', 'Смена закрыта — чек уже не изменить. Обратитесь в офис'); end if;
+      return jsonb_build_object('ok', false, 'error', 'Чек слишком старый — исправление через офис');
+    end if;
+    -- Чек, пробитый старой функцией во время миграции (first_* пусты), запоминает сумму и оплату до правки.
+    update tandem.checks set first_total = coalesce(first_total, total), first_pay_kind = coalesce(first_pay_kind, pay_kind),
+           pay_kind = v_pay, updated_at = now() where id = v_id;
+    delete from tandem.check_lines where check_id = v_id;
+  end if;
+
+  insert into tandem.check_lines (check_id, item_code, item_name, qty, price, price_list)
+    select v_id, i.code, i.name, tandem.to_num(x->>'qty'),
+           coalesce(tandem.to_num(x->>'price'), pp.price, i.price, 0), coalesce(pp.price, i.price)
+      from jsonb_array_elements(payload->'lines') with ordinality t(x, ord)
+      join tandem.items i on i.code = x->>'item_code'
+      left join tandem.item_prices pp on pp.item_code = i.code and pp.point_id = p_point
+     order by ord;
+  select coalesce(sum(round(qty * price, 2)), 0) into v_total from tandem.check_lines where check_id = v_id;
+  -- first_total ставится первым сохранением и дальше не меняется (правка видна как «было → стало»).
+  update tandem.checks set total = v_total, first_total = coalesce(first_total, v_total),
+         edited = edited or (v_was is not null and v_was <> (select v_pay || '|' || string_agg(item_code || ':' || qty::text || ':' || price::text, ',' order by id)
+                                                              from tandem.check_lines where check_id = v_id))
+   where id = v_id;
+
+  perform tandem.check_apply(p_point, v_date);
+  return jsonb_build_object('ok', true, 'check', (select jsonb_build_object('uid', uid, 'no', no, 'total', total,
+           'date', check_date, 'edited', edited) from tandem.checks where id = v_id));
+end $function$
+;
+
+CREATE OR REPLACE FUNCTION tandem.check_void(p_point text, payload jsonb)
+ RETURNS jsonb
+ LANGUAGE plpgsql
+ SET search_path TO 'tandem', 'public'
+AS $function$
+declare
+  v_uid    uuid;
+  v_chk    tandem.checks;
+  v_reason text := left(nullif(btrim(coalesce(payload->>'reason','')), ''), 500);
+begin
+  begin v_uid := (payload->>'uid')::uuid; exception when others then v_uid := null; end;
+  -- Отмена без причины не принимается: собственник видит отмены в сводке, пустая причина там ничего не объясняет.
+  if v_reason is null then return jsonb_build_object('ok', false, 'error', 'Укажите причину отмены'); end if;
+  perform 1 from tandem.points where id = p_point for update;
+  select * into v_chk from tandem.checks where uid = v_uid and point_id = p_point;
+  if v_chk.id is null then return jsonb_build_object('ok', false, 'error', 'Чек не найден'); end if;
+  if v_chk.status = 'active' then
+    -- Как и правка: закрытую смену и старые дни отмена не переписывает.
+    if exists (select 1 from tandem.daily_reports where point_id = p_point and report_date = v_chk.check_date and closed_at is not null) then
+      return jsonb_build_object('ok', false, 'error', 'Смена закрыта — чек уже не изменить. Обратитесь в офис'); end if;
+    if v_chk.check_date < tandem.local_now()::date - 2 then
+      return jsonb_build_object('ok', false, 'error', 'Чек слишком старый — исправление через офис'); end if;
+    update tandem.checks set status = 'void', updated_at = now(), void_reason = v_reason where id = v_chk.id;
+    perform tandem.check_apply(p_point, v_chk.check_date);
+  end if;
+  return jsonb_build_object('ok', true);
+end $function$
 ;
 
 CREATE OR REPLACE FUNCTION tandem.doc_consume_plan(p_doc uuid)
@@ -1861,6 +2490,7 @@ declare
   d record; l record; c record;
   v_cost numeric; v_sum numeric := 0; v_line_sum numeric; v_calc numeric; v_diff numeric;
   v_chart uuid; v_missing text[] := '{}'; v_warn jsonb; v_lines int; v_bad text; v_qty numeric;
+  v_inv record; v_prev jsonb; v_upd boolean; v_marked int := 0; v_rstore uuid; v_ready jsonb;
 begin
   select * into d from tandem.documents where id = p_doc for update;
   if d.id is null then return tandem.err('not_found', 'Документ не найден'); end if;
@@ -1877,9 +2507,33 @@ begin
     return tandem.err('validation', 'Склад-источник выключен или не найден'); end if;
   if d.store_to is not null and not exists (select 1 from tandem.stores where id = d.store_to and active) then
     return tandem.err('validation', 'Склад-получатель выключен или не найден'); end if;
+  -- Замок склада (0041): инвентаризация берёт его исключительно, прочие документы — совместно. Иначе
+  -- документ задним числом, прошедший проверку ниже, дописывал бы движения в момент проведения
+  -- параллельной инвентаризации, и её расчётный остаток устаревал бы.
+  if d.doc_type = 'inventory' then
+    perform pg_advisory_xact_lock(hashtext('tandem.store:' || d.store_from::text));
+  else
+    perform pg_advisory_xact_lock_shared(hashtext('tandem.store:' || x.s::text))
+       from (select unnest(array[d.store_from, d.store_to]) as s order by 1) x where x.s is not null;
+  end if;
+  -- Проведённая инвентаризация склада более поздней датой уже пересчитала остаток на свой день:
+  -- документ раньше неё учёл бы тот же товар второй раз (0041, ревью п. 8). Та же дата не мешает:
+  -- документ, проведённый после инвентаризации своего дня, в её расчёт не вошёл и идёт после неё
+  -- (расчёт — «на конец дня» из уже проведённого, второй круг V1). Правило то же, что у продаж в sale_sync.
+  select inv.number, inv.doc_date, s.name as store_name into v_inv
+    from tandem.documents inv join tandem.stores s on s.id = inv.store_from
+   where inv.doc_type = 'inventory' and inv.status = 'posted' and inv.id <> p_doc
+     and inv.store_from in (d.store_from, d.store_to) and inv.doc_date > d.doc_date
+   order by inv.doc_date, inv.number limit 1;
+  if v_inv.number is not null then
+    return tandem.err('validation', 'На складе «' || v_inv.store_name || '» проведена инвентаризация ' || v_inv.number
+      || ' от ' || to_char(v_inv.doc_date, 'DD.MM.YYYY') || ' — документ датой раньше неё учёл бы товар второй раз. '
+      || 'Проведите его датой не раньше ' || to_char(v_inv.doc_date, 'DD.MM.YYYY') || ' или сначала отмените инвентаризацию');
+  end if;
   select count(*) into v_lines from tandem.document_lines where document_id = p_doc and line_kind = 'item';
   if v_lines = 0 then return tandem.err('validation', 'В документе нет строк'); end if;
-  if exists (select 1 from tandem.document_lines dl join tandem.items i on i.code = dl.item_code
+  -- Продажу выключение позиции не останавливает: её продали, пока позиция была в работе (0041, ревью п. 35).
+  if d.doc_type <> 'sale' and exists (select 1 from tandem.document_lines dl join tandem.items i on i.code = dl.item_code
              where dl.document_id = p_doc and dl.line_kind = 'item' and not i.active) then
     return tandem.err('validation', 'В документе есть выключенные позиции'); end if;
   if exists (select 1 from tandem.document_lines where document_id = p_doc and line_kind = 'item'
@@ -1903,6 +2557,40 @@ begin
       where dl.document_id = p_doc and dl.line_kind = 'item' and (dl.fact_qty is null or dl.fact_qty < 0)
       order by dl.sort_order limit 1;
     if v_bad is not null then return tandem.err('validation', 'Укажите факт: ' || v_bad); end if;
+  elsif d.doc_type = 'production' then
+    -- проверки акта — тоже до записи (и до строк «готовым» ниже)
+    for l in select dl.item_code, i.item_type from tandem.document_lines dl join tandem.items i on i.code = dl.item_code
+             where dl.document_id = p_doc and dl.line_kind = 'item' order by dl.sort_order loop
+      if l.item_type not in ('dish','prepared') then return tandem.err('validation', 'Выпускать можно только блюда и полуфабрикаты: ' || l.item_code); end if;
+      if tandem.active_chart(l.item_code, d.doc_date) is null then v_missing := v_missing || l.item_code; end if;
+    end loop;
+    if cardinality(v_missing) > 0 then
+      return tandem.err('validation', 'Нет действующей техкарты на дату документа: ' || array_to_string(v_missing, ', '));
+    end if;
+  end if;
+
+  -- «Готовым со склада» по документам плана заявок (второй круг V4): строку ставит ПРОВЕДЕНИЕ, а не
+  -- создание черновика — удалённый или исправленный черновик больше не оставляет склад «готовым».
+  -- Перемещение по плану — склад-получатель и его позиции с картой; акт по плану — склад кухни, если он
+  -- склад по умолчанию активной точки (Енешка продаёт прямо с кухни). Ручные строки не трогаются.
+  -- Стоит до первой записи движений: пересобираемые продажи берут замки отчёт → документ → остатки, как
+  -- sale_sync и сохранение отчёта точки; после движений этого документа (замки остатков уже наши) порядок
+  -- был бы встречным (второй круг V11). Затронутые продажи помечаются все, пересобираются первые 5.
+  -- ВНИМАНИЕ: после этого блока — только записи; новые проверки ставить выше.
+  if d.source_kind = 'orders' and d.doc_type in ('transfer', 'production') then
+    if d.doc_type = 'transfer' then
+      v_rstore := d.store_to;
+    elsif exists (select 1 from tandem.points where default_store_id = d.store_from and active) then
+      v_rstore := d.store_from;
+    end if;
+    if v_rstore is not null then
+      for l in select distinct dl.item_code from tandem.document_lines dl
+                where dl.document_id = p_doc and dl.line_kind = 'item'
+                  and tandem.active_chart(dl.item_code, d.doc_date) is not null order by dl.item_code loop
+        v_marked := v_marked + tandem.store_ready_set(v_rstore, l.item_code, d.doc_date, 'orders');
+      end loop;
+      if v_marked > 0 then v_ready := tandem.store_ready_resync_next(v_rstore, null); end if;
+    end if;
   end if;
 
   -- I4: пишущие циклы идут по item_code, а не по sort_order. Порядок строк в документе
@@ -1913,8 +2601,25 @@ begin
     for l in select * from tandem.document_lines where document_id = p_doc and line_kind = 'item' order by item_code loop
       perform tandem.apply_move(p_doc, l.id, d.store_to, l.item_code, l.qty, l.price, d.doc_date);
       v_line_sum := round(l.qty * l.price, 2);
-      update tandem.document_lines set sum = v_line_sum where id = l.id;
-      update tandem.items set cost_price = l.price, cost_date = d.doc_date, cost_source = 'document' where code = l.item_code;
+      -- Учётная цена — последняя известная закупка: накладная задним числом и бонусная строка с нулевой
+      -- ценой её не перезаписывают (0041, ревью п. 41, 67). Прежняя цена запоминается в строке, если
+      -- накладная её меняет: отмена единственной закупки вернёт её (второй круг V9).
+      v_prev := null; v_upd := false;
+      if l.price > 0 then
+        select jsonb_build_object('cost_price', cost_price, 'cost_date', cost_date, 'cost_source', cost_source),
+               d.doc_date >= coalesce(cost_date, '-infinity'::date)
+               and (cost_price is distinct from l.price or cost_date is distinct from d.doc_date
+                    or cost_source is distinct from 'document')
+          into v_prev, v_upd
+          from tandem.items where code = l.item_code for update;
+      end if;
+      if v_upd then
+        update tandem.items set cost_price = l.price, cost_date = d.doc_date, cost_source = 'document'
+         where code = l.item_code;
+      else
+        v_prev := null;
+      end if;
+      update tandem.document_lines set sum = v_line_sum, prev_cost = v_prev where id = l.id;
       v_sum := v_sum + v_line_sum;
     end loop;
 
@@ -1946,17 +2651,39 @@ begin
     end loop;
 
   elsif d.doc_type = 'production' then
-    for l in select dl.*, i.item_type from tandem.document_lines dl join tandem.items i on i.code = dl.item_code
-             where dl.document_id = p_doc and dl.line_kind = 'item' order by dl.sort_order loop
-      if l.item_type not in ('dish','prepared') then return tandem.err('validation', 'Выпускать можно только блюда и полуфабрикаты: ' || l.item_code); end if;
-      if tandem.active_chart(l.item_code, d.doc_date) is null then v_missing := v_missing || l.item_code; end if;
-    end loop;
-    if cardinality(v_missing) > 0 then
-      return tandem.err('validation', 'Нет действующей техкарты на дату документа: ' || array_to_string(v_missing, ', '));
-    end if;
+    -- проверки типа и карт — в блоке предпроверок выше
     -- ВНИМАНИЕ: ниже уже идут записи; любая новая проверка должна стоять выше, в блоке предпроверок, иначе return err оставит частично проведённый документ
     delete from tandem.document_lines where document_id = p_doc and line_kind = 'consume';
-    for l in select * from tandem.document_lines where document_id = p_doc and line_kind = 'item' order by item_code loop
+    -- Пары акта (выпуск и расход) заводятся и берутся под лок заранее, одним запросом в порядке
+    -- item_code: строки ниже считаются в порядке зависимостей, а не по коду, и без общего лока два
+    -- акта брали бы локи встречно (0041, ревью п. 32). do update блокирует и уже существующие строки.
+    insert into tandem.stock_balances (store_id, item_code)
+      select d.store_from, x.item_code
+        from (select dl.item_code from tandem.document_lines dl where dl.document_id = p_doc and dl.line_kind = 'item'
+              union select pl.item_code from tandem.doc_consume_plan(p_doc) pl) x
+       order by x.item_code
+      on conflict (store_id, item_code) do update set updated_at = now();
+    -- Полуфабрикат, который расходуют другие строки этого же акта, выпускается раньше них: иначе блюдо
+    -- списывало бы его до выпуска, по старой или нулевой цене, и итог зависел от случайного порядка кодов
+    -- (ревью п. 32). Глубина строки — самая длинная цепочка «ингредиент → продукт» внутри акта
+    -- (ограничена 10 на случай цикла в картах); глубже — раньше.
+    for l in
+      with recursive acts as (
+        select dl.item_code from tandem.document_lines dl where dl.document_id = p_doc and dl.line_kind = 'item'
+      ), e as (
+        select pl.item_code as ing, dl.item_code as prod
+          from tandem.doc_consume_plan(p_doc) pl join tandem.document_lines dl on dl.id = pl.line_id
+         where pl.item_code in (select item_code from acts)
+      ), w (item_code, depth) as (
+        select item_code, 0 from acts
+        union all
+        select e.ing, w.depth + 1 from w join e on e.prod = w.item_code where w.depth < 10
+      )
+      select dl.* from tandem.document_lines dl
+        join (select item_code, max(depth) as depth from w group by item_code) t on t.item_code = dl.item_code
+       where dl.document_id = p_doc and dl.line_kind = 'item'
+       order by t.depth desc, dl.item_code
+    loop
       v_line_sum := 0;
       for c in select item_code, qty from tandem.doc_consume_plan(p_doc) p where p.line_id = l.id order by item_code loop
         -- Округляем расход один раз: и в строку, и в движение, и в сумму идёт одно и то же число.
@@ -1980,25 +2707,32 @@ begin
     -- позиции хранит цену продажи и выручку; сумма документа — себестоимость проданного.
     -- Сначала строки расхода по всем позициям, затем движения одним проходом по item_code:
     -- блокировки остатков берутся в одном порядке у всех документов (0023, ревью п. 3).
-    -- Цена расхода берётся до движений: средняя склада от расхода не меняется.
+    -- Цена расхода берётся до движений: средняя склада от расхода не меняется. Цена считается
+    -- один раз на строку (offset 0 не даёт планировщику повторить вызов): store_avg без средней
+    -- обходит техкарту.
     -- ВНИМАНИЕ: ниже уже идут записи; любая новая проверка должна стоять выше, в блоке предпроверок, иначе return err оставит частично проведённый документ
     delete from tandem.document_lines where document_id = p_doc and line_kind = 'consume';
     for l in select * from tandem.document_lines where document_id = p_doc and line_kind = 'item' order by item_code loop
-      -- Готовое с кухни (признак sell_from_stock, 0040) продаётся само: его сырьё списал акт производства.
+      -- Готовой продаётся позиция, которую этот склад с даты продажи получает готовой (store_ready, 0041,
+      -- ревью п. 2 и 38): её сырьё списал акт производства. Решает склад и дата, а не признак позиции.
       if tandem.active_chart(l.item_code, d.doc_date) is not null
-         and not exists (select 1 from tandem.items x where x.code = l.item_code and x.sell_from_stock) then
+         and not exists (select 1 from tandem.store_ready sr where sr.store_id = d.store_from
+                           and sr.item_code = l.item_code and sr.date_from <= d.doc_date) then
         insert into tandem.document_lines (document_id, line_kind, item_code, qty, unit_id, price, sum, note, sort_order)
           -- Псевдоним pl, а не c: c — переменная цикла ниже, и plpgsql подставил бы её вместо
           -- колонки («record c is not assigned yet» на первой же продаже блюда с картой).
-          select p_doc, 'consume', pl.item_code, round(pl.qty, 4), i.unit_id, tandem.store_avg(d.store_from, pl.item_code),
-                 round(round(pl.qty, 4) * tandem.store_avg(d.store_from, pl.item_code), 2), l.item_code, 1000 + l.sort_order
+          select p_doc, 'consume', pl.item_code, round(pl.qty, 4), i.unit_id, pc.cost,
+                 round(round(pl.qty, 4) * pc.cost, 2), l.item_code, 1000 + l.sort_order
             from tandem.doc_consume_plan(p_doc) pl join tandem.items i on i.code = pl.item_code
+            cross join lateral (select tandem.store_avg(d.store_from, pl.item_code) as cost offset 0) pc
            where pl.line_id = l.id;
       else
         insert into tandem.document_lines (document_id, line_kind, item_code, qty, unit_id, price, sum, note, sort_order)
-          select p_doc, 'consume', l.item_code, round(l.qty, 4), i.unit_id, tandem.store_avg(d.store_from, l.item_code),
-                 round(round(l.qty, 4) * tandem.store_avg(d.store_from, l.item_code), 2), l.item_code, 1000 + l.sort_order
-            from tandem.items i where i.code = l.item_code;
+          select p_doc, 'consume', l.item_code, round(l.qty, 4), i.unit_id, pc.cost,
+                 round(round(l.qty, 4) * pc.cost, 2), l.item_code, 1000 + l.sort_order
+            from tandem.items i
+            cross join lateral (select tandem.store_avg(d.store_from, l.item_code) as cost offset 0) pc
+           where i.code = l.item_code;
       end if;
       update tandem.document_lines set sum = round(l.qty * coalesce(l.price, 0), 2) where id = l.id;
     end loop;
@@ -2016,12 +2750,13 @@ begin
     for l in select * from tandem.document_lines where document_id = p_doc and line_kind = 'item' order by item_code loop
       -- I4: расчётный остаток читается под локом той же пары, что потом изменит apply_move,
       -- иначе параллельное списание успевало пройти между чтением и записью, и недостача
-      -- считалась от остатка, которого уже нет.
+      -- считалась от остатка, которого уже нет. Лок даёт сам do update.
       insert into tandem.stock_balances (store_id, item_code) values (d.store_from, l.item_code)
         on conflict (store_id, item_code) do update set updated_at = now();
-      select qty into v_calc from tandem.stock_balances
-        where store_id = d.store_from and item_code = l.item_code for update;
-      v_calc := coalesce(v_calc, 0);
+      -- Расчётный остаток — на конец дня акта из уже проведённого, а не текущий: акт, внесённый через
+      -- день-два после пересчёта или перепроведённый, не стирает документы после своей даты (0041, ревью
+      -- п. 7), а приход и продажи этого дня, проведённые до пересчёта, учтены один раз (второй круг V1).
+      v_calc := tandem.stock_qty_at(d.store_from, l.item_code, d.doc_date);
       v_diff := l.fact_qty - v_calc;
       v_cost := tandem.store_avg(d.store_from, l.item_code);
       if v_diff <> 0 then
@@ -2033,7 +2768,10 @@ begin
     end loop;
   end if;
 
-  update tandem.documents set status = 'posted', posted_by = p_user.id, posted_at = now(),
+  -- Время проведения — настоящее (clock_timestamp), а не начало транзакции: по нему doc_unpost решает,
+  -- проведена ли инвентаризация того же дня позже документа (второй круг V1). Инвентаризация ждёт
+  -- исключительного замка склада, поэтому её время всегда позже документов, проведённых до неё.
+  update tandem.documents set status = 'posted', posted_by = p_user.id, posted_at = clock_timestamp(),
          total_sum = round(v_sum, 2), updated_by = p_user.id, updated_at = now() where id = p_doc;
 
   select coalesce(jsonb_agg(jsonb_build_object('item_code', t.item_code, 'name', i.name, 'store_id', t.store_id,
@@ -2043,7 +2781,10 @@ begin
     join tandem.stock_balances b on b.store_id = t.store_id and b.item_code = t.item_code
     join tandem.items i on i.code = t.item_code join tandem.stores s on s.id = t.store_id
     where b.qty < 0;
-  return jsonb_build_object('ok', true, 'warnings', v_warn, 'total_sum', round(v_sum, 2));
+  -- ready — только у документов плана, поменявших строки «готовым»: сколько продаж пересобрано сразу и
+  -- сколько ещё помечено (их дорабатывает stock_ready_resync или любой пересчёт продаж).
+  return jsonb_build_object('ok', true, 'warnings', v_warn, 'total_sum', round(v_sum, 2))
+         || case when v_ready is not null then jsonb_build_object('ready', v_ready) else '{}'::jsonb end;
 end $function$
 ;
 
@@ -2074,8 +2815,14 @@ begin
     union all
     select d.store_from, p.item_code, sum(p.qty) from tandem.doc_consume_plan(p_doc) p
       where d.doc_type = 'production' group by p.item_code
+    union all
+    -- Выпуск того же акта покрывает расход: полуфабрикат, выпускаемый здесь же и сразу идущий в блюдо,
+    -- в минус не уходит (проведение выпускает его раньше блюда, 0041, ревью п. 32).
+    select d.store_from, l.item_code, -sum(l.qty)
+      from tandem.document_lines l where l.document_id = p_doc and l.line_kind = 'item'
+       and d.doc_type = 'production' group by l.item_code
   ),
-  agg as (select store_id, item_code, sum(q) q from outgoing where q > 0 group by store_id, item_code)
+  agg as (select store_id, item_code, sum(q) q from outgoing group by store_id, item_code having sum(q) > 0)
   select coalesce(jsonb_agg(jsonb_build_object('item_code', a.item_code, 'name', i.name, 'store_id', a.store_id,
            'store_name', s.name, 'balance_after', round(coalesce(b.qty,0) - a.q, 4)) order by i.name), '[]'::jsonb)
     into v_warn
@@ -2090,7 +2837,8 @@ CREATE OR REPLACE FUNCTION tandem.doc_unpost(p_doc uuid, p_user tandem.users)
  RETURNS jsonb
  LANGUAGE plpgsql
 AS $function$
-declare d record; v_inv text; v_pairs text[]; p text; v_warn jsonb;
+declare d record; v_inv record; v_pairs text[]; p text; v_warn jsonb; l record; v_last record;
+        v_marked int := 0; v_rstore uuid; v_ready jsonb;
 begin
   select * into d from tandem.documents where id = p_doc for update;
   if d.id is null then return tandem.err('not_found', 'Документ не найден'); end if;
@@ -2098,12 +2846,43 @@ begin
   if not tandem.office_can(p_user.role, 'doc:' || d.doc_type, 'edit') then
     return tandem.err('forbidden', 'Нет права отменять документы этого типа');
   end if;
-  select number into v_inv from tandem.documents inv
+  -- Замок склада — как в doc_post (0041).
+  if d.doc_type = 'inventory' then
+    perform pg_advisory_xact_lock(hashtext('tandem.store:' || d.store_from::text));
+  else
+    perform pg_advisory_xact_lock_shared(hashtext('tandem.store:' || x.s::text))
+       from (select unnest(array[d.store_from, d.store_to]) as s order by 1) x where x.s is not null;
+  end if;
+  -- Мешает инвентаризация, чей расчётный остаток включает этот документ: более поздней даты или того же
+  -- дня, проведённая позже него (расчёт — «на конец дня» из уже проведённого, второй круг V1). Отмена
+  -- выдернула бы из-под неё учтённое движение, и остаток разошёлся бы с пересчётом.
+  -- Продажи — исключение для того же дня: продажа кассы дня D проведена с первого чека и пересобирается
+  -- с каждым следующим, в том числе после инвентаризации дня D (ревью п. 12, 23); пересборка снимает
+  -- уже учтённую часть и списывает её снова вместе с новыми чеками — после пересчёта уходит только новое.
+  select inv.number, inv.doc_date into v_inv from tandem.documents inv
     where inv.doc_type = 'inventory' and inv.status = 'posted' and inv.id <> p_doc
-      and inv.posted_at > d.posted_at and inv.store_from in (d.store_from, d.store_to)
-    order by inv.posted_at limit 1;
-  if v_inv is not null then
-    return tandem.err('validation', 'После этого документа проведена инвентаризация ' || v_inv || ' — сначала отмените её');
+      and (inv.doc_date > d.doc_date
+           or (d.doc_type <> 'sale' and inv.doc_date = d.doc_date and inv.posted_at > d.posted_at))
+      and inv.store_from in (d.store_from, d.store_to)
+    order by inv.doc_date, inv.posted_at, inv.number limit 1;
+  if v_inv.number is not null then
+    return tandem.err('validation', case when v_inv.doc_date > d.doc_date
+      then 'После даты этого документа проведена инвентаризация ' || v_inv.number
+           || ' от ' || to_char(v_inv.doc_date, 'DD.MM.YYYY') || ' — сначала отмените её'
+      else 'После этого документа проведена инвентаризация ' || v_inv.number || ' того же дня ('
+           || to_char(v_inv.doc_date, 'DD.MM.YYYY') || '): её расчётный остаток уже включает этот документ — сначала отмените её'
+      end);
+  end if;
+  -- Документ плана заявок: строки «готовым» его складов пересчитываются по оставшимся проведённым
+  -- документам плана (второй круг V4). Здесь, до удаления движений, — порядок замков как у sale_sync
+  -- (отчёт → документ → остатки), см. doc_post. После этого блока проверок нет — только записи.
+  if d.source_kind = 'orders' and d.doc_type in ('transfer', 'production') then
+    v_rstore := case when d.doc_type = 'transfer' then d.store_to else d.store_from end;
+    for l in select distinct dl.item_code from tandem.document_lines dl
+              where dl.document_id = p_doc and dl.line_kind = 'item' order by dl.item_code loop
+      v_marked := v_marked + tandem.store_ready_orders_recalc(v_rstore, l.item_code, p_doc);
+    end loop;
+    if v_marked > 0 then v_ready := tandem.store_ready_resync_next(v_rstore, null); end if;
   end if;
   with del as (delete from tandem.stock_moves where document_id = p_doc returning store_id, item_code)
     select array_agg(distinct store_id::text || '|' || item_code) into v_pairs from del;
@@ -2116,6 +2895,29 @@ begin
     where document_id = p_doc;
   update tandem.documents set status = 'draft', posted_by = null, posted_at = null, total_sum = null,
          updated_by = p_user.id, updated_at = now() where id = p_doc;
+  -- Учётная цена, которую поставила эта накладная, откатывается на последнюю оставшуюся проведённую
+  -- закупку (дата, затем время проведения); нет такой — на цену, стоявшую до накладной (prev_cost:
+  -- опечатка в единственной накладной больше не остаётся учётной ценой, второй круг V9). Цену, заданную
+  -- позже вручную или другим документом, не трогаем (0041, ревью п. 41).
+  if d.doc_type = 'invoice_in' then
+    for l in select dl.item_code, dl.price, dl.prev_cost from tandem.document_lines dl
+              where dl.document_id = p_doc and dl.line_kind = 'item' and dl.price > 0 order by dl.item_code loop
+      select x.doc_date, xl.price into v_last
+        from tandem.document_lines xl join tandem.documents x on x.id = xl.document_id
+       where x.doc_type = 'invoice_in' and x.status = 'posted' and xl.line_kind = 'item'
+         and xl.item_code = l.item_code and xl.price > 0
+       order by x.doc_date desc, x.posted_at desc limit 1;
+      if v_last.doc_date is not null then
+        update tandem.items set cost_price = v_last.price, cost_date = v_last.doc_date
+         where code = l.item_code and cost_source = 'document' and cost_date = d.doc_date and cost_price = l.price;
+      elsif l.prev_cost is not null then
+        update tandem.items set cost_price = (l.prev_cost->>'cost_price')::numeric,
+               cost_date = (l.prev_cost->>'cost_date')::date, cost_source = l.prev_cost->>'cost_source'
+         where code = l.item_code and cost_source = 'document' and cost_date = d.doc_date and cost_price = l.price;
+      end if;
+    end loop;
+    update tandem.document_lines set prev_cost = null where document_id = p_doc and prev_cost is not null;
+  end if;
   -- Пересборка могла увести пары в минус (например, отменён ранний приход) — формат тот же, что у doc_post.
   select coalesce(jsonb_agg(jsonb_build_object('item_code', b.item_code, 'name', i.name, 'store_id', b.store_id,
            'store_name', s.name, 'balance_after', b.qty) order by i.name), '[]'::jsonb)
@@ -2125,7 +2927,8 @@ begin
     join tandem.items i on i.code = b.item_code
     join tandem.stores s on s.id = b.store_id
     where b.qty < 0;
-  return jsonb_build_object('ok', true, 'warnings', v_warn);
+  return jsonb_build_object('ok', true, 'warnings', v_warn)
+         || case when v_ready is not null then jsonb_build_object('ready', v_ready) else '{}'::jsonb end;
 end $function$
 ;
 
@@ -2136,6 +2939,34 @@ CREATE OR REPLACE FUNCTION tandem.err(p_code text, p_msg text)
 AS $function$
   select jsonb_build_object('ok', false, 'error', p_code, 'message', p_msg)
 $function$
+;
+
+CREATE OR REPLACE FUNCTION tandem.group_name_taken(p_group uuid, p_name text)
+ RETURNS boolean
+ LANGUAGE sql
+ STABLE
+AS $function$
+  select exists (select 1 from tandem.items i where i.category = p_name and i.group_id is distinct from p_group)
+$function$
+;
+
+CREATE OR REPLACE FUNCTION tandem.group_rename_sync(p_group uuid, p_old text, p_new text)
+ RETURNS void
+ LANGUAGE plpgsql
+AS $function$
+declare v_old text[]; v_gone text[];
+begin
+  select coalesce(array_agg(distinct category), '{}') into v_old
+    from tandem.items where group_id = p_group and category is not null and category <> p_new;
+  if p_old is not null and p_old <> p_new and not (p_old = any(v_old)) then v_old := v_old || p_old; end if;
+  update tandem.items set category = p_new where group_id = p_group and category is distinct from p_new;
+  select coalesce(array_agg(c), '{}') into v_gone from unnest(v_old) c
+    where not exists (select 1 from tandem.items i where i.category = c);
+  update tandem.points p set item_categories = array(
+      select x from unnest(p.item_categories || p_new) with ordinality t(x, o)
+      where not (x = any(v_gone)) group by x order by min(o))
+    where p.item_categories && v_old;
+end $function$
 ;
 
 CREATE OR REPLACE FUNCTION tandem.item_cost(p_code text, p_date date DEFAULT CURRENT_DATE, p_depth integer DEFAULT 0)
@@ -2184,6 +3015,16 @@ begin
 end $function$
 ;
 
+CREATE OR REPLACE FUNCTION tandem.jlist(p jsonb)
+ RETURNS jsonb
+ LANGUAGE sql
+ IMMUTABLE
+AS $function$
+  select case when p is null or jsonb_typeof(p) = 'null' then '[]'::jsonb
+              when jsonb_typeof(p) = 'array' then p end
+$function$
+;
+
 CREATE OR REPLACE FUNCTION tandem.like_escape(p text)
  RETURNS text
  LANGUAGE sql
@@ -2191,6 +3032,13 @@ CREATE OR REPLACE FUNCTION tandem.like_escape(p text)
 AS $function$
   select replace(replace(replace(p, '\', '\\'), '%', '\%'), '_', '\_')
 $function$
+;
+
+CREATE OR REPLACE FUNCTION tandem.local_now()
+ RETURNS timestamp without time zone
+ LANGUAGE sql
+ STABLE
+AS $function$ select (now() at time zone 'UTC') + interval '5 hours' $function$
 ;
 
 CREATE OR REPLACE FUNCTION tandem.menu_foodcost(p_point text DEFAULT NULL::text, p_date date DEFAULT CURRENT_DATE, p_group uuid DEFAULT NULL::uuid)
@@ -2208,21 +3056,25 @@ AS $function$
     where i.active and i.for_sale and i.item_type in ('dish','prepared')
       and (p_group is null or i.group_id = p_group)
   ),
+  -- 46: ребро, ведущее обратно в путь (цикл), не отбрасывается — иначе блюдо получало «полную»
+  -- себестоимость без доли зацикленного ПФ. Узел цикла помечается cyc, дальше не раскрывается
+  -- и становится листом без цены: complete = false, в missing — 'cycle:<код>', как в item_cost.
   walk as (
-    select d.code as root, d.code as node, 1::numeric as factor, 0 as depth, array[d.code] as path
+    select d.code as root, d.code as node, 1::numeric as factor, 0 as depth, array[d.code] as path, false as cyc
     from dishes d
     union all
-    select w.root, cl.ingredient_code, w.factor * cl.brutto / c.output_amount, w.depth + 1, w.path || cl.ingredient_code
+    select w.root, cl.ingredient_code, w.factor * cl.brutto / c.output_amount, w.depth + 1, w.path || cl.ingredient_code,
+           cl.ingredient_code = any(w.path)
     from walk w
     join tandem.items i on i.code = w.node and i.item_type in ('dish','prepared')
     join tandem.charts c on c.id = tandem.active_chart(w.node, p_date)
     join tandem.chart_lines cl on cl.chart_id = c.id
-    where w.depth < 10 and not (cl.ingredient_code = any(w.path))
+    where w.depth < 10 and not w.cyc
   ),
   leaves as (
-    select w.root, w.node, w.factor, i.item_type, i.cost_price
+    select w.root, w.node, w.factor, i.item_type, i.cost_price, w.cyc
     from walk w join tandem.items i on i.code = w.node
-    where i.item_type in ('goods','service') or tandem.active_chart(w.node, p_date) is null
+    where w.cyc or i.item_type in ('goods','service') or tandem.active_chart(w.node, p_date) is null
        -- M6: обход обрывается на глубине 10 (walk выше), и без этого условия узел на границе
        -- просто исчезал бы из расчёта, а блюдо получало бы «полную» себестоимость по обрубку.
        -- Такой узел — лист без цены: complete становится false, а его код попадает в missing.
@@ -2230,9 +3082,10 @@ AS $function$
   ),
   agg as (
     select root,
-      sum(case when item_type in ('goods','service') and cost_price is not null then factor * cost_price else 0 end) as partial,
-      bool_and(item_type in ('goods','service') and cost_price is not null) as complete,
-      array_remove(array_agg(distinct case when not (item_type in ('goods','service') and cost_price is not null) then node end), null) as missing
+      sum(case when not cyc and item_type in ('goods','service') and cost_price is not null then factor * cost_price else 0 end) as partial,
+      bool_and(not cyc and item_type in ('goods','service') and cost_price is not null) as complete,
+      array_remove(array_agg(distinct case when cyc then 'cycle:' || node
+                                           when not (item_type in ('goods','service') and cost_price is not null) then node end), null) as missing
     from leaves group by root
   )
   select d.code, d.name, d.group_name, d.unit_id,
@@ -2245,6 +3098,36 @@ AS $function$
   from dishes d left join agg a on a.root = d.code
   order by d.name
 $function$
+;
+
+CREATE OR REPLACE FUNCTION tandem.move_step(p_qty0 numeric, p_val0 numeric, p_avg0 numeric, p_qty numeric, p_cost numeric, OUT o_adj numeric, OUT o_qty numeric, OUT o_val numeric, OUT o_avg numeric)
+ RETURNS record
+ LANGUAGE plpgsql
+ IMMUTABLE
+AS $function$
+begin
+  o_adj := 0;
+  o_qty := p_qty0 + p_qty;
+  if p_qty > 0 then
+    if p_qty0 <= 0 then
+      o_adj := round(p_qty0 * p_cost - p_val0, 2);
+      o_val := p_val0 + o_adj + p_qty * p_cost;
+      o_avg := p_cost;
+    else
+      o_val := p_val0 + p_qty * p_cost;
+      if o_val / o_qty > 0 then
+        o_avg := round(o_val / o_qty, 4);
+      else
+        o_adj := round(p_qty0 * p_cost - p_val0, 2);
+        o_val := o_val + o_adj;
+        o_avg := p_cost;
+      end if;
+    end if;
+  else
+    o_val := p_val0 + p_qty * p_cost;
+    o_avg := p_avg0;
+  end if;
+end $function$
 ;
 
 CREATE OR REPLACE FUNCTION tandem.next_doc_number(p_type text, p_date date)
@@ -2260,6 +3143,27 @@ begin
     on conflict (doc_type, year) do update set last_no = tandem.doc_counters.last_no + 1
     returning last_no into v_no;
   return v_pref || '-' || v_year || '-' || lpad(v_no::text, 6, '0');
+end $function$
+;
+
+CREATE OR REPLACE FUNCTION tandem.num_clean(p text)
+ RETURNS text
+ LANGUAGE sql
+ IMMUTABLE
+AS $function$
+  select replace(regexp_replace(coalesce(p, ''), '[[:space:]\u00a0\u2007\u2009\u202f]', '', 'g'), ',', '.')
+$function$
+;
+
+CREATE OR REPLACE FUNCTION tandem.num_ok(p text)
+ RETURNS boolean
+ LANGUAGE plpgsql
+ IMMUTABLE
+AS $function$
+declare
+  v text := tandem.num_clean(p);
+begin
+  return v = '' or (length(v) <= 24 and v ~ '^[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)$');
 end $function$
 ;
 
@@ -2281,7 +3185,7 @@ AS $function$
 declare
   v_code   text := payload->>'code';
   v_id     uuid := nullif(payload->>'id','')::uuid;
-  v_date   date := coalesce(nullif(payload->>'date','')::date, current_date);
+  v_date   date;
   v_q      text := btrim(coalesce(payload->>'q',''));
   v_page   int  := greatest(coalesce((payload->>'page')::int, 1), 1);
   v_only   text := nullif(payload->>'only','');
@@ -2291,6 +3195,10 @@ declare
   v_chart  uuid; v_item jsonb; v_versions jsonb; v_lines jsonb; v_cost record;
   v_csv    text; v_limit numeric;
 begin
+  -- 45/49: дата из payload — строго ГГГГ-ММ-ДД (tandem.chart_date). Разбирается здесь, а не в
+  -- объявлениях: ошибку из объявлений обработчик функции не ловит, и наружу ушла бы голая 500.
+  v_date := coalesce(tandem.chart_date(payload->>'date'), current_date);
+
   -- ---------- список ----------
   if action = 'charts_list' then
     v_limit := coalesce((select value::numeric from tandem.settings where key = 'foodcost_alert'), 35);
@@ -2390,8 +3298,8 @@ begin
     if v_type not in ('dish','prepared') then
       return tandem.err('validation', 'Техкарта бывает только у блюда или полуфабриката');
     end if;
-    v_from := nullif(payload->>'date_from','')::date;
-    v_to   := nullif(payload->>'date_to','')::date;
+    v_from := tandem.chart_date(payload->>'date_from');
+    v_to   := tandem.chart_date(payload->>'date_to');
     v_out  := nullif(payload->>'output_amount','')::numeric;
     if v_from is null then return tandem.err('validation', 'Укажите дату начала действия'); end if;
     if v_to is not null and v_to < v_from then return tandem.err('validation', 'Дата окончания раньше начала'); end if;
@@ -2399,14 +3307,16 @@ begin
     if jsonb_typeof(payload->'lines') <> 'array' or jsonb_array_length(payload->'lines') = 0 then
       return tandem.err('validation', 'В карте нет ни одной строки');
     end if;
-    -- строки: ингредиент существует, активен, не само блюдо, не ведёт обратно к блюду
+    -- строки: ингредиент существует, активен, не само блюдо, не ведёт обратно к блюду.
+    -- 46: цикл ищется на весь период карты [v_from, v_to], а не только на дату начала: версия ПФ,
+    -- вступающая в силу позже, может замкнуть круг уже внутри периода.
     for v_line in select * from jsonb_array_elements(payload->'lines') loop
       v_ing := v_line->>'ingredient_code';
       select item_type, active into v_ing_type, v_active from tandem.items where code = v_ing;
       if v_ing_type is null then return tandem.err('validation', 'Ингредиент не найден: ' || coalesce(v_ing,'')); end if;
       if not v_active then return tandem.err('validation', 'Ингредиент выключен: ' || v_ing); end if;
       if v_ing = v_code then return tandem.err('validation', 'Блюдо не может входить само в себя'); end if;
-      if v_ing_type in ('dish','prepared') and tandem.chart_reaches(v_ing, v_code, v_from) then
+      if v_ing_type in ('dish','prepared') and tandem.chart_reaches_during(v_ing, v_code, v_from, v_to) then
         return tandem.err('validation', 'Цикл: ' || v_ing || ' уже содержит ' || v_code);
       end if;
       if coalesce((v_line->>'brutto')::numeric, -1) < 0 or coalesce((v_line->>'netto')::numeric, -1) < 0
@@ -2449,7 +3359,7 @@ begin
 
   -- ---------- новая версия с даты ----------
   if action = 'chart_new_version' then
-    v_from := nullif(payload->>'date_from','')::date;
+    v_from := tandem.chart_date(payload->>'date_from');
     if v_from is null then return tandem.err('validation', 'Укажите дату начала новой версии'); end if;
     v_prev := tandem.active_chart(v_code, v_from - 1);
     if v_prev is null then
@@ -2458,6 +3368,14 @@ begin
     if exists (select 1 from tandem.charts where item_code = v_code and date_from >= v_from) then
       return tandem.err('validation', 'Уже есть версия с более поздней датой начала');
     end if;
+    -- 46: новая версия продлевает состав прежней на [v_from, ∞) — если прежняя была закрыта раньше,
+    -- это новый для неё период, и цикл проверяется на нём так же, как при сохранении
+    for v_ing in select cl.ingredient_code from tandem.chart_lines cl join tandem.items i on i.code = cl.ingredient_code
+                  where cl.chart_id = v_prev and i.item_type in ('dish','prepared') loop
+      if tandem.chart_reaches_during(v_ing, v_code, v_from, null) then
+        return tandem.err('validation', 'Цикл: ' || v_ing || ' уже содержит ' || v_code);
+      end if;
+    end loop;
     update tandem.charts set date_to = v_from - 1, updated_by = v_user.id, updated_at = now() where id = v_prev;
     insert into tandem.charts (item_code, date_from, date_to, output_amount, technology, note, source, created_by, updated_by)
       select item_code, v_from, null, output_amount, technology, note, 'office', v_user.id, v_user.id
@@ -2477,6 +3395,14 @@ begin
     if exists (select 1 from tandem.charts where item_code = v_code and date_from > v_from) then
       return tandem.err('validation', 'После этой версии есть более поздние — удалите сначала их');
     end if;
+    -- 46: предыдущая версия ниже снова открывается — на [v_from, ∞) её состав не должен замыкать круг
+    select id into v_prev from tandem.charts where item_code = v_code and date_to = v_from - 1;
+    for v_ing in select cl.ingredient_code from tandem.chart_lines cl join tandem.items i on i.code = cl.ingredient_code
+                  where cl.chart_id = v_prev and i.item_type in ('dish','prepared') loop
+      if tandem.chart_reaches_during(v_ing, v_code, v_from, null) then
+        return tandem.err('validation', 'Цикл: после удаления снова действовала бы прежняя версия, а ' || v_ing || ' уже содержит ' || v_code);
+      end if;
+    end loop;
     delete from tandem.charts where id = v_id;
     -- предыдущая версия, закрытая ради удалённой, снова становится открытой
     update tandem.charts set date_to = null where item_code = v_code and date_to = v_from - 1
@@ -2491,9 +3417,13 @@ begin
            'code;name;group;unit;cost;price;markup_pct;foodcost_pct;over_limit;missing' || E'\n' ||
            coalesce(string_agg(concat_ws(';', m.code, replace(m.name,';',','),
              coalesce(replace(m.group_name,';',','),''), m.unit_id,
-             coalesce(m.cost::text,''), coalesce(m.price::text,''), coalesce(m.markup_pct::text,''),
-             coalesce(m.foodcost_pct::text,''), case when m.over_limit then '1' else '0' end,
-             array_to_string(m.missing, ',')), E'\n'), '')
+             -- 74: десятичная запятая — как в остальных выгрузках; русский Excel с «;» читает
+             -- «28.6» как дату или текст
+             coalesce(replace(m.cost::text, '.', ','), ''), coalesce(replace(m.price::text, '.', ','), ''),
+             coalesce(replace(m.markup_pct::text, '.', ','), ''),
+             coalesce(replace(m.foodcost_pct::text, '.', ','), ''), case when m.over_limit then '1' else '0' end,
+             -- V26: коды через « | » — «81,90» тот же Excel читал как число 81,9; «81 900» — как 81900
+             array_to_string(m.missing, ' | ')), E'\n'), '')
       into v_rows, v_csv
       from tandem.menu_foodcost(nullif(payload->>'point_id',''), v_date, v_group) m;
     return jsonb_build_object('ok', true, 'rows', v_rows, 'limit', v_limit, 'csv', v_csv);
@@ -2504,6 +3434,8 @@ exception
   -- charts_no_overlap ловится проверкой выше; сюда доходят только гонки двух правок разом.
   when exclusion_violation then
     return tandem.err('validation', 'На эти даты уже действует другая версия этой карты');
+  when invalid_datetime_format or datetime_field_overflow then
+    return tandem.err('validation', 'Дата — в формате ГГГГ-ММ-ДД');
 end $function$
 ;
 
@@ -2584,6 +3516,8 @@ declare
   v_total int;
   v_rows  jsonb;
   v_name  text;
+  v_old   text;
+  v_item  tandem.items;
   k       record;   -- себестоимость позиции: (cost, partial, missing)
 begin
   -- Себестоимость отдельным действием: карточка товара обходится без пересчёта дерева,
@@ -2593,7 +3527,8 @@ begin
     if not exists (select 1 from tandem.items where code = v_code) then
       return tandem.err('not_found', 'Позиция не найдена');
     end if;
-    select * into k from tandem.item_cost(v_code, coalesce(nullif(payload->>'date','')::date, current_date));
+    -- 49: дата — строго ГГГГ-ММ-ДД, как в разделе техкарт (неверная ловится в конце функции)
+    select * into k from tandem.item_cost(v_code, coalesce(tandem.chart_date(payload->>'date'), current_date));
     return jsonb_build_object('ok', true, 'cost', k.cost, 'partial', k.partial, 'missing', to_jsonb(k.missing));
   end if;
 
@@ -2626,11 +3561,19 @@ begin
         values (v_name, nullif(payload->>'parent_id','')::uuid, coalesce((payload->>'active')::boolean, true))
         returning id into v_id;
     else
+      select name into v_old from tandem.item_groups where id = v_id;
+      -- V13: имя, которым уже помечены позиции другой группы, добавилось бы в фильтры точек этой —
+      -- и им открылись бы чужие позиции. Сохранение без смены имени (имена групп повторяются) не держим.
+      if found and v_old is distinct from v_name and tandem.group_name_taken(v_id, v_name) then
+        return tandem.err('validation', 'Такое имя уже у другой группы — точкам открылись бы её позиции. Выберите другое');
+      end if;
       update tandem.item_groups set name = v_name,
         parent_id = nullif(payload->>'parent_id','')::uuid,
         active = coalesce((payload->>'active')::boolean, active)
         where id = v_id;
       if not found then return tandem.err('not_found', 'Группа не найдена'); end if;
+      -- 42: в той же транзакции новое имя уходит в category позиций группы и фильтры точек
+      if v_old is distinct from v_name then perform tandem.group_rename_sync(v_id, v_old, v_name); end if;
     end if;
     return jsonb_build_object('ok', true, 'id', v_id);
   end if;
@@ -2685,7 +3628,7 @@ begin
           from kv join tandem.items i on i.active and kv.code is not null and i.artikul = kv.code
         union all
         select kv.i, i.code, i.name, i.unit_id, 'alias', 4
-          from kv join tandem.item_aliases a on kv.name is not null and a.alias = kv.name
+          from kv join tandem.item_aliases a on kv.name is not null and a.alias = lower(kv.name)   -- 73: псевдонимы хранятся строчными
           join tandem.items i on i.code = a.item_code and i.active
         union all
         select kv.i, i.code, i.name, i.unit_id, 'name', 5
@@ -2761,20 +3704,51 @@ begin
       if nullif(payload->>'unit_id','') is not null and not exists (select 1 from tandem.units where id = payload->>'unit_id') then
         return tandem.err('validation', 'Единица измерения не из справочника');
       end if;
+      select * into v_item from tandem.items where code = v_code;
+      if not found then return tandem.err('not_found', 'Позиция не найдена'); end if;
+      -- 44: единица — мера всех чисел позиции: остатков и средней на складе, строк документов, норм
+      -- закладки в чужих техкартах и выхода своей. Смена без пересчёта молча превращала «300 шт по 60 ₸»
+      -- в «300 кг по 60 ₸», поэтому единицу меняет только позиция без истории.
+      if nullif(payload->>'unit_id','') is not null and payload->>'unit_id' <> v_item.unit_id
+         and (exists (select 1 from tandem.stock_moves where item_code = v_code)
+              or exists (select 1 from tandem.document_lines where item_code = v_code)
+              or exists (select 1 from tandem.chart_lines where ingredient_code = v_code)
+              or exists (select 1 from tandem.charts where item_code = v_code)) then
+        return tandem.err('validation', 'Единицу нельзя сменить: по позиции есть движения, документы или техкарты');
+      end if;
+      -- Товар считается и списывается по учётной цене, блюдо и полуфабрикат — по техкарте: при
+      -- движениях склада смена между ними переписала бы смысл уже проведённого.
+      -- V14: блюдо/полуфабрикат без единой версии карты списывался и так сам, как товар, — смена на
+      -- «товар» ничего не переписывает (это и советует отчёт качества «Вода ПФ»). Любая версия карты,
+      -- даже закрытая, держит: по ней раскладывалось проведённое.
+      if nullif(payload->>'item_type','') is not null
+         and payload->>'item_type' in ('goods','dish','prepared') and v_item.item_type in ('goods','dish','prepared')
+         and (payload->>'item_type' = 'goods') <> (v_item.item_type = 'goods')
+         and exists (select 1 from tandem.stock_moves where item_code = v_code)
+         and (payload->>'item_type' <> 'goods' or exists (select 1 from tandem.charts where item_code = v_code)) then
+        return tandem.err('validation', case when payload->>'item_type' = 'goods'
+          then 'Тип нельзя сменить на товар: у позиции есть техкарта и движения склада'
+          else 'Тип нельзя сменить между товаром и блюдом/полуфабрикатом: по позиции есть движения склада' end);
+      end if;
       -- I8: source='office' закрывает строку от повторного переноса из iiko (см. tandem_migrate),
       -- category держится в согласии с группой — на неё смотрят старые экраны точек.
       -- cost_price правится только когда ключ пришёл: пустое значение снимает цену вместе с датой
       -- и источником, иначе учётная цена молча воскресала бы при любой правке карточки.
+      -- 76: artikul и group_id так же — ключ пришёл, значит применяется (пустое снимает артикул и
+      -- группу); раньше пустое молча оставляло прежнее, а карточка показывала «Сохранено».
       update tandem.items set
         name = coalesce(nullif(v_name, ''), name),
-        artikul = coalesce(nullif(payload->>'artikul',''), artikul),
+        artikul = case when payload ? 'artikul' then nullif(payload->>'artikul','') else artikul end,
         item_type = coalesce(nullif(payload->>'item_type',''), item_type),
         unit_id = coalesce(nullif(payload->>'unit_id',''), unit_id),
         unit = coalesce(nullif(payload->>'unit_id',''), unit),
-        group_id = coalesce(nullif(payload->>'group_id','')::uuid, group_id),
-        category = coalesce((select g.name from tandem.item_groups g
-                             where g.id = coalesce(nullif(payload->>'group_id','')::uuid, items.group_id)),
-                            items.category),
+        -- шаг ввода следует за единицей, как при создании (сменить её можно только у позиции без истории)
+        step = case when nullif(payload->>'unit_id','') is not null and payload->>'unit_id' <> unit_id
+                    then case when payload->>'unit_id' in ('кг','л') then 0.5 else 1 end else step end,
+        group_id = case when payload ? 'group_id' then nullif(payload->>'group_id','')::uuid else group_id end,
+        category = case when payload ? 'group_id'
+                        then (select g.name from tandem.item_groups g where g.id = nullif(payload->>'group_id','')::uuid)
+                        else coalesce((select g.name from tandem.item_groups g where g.id = items.group_id), items.category) end,
         source = 'office',
         active = coalesce((payload->>'active')::boolean, active),
         for_sale = coalesce((payload->>'for_sale')::boolean, for_sale),
@@ -2784,11 +3758,14 @@ begin
         pack_factor = case when payload ? 'pack_factor' then nullif(payload->>'pack_factor','')::numeric else pack_factor end,
         pack_unit   = case when payload ? 'pack_unit'   then nullif(payload->>'pack_unit','')            else pack_unit end,
         pack_price  = case when payload ? 'pack_price'  then nullif(payload->>'pack_price','')::numeric  else pack_price end,
+        -- 72: карточка шлёт cost_price при любом сохранении; цена, равная текущей, не делает её
+        -- «ручной» с сегодняшней датой — иначе терялось, откуда она (накладная, iiko), и перенос
+        -- цен из iiko переставал её обновлять
         cost_price  = case when payload ? 'cost_price'  then nullif(payload->>'cost_price','')::numeric  else cost_price end,
-        cost_date   = case when payload ? 'cost_price'
+        cost_date   = case when payload ? 'cost_price' and nullif(payload->>'cost_price','')::numeric is distinct from cost_price
                            then case when nullif(payload->>'cost_price','') is null then null else current_date end
                            else cost_date end,
-        cost_source = case when payload ? 'cost_price'
+        cost_source = case when payload ? 'cost_price' and nullif(payload->>'cost_price','')::numeric is distinct from cost_price
                            then case when nullif(payload->>'cost_price','') is null then null else 'manual' end
                            else cost_source end
       where code = v_code;
@@ -2848,6 +3825,9 @@ begin
   end if;
 
   return tandem.err('unknown_action', 'Неизвестное действие: ' || action);
+exception
+  when invalid_datetime_format then   -- tandem.chart_date в item_cost_get
+    return tandem.err('validation', 'Дата — в формате ГГГГ-ММ-ДД');
 end $function$
 ;
 
@@ -2881,18 +3861,22 @@ declare
   v_q     text := btrim(coalesce(payload->>'q',''));
   v_d1    date;
   v_d2    date;
+  v_bad   text;
 begin
   -- Оборотная ведомость: по каждой позиции остаток на начало, обороты по видам документов
   -- и остаток на конец — как «Расширенная оборотно-сальдовая ведомость» iiko, чтобы
   -- сверять учёт в параллельной работе. Количества расхода — положительные числа.
-  -- Суммы — по себестоимости движений (qty × unit_cost), как «Сумма с/н» в iiko.
+  -- Суммы — по себестоимости движений (qty × unit_cost), как «Сумма с/н» в iiko. Переоценки остатка
+  -- (строки adj, второй круг V2) — отдельным полем reval_sum за период; остатки на начало и конец их
+  -- включают, поэтому end_sum = start_sum + обороты + reval_sum и совпадает со стоимостью в «Остатках».
   if action = 'stock_turnover_report' then
     v_d1 := coalesce(nullif(payload->>'date_from','')::date, date_trunc('month', current_date)::date);
     v_d2 := coalesce(nullif(payload->>'date_to','')::date, current_date);
     if v_d2 < v_d1 then return tandem.err('validation', 'Дата «по» раньше даты «с»'); end if;
     return jsonb_build_object('ok', true, 'date_from', v_d1, 'date_to', v_d2, 'rows', (
       with m as (
-        select m.item_code, m.qty, m.qty * m.unit_cost as s, m.move_date, d.doc_type
+        -- s — сумма по количеству (у строк-поправок qty = 0, s = 0), adj — поправка (у прочих строк 0)
+        select m.item_code, m.qty, m.qty * m.unit_cost as s, m.adj, m.move_date, d.doc_type
           from tandem.stock_moves m join tandem.documents d on d.id = m.document_id
          where m.move_date <= v_d2
            and (v_store is null or m.store_id = v_store)
@@ -2900,7 +3884,7 @@ begin
       ), a as (
         select item_code,
           coalesce(sum(qty) filter (where move_date < v_d1), 0)                                          as start_qty,
-          coalesce(sum(s)   filter (where move_date < v_d1), 0)                                          as start_sum,
+          coalesce(sum(s + adj) filter (where move_date < v_d1), 0)                                      as start_sum,
           coalesce(sum(qty) filter (where move_date >= v_d1 and doc_type = 'invoice_in'), 0)             as income,
           coalesce(sum(s)   filter (where move_date >= v_d1 and doc_type = 'invoice_in'), 0)             as income_sum,
           coalesce(sum(qty) filter (where move_date >= v_d1 and doc_type = 'transfer' and qty > 0), 0)   as transfer_in,
@@ -2913,8 +3897,9 @@ begin
           coalesce(-sum(s)   filter (where move_date >= v_d1 and doc_type = 'writeoff'), 0)              as writeoff_sum,
           coalesce(sum(qty) filter (where move_date >= v_d1 and doc_type = 'inventory'), 0)              as inventory,
           coalesce(sum(s)   filter (where move_date >= v_d1 and doc_type = 'inventory'), 0)              as inventory_sum,
-          coalesce(sum(qty), 0) as end_qty,
-          coalesce(sum(s), 0)   as end_sum,
+          coalesce(sum(adj) filter (where move_date >= v_d1), 0)                                         as reval_sum,
+          coalesce(sum(qty), 0)     as end_qty,
+          coalesce(sum(s + adj), 0) as end_sum,
           count(*) filter (where move_date >= v_d1) as moves
         from m group by item_code
       )
@@ -2927,6 +3912,7 @@ begin
           'sales', round(a.sales, 4), 'sales_sum', round(a.sales_sum, 2),
           'writeoff', round(a.writeoff, 4), 'writeoff_sum', round(a.writeoff_sum, 2),
           'inventory', round(a.inventory, 4), 'inventory_sum', round(a.inventory_sum, 2),
+          'reval_sum', round(a.reval_sum, 2),
           'end_qty', round(a.end_qty, 4), 'end_sum', round(a.end_sum, 2))
           order by g.name nulls last, i.name), '[]'::jsonb)
         from a join tandem.items i on i.code = a.item_code
@@ -3009,6 +3995,15 @@ begin
     if exists (select 1 from jsonb_array_elements(coalesce(payload->'rows', '[]'::jsonb)) x
                 where not exists (select 1 from tandem.items i where i.code = x->>'item_code')) then
       return tandem.err('validation', 'Неизвестная позиция в выпуске'); end if;
+    -- Штучное — только целым, как в заявке: полпирожка не уйдёт ни в акт, ни в перемещение, и выпуск
+    -- в плане разошёлся бы с документами (контракт п. 12, ревью п. 69).
+    select string_agg(i.name, ', ' order by i.name) into v_bad
+      from jsonb_array_elements(coalesce(payload->'rows', '[]'::jsonb)) x join tandem.items i on i.code = x->>'item_code'
+     where i.unit_id in ('шт', 'порц')
+       and case when nullif(x->>'fact', '') is null then false
+                else (x->>'fact')::numeric <> trunc((x->>'fact')::numeric) end;
+    if v_bad is not null then
+      return tandem.err('validation', 'Штучные позиции — выпуск только целым числом: ' || v_bad); end if;
     delete from tandem.order_plan p using jsonb_array_elements(coalesce(payload->'rows', '[]'::jsonb)) x
      where p.for_date = v_d1 and p.item_code = x->>'item_code' and nullif(x->>'fact', '') is null;
     insert into tandem.order_plan (for_date, item_code, fact_qty)
@@ -3023,7 +4018,8 @@ begin
     v_d1 := nullif(payload->>'for_date','')::date;
     if v_d1 is null then return tandem.err('validation', 'Не указан день'); end if;
     begin
-      return tandem.orders_make_docs(v_d1, v_user, coalesce((payload->>'force')::boolean, false));
+      -- store_id — склад кухни только для этого вызова, общая настройка не меняется (ревью п. 39).
+      return tandem.orders_make_docs(v_d1, v_user, coalesce((payload->>'force')::boolean, false), v_store);
     exception when raise_exception then
       return tandem.err('validation', sqlerrm);
     end;
@@ -3039,6 +4035,59 @@ begin
     insert into tandem.settings (key, value) values ('orders_store_id', coalesce(payload->>'store_id', '')), ('orders_cutoff', payload->>'cutoff')
       on conflict (key) do update set value = excluded.value;
     return jsonb_build_object('ok', true);
+  end if;
+
+  -- «Готовым со склада» (0041, контракт п. 11): на складе с даты позиция продаётся готовой — продажа
+  -- списывает саму позицию, а не сырьё по карте. Строки ставят проведённые документы плана заявок
+  -- (doc_post, второй круг V4), правит человек.
+  -- Права раздела проверяет tandem_office (_list — просмотр склада, остальное — правка); кладовщик
+  -- с закреплёнными складами видит и правит только их.
+  if action = 'stock_ready_list' then
+    return jsonb_build_object('ok', true, 'rows', (
+      select coalesce(jsonb_agg(jsonb_build_object('store_id', r.store_id, 'store_name', s.name, 'item_code', r.item_code,
+               'item_name', i.name, 'unit_id', i.unit_id, 'date_from', r.date_from, 'source', r.source)
+               order by s.name, i.name), '[]'::jsonb)
+        from tandem.store_ready r join tandem.stores s on s.id = r.store_id join tandem.items i on i.code = r.item_code
+       where (v_store is null or r.store_id = v_store) and tandem.user_store_ok(v_user.id, r.store_id)));
+  end if;
+  -- Изменение помечает все затронутые продажи и пересобирает первые 5; ответ {ok, resynced, remaining}.
+  -- Пока remaining > 0, фронт зовёт stock_ready_resync {store_id?} — следующие 5 помеченных продаж
+  -- складов, доступных пользователю (второй круг V7). Чужой лок ждём не дольше 5 секунд, как пакетный
+  -- пересчёт; не дождались — весь вызов откатывается, tandem_office отвечает «Пересчёт уже идёт».
+  if action = 'stock_ready_resync' then
+    if v_store is not null and not tandem.user_store_ok(v_user.id, v_store) then
+      return tandem.err('forbidden', 'Этот склад не закреплён за вами'); end if;
+    perform set_config('lock_timeout', '5s', true);
+    return jsonb_build_object('ok', true) || tandem.store_ready_resync_next(v_store, v_user.id);
+  end if;
+  if action in ('stock_ready_save', 'stock_ready_delete') then
+    if v_store is null then return tandem.err('validation', 'Укажите склад'); end if;
+    if not tandem.user_store_ok(v_user.id, v_store) then
+      return tandem.err('forbidden', 'Этот склад не закреплён за вами'); end if;
+    perform set_config('lock_timeout', '5s', true);
+    if action = 'stock_ready_delete' then
+      delete from tandem.store_ready where store_id = v_store and item_code = payload->>'item_code'
+        returning date_from into v_d1;
+      if v_d1 is null then return tandem.err('not_found', 'Такой строки нет'); end if;
+      -- с даты строки продажи снова раскладываются по карте
+      perform tandem.store_ready_mark(v_store, payload->>'item_code', v_d1, null);
+      return jsonb_build_object('ok', true) || tandem.store_ready_resync_next(v_store, v_user.id);
+    end if;
+    if not exists (select 1 from tandem.stores where id = v_store and active) then
+      return tandem.err('validation', 'Склад не найден или выключен'); end if;
+    if not exists (select 1 from tandem.items where code = payload->>'item_code') then
+      return tandem.err('validation', 'Позиция не найдена'); end if;
+    begin
+      -- формат строгий: «01.10.2026» Postgres молча понял бы как 10 января
+      if coalesce(payload->>'date_from', '') !~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' then raise exception 'date'; end if;
+      v_d1 := (payload->>'date_from')::date;
+    exception when others then
+      return tandem.err('validation', 'Дата — в формате ГГГГ-ММ-ДД');
+    end;
+    if v_d1 is null or v_d1 < date '2024-01-01' then
+      return tandem.err('validation', 'Укажите дату, с которой склад получает позицию готовой (не раньше 01.01.2024)'); end if;
+    perform tandem.store_ready_set(v_store, payload->>'item_code', v_d1, 'manual');
+    return jsonb_build_object('ok', true) || tandem.store_ready_resync_next(v_store, v_user.id);
   end if;
 
   -- Закупки за период: по поставщикам и по товарам (проведённые приходы). Цена — средняя за период,
@@ -3072,6 +4121,8 @@ begin
   -- Прибыль по точкам за период, как «Отчёт о прибылях и убытках» iiko в части продуктов: выручка и
   -- себестоимость проданного, списания (порча, проработка, питание персонала) и итог инвентаризаций
   -- (недостача с минусом) по складам точки. Склады без точки (цех, общий склад) — отдельной строкой.
+  -- Переоценка остатка (строки adj, второй круг V2) — поле reval = −Σ adj по складам точки за период;
+  -- она входит в cost: продажа в минус шла по старой средней, а приход оценил проданное по своей цене.
   if action = 'stock_pnl_report' then
     if not tandem.office_can(v_user.role, 'doc:sale', 'view') then
       return tandem.err('forbidden', 'Нет права смотреть продажи'); end if;
@@ -3086,17 +4137,26 @@ begin
            and tandem.user_store_ok(v_user.id, d.store_from)
          group by s.point_id
       ), mv as (
+        -- по количеству: строки-поправки (qty = 0) сюда дают 0, они — в rv
         select s.point_id, d.doc_type, sum(m.qty * m.unit_cost) v
           from tandem.stock_moves m join tandem.documents d on d.id = m.document_id
           join tandem.stores s on s.id = m.store_id
          where d.doc_type in ('sale', 'writeoff', 'inventory') and m.move_date between v_d1 and v_d2
            and tandem.user_store_ok(v_user.id, m.store_id)
          group by s.point_id, d.doc_type
-      ), k as (select point_id from rev union select point_id from mv)
+      ), rv as (
+        select s.point_id, sum(m.adj) v
+          from tandem.stock_moves m join tandem.stores s on s.id = m.store_id
+         where m.adj <> 0 and m.move_date between v_d1 and v_d2
+           and tandem.user_store_ok(v_user.id, m.store_id)
+         group by s.point_id
+      ), k as (select point_id from rev union select point_id from mv union select point_id from rv)
       select jsonb_build_object('ok', true, 'date_from', v_d1, 'date_to', v_d2, 'rows', (select coalesce(jsonb_agg(jsonb_build_object(
           'point_id', k.point_id, 'point_name', coalesce(p.name, 'Склады без точки'),
           'revenue', round(coalesce(r.v, 0), 2),
-          'cost', round(-coalesce((select v from mv where mv.point_id is not distinct from k.point_id and doc_type = 'sale'), 0), 2),
+          'cost', round(-coalesce((select v from mv where mv.point_id is not distinct from k.point_id and doc_type = 'sale'), 0)
+                        - coalesce((select v from rv where rv.point_id is not distinct from k.point_id), 0), 2),
+          'reval', round(-coalesce((select v from rv where rv.point_id is not distinct from k.point_id), 0), 2),
           'writeoff', round(-coalesce((select v from mv where mv.point_id is not distinct from k.point_id and doc_type = 'writeoff'), 0), 2),
           'inventory', round(coalesce((select v from mv where mv.point_id is not distinct from k.point_id and doc_type = 'inventory'), 0), 2))
           order by p.sort_order nulls last, p.name), '[]'::jsonb)
@@ -3105,8 +4165,11 @@ begin
 
   -- Расход для 1С: сколько продуктов ушло на проданное за период, в позициях и единицах 1С —
   -- основа акта списания «на основании продаж». Берётся расход проведённых продаж и актов
-  -- производства, кроме полуфабрикатов (их в 1С нет: 1С видит сырьё, из которого они сделаны).
-  -- Сумма — по себестоимости движений нашего склада.
+  -- производства, кроме полуфабрикатов (их в 1С нет: 1С видит сырьё, из которого они сделаны)
+  -- и кроме проданного готовым — позиции с действующей на дату продажи техкартой, списанной
+  -- самой: её сырьё уже в акте производства (0041, вместо признака sell_from_stock).
+  -- Сумма — по себестоимости движений нашего склада; переоценки остатка (строки adj, qty = 0) сюда не
+  -- попадают — отбор только по расходу (qty < 0).
   if action = 'stock_1c_report' then
     if not tandem.office_can(v_user.role, 'doc:sale', 'view') then
       return tandem.err('forbidden', 'Нет права смотреть продажи'); end if;
@@ -3121,8 +4184,7 @@ begin
           join tandem.items i on i.code = m.item_code
          where d.doc_type in ('sale', 'production') and d.status = 'posted' and m.qty < 0
            and i.item_type <> 'prepared'
-           -- готовое со склада точки: его сырьё 1С уже видит в акте производства кухни (0040)
-           and not (d.doc_type = 'sale' and i.sell_from_stock)
+           and not (d.doc_type = 'sale' and tandem.active_chart(m.item_code, d.doc_date) is not null)
            and m.move_date between v_d1 and v_d2
            and (v_store is null or m.store_id = v_store)
            and tandem.user_store_ok(v_user.id, m.store_id)
@@ -3208,6 +4270,7 @@ declare
   v_ext_num text; v_ext_date date;
   v_csv   text; v_sum numeric;
   v_d1    date; v_d2 date; v_res jsonb; v_cnt jsonb := '{}'::jsonb; v_rep record;
+  v_key   text; v_qkey text; v_bad text;
 begin
   -- ---------- журнал ----------
   if action = 'docs_list' then
@@ -3252,8 +4315,16 @@ begin
         'lines', (select coalesce(jsonb_agg(jsonb_build_object('id', l.id, 'item_code', l.item_code, 'name', i.name,
                     'unit_id', coalesce(l.unit_id, i.unit_id), 'item_type', i.item_type, 'qty', l.qty, 'price', l.price, 'sum', l.sum,
                     'fact_qty', l.fact_qty, 'calc_qty', l.calc_qty, 'note', l.note, 'sort_order', l.sort_order,
-                    'current_qty', (select qty from tandem.stock_balances b
-                                    where b.store_id = coalesce(dd.store_from, dd.store_to) and b.item_code = l.item_code))
+                    -- у инвентаризации подсказка «расчёт» — уже проведённое по её день включительно: ровно
+                    -- то, с чем проведение сравнит факт (0041, ревью п. 7, второй круг V1); у проведённой —
+                    -- без её собственных движений; у прочих документов — текущий остаток
+                    'current_qty', case when dd.doc_type = 'inventory'
+                                        then tandem.stock_qty_at(dd.store_from, l.item_code, dd.doc_date)
+                                             - coalesce((select sum(m.qty) from tandem.stock_moves m
+                                                          where m.document_id = dd.id and m.store_id = dd.store_from
+                                                            and m.item_code = l.item_code), 0)
+                                        else (select qty from tandem.stock_balances b
+                                              where b.store_id = coalesce(dd.store_from, dd.store_to) and b.item_code = l.item_code) end)
                     order by l.sort_order), '[]'::jsonb)
                   from tandem.document_lines l join tandem.items i on i.code = l.item_code
                   where l.document_id = dd.id and l.line_kind = 'item'),
@@ -3273,14 +4344,36 @@ begin
       return tandem.err('validation', 'Неизвестный тип документа'); end if;
     if not tandem.office_can(v_user.role, 'doc:'||v_type, 'edit') then
       return tandem.err('forbidden', 'Нет права на документы этого типа'); end if;
-    v_date   := coalesce(nullif(payload->>'doc_date','')::date, current_date);
+    -- Дата: мусор и несуществующий день — понятная ошибка, а не сбой; окно — с 01.01.2024 по местное
+    -- «завтра» (контракт п. 17, ревью п. 65): опечатка в годе у инвентаризации останавливала проведение
+    -- всех продаж склада. Окно проверяется ниже, только у нового документа или при смене даты (второй
+    -- круг V3): черновик плана на послезавтра правится и проводится («Провести» сначала сохраняет).
+    -- Новые документы плана заявок датируются днём плана, он бывает и позже завтрашнего — им
+    -- orders_make_docs открывает окно на время своего вызова. Формат строгий: «01.10.2026» Postgres
+    -- молча понял бы как 10 января.
+    if coalesce(payload->>'doc_date', '') !~ '^([0-9]{4}-[0-9]{2}-[0-9]{2})?$'
+       or coalesce(payload->>'ext_date', '') !~ '^([0-9]{4}-[0-9]{2}-[0-9]{2})?$' then
+      return tandem.err('validation', 'Дата — в формате ГГГГ-ММ-ДД'); end if;
+    begin
+      v_date := coalesce(nullif(payload->>'doc_date','')::date, tandem.local_now()::date);
+    exception when others then
+      return tandem.err('validation', 'Неверная дата документа');
+    end;
     v_from   := nullif(payload->>'store_from','')::uuid;
     v_to     := nullif(payload->>'store_to','')::uuid;
     v_ca     := nullif(payload->>'counteragent_id','')::uuid;
     v_reason := nullif(payload->>'reason','');
+    -- Ключ формы (контракт п. 8): повтор сохранения с тем же ключом правит тот же документ.
+    v_key    := nullif(btrim(coalesce(payload->>'client_key', '')), '');
+    if length(v_key) > 64 then
+      return tandem.err('validation', 'Ключ документа (client_key) — не длиннее 64 символов'); end if;
     -- Накладная поставщика — только у прихода; у прочих типов поля молча обнуляются.
     v_ext_num  := case when v_type = 'invoice_in' then nullif(payload->>'ext_number','') end;
-    v_ext_date := case when v_type = 'invoice_in' then nullif(payload->>'ext_date','')::date end;
+    begin
+      v_ext_date := case when v_type = 'invoice_in' then nullif(payload->>'ext_date','')::date end;
+    exception when others then
+      return tandem.err('validation', 'Неверная дата накладной поставщика');
+    end;
     if v_type = 'invoice_in' and (v_to is null or v_ca is null) then
       return tandem.err('validation', 'Приходу нужны склад и поставщик'); end if;
     if v_type = 'transfer' and (v_from is null or v_to is null or v_from = v_to) then
@@ -3289,6 +4382,8 @@ begin
       return tandem.err('validation', 'Укажите склад'); end if;
     if v_type = 'writeoff' and v_reason is null then
       return tandem.err('validation', 'Укажите причину списания'); end if;
+    if v_reason is not null and v_reason not in ('spoilage', 'tasting', 'staff_meals', 'other') then
+      return tandem.err('validation', 'Неизвестная причина списания'); end if;
     if v_type = 'invoice_in' then v_from := null; end if;
     if v_type in ('writeoff','production','inventory') then v_to := null; end if;
     -- Кладовщик с привязкой к складам создаёт документы только от своего склада.
@@ -3299,12 +4394,42 @@ begin
     if exists (select 1 from jsonb_array_elements(payload->'lines') x
                where not exists (select 1 from tandem.items where code = x->>'item_code')) then
       return tandem.err('validation', 'В строках есть неизвестная позиция'); end if;
+    -- Числа строк — до записи, с названием позиции (ревью п. 66, контракт п. 17): прежде минус в
+    -- количестве или факте ронял сохранение на ограничении таблицы, и форма молча не сохранялась.
+    -- Сначала вид числа, потом знак: приведение не должно встретить текст.
+    v_qkey := case when v_type = 'inventory' then 'fact_qty' else 'qty' end;
+    select i.name into v_bad from jsonb_array_elements(payload->'lines') x join tandem.items i on i.code = x->>'item_code'
+     where coalesce(nullif(x->>v_qkey, ''), '0') !~ '^-?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][-+]?[0-9]+)?$'
+        or coalesce(nullif(x->>'price', ''), '0') !~ '^-?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][-+]?[0-9]+)?$'
+     limit 1;
+    if v_bad is not null then
+      return tandem.err('validation', 'Количество и цена — числа: ' || v_bad); end if;
+    select i.name into v_bad from jsonb_array_elements(payload->'lines') x join tandem.items i on i.code = x->>'item_code'
+     where coalesce(nullif(x->>v_qkey, ''), '0')::numeric < 0 limit 1;
+    if v_bad is not null then
+      return tandem.err('validation', case when v_type = 'inventory' then 'Факт' else 'Количество' end
+                                      || ' не может быть меньше нуля: ' || v_bad); end if;
+    select i.name into v_bad from jsonb_array_elements(payload->'lines') x join tandem.items i on i.code = x->>'item_code'
+     where coalesce(nullif(x->>'price', ''), '0')::numeric < 0 limit 1;
+    if v_bad is not null then
+      return tandem.err('validation', 'Цена не может быть меньше нуля: ' || v_bad); end if;
+    if v_id is null and v_key is not null then
+      -- Повтор после потерянного ответа (двойное «Провести», обрыв связи на телефоне): тот же ключ
+      -- формы — тот же документ, второй не заводится (ревью п. 6, 16, 20). Сохранения с одним ключом
+      -- идут по очереди, иначе оба успевали бы не найти документ и завести по своему.
+      perform pg_advisory_xact_lock(hashtext('tandem.doc_key:' || v_key));
+      select id into v_id from tandem.documents where client_key = v_key;
+    end if;
     if v_id is null then
+      if v_date < date '2024-01-01' or (v_date > tandem.local_now()::date + 1
+           and coalesce(current_setting('tandem.orders_docs', true), '') <> '1') then
+        return tandem.err('validation', 'Дата документа — не раньше 01.01.2024 и не позже завтрашнего дня');
+      end if;
       v_num := tandem.next_doc_number(v_type, v_date);
       insert into tandem.documents (doc_type, number, doc_date, store_from, store_to, counteragent_id, reason,
-                                    comment, ext_number, ext_date, created_by, updated_by)
+                                    comment, ext_number, ext_date, created_by, updated_by, client_key)
         values (v_type, v_num, v_date, v_from, v_to, v_ca, v_reason,
-                payload->>'comment', v_ext_num, v_ext_date, v_user.id, v_user.id)
+                payload->>'comment', v_ext_num, v_ext_date, v_user.id, v_user.id, v_key)
         returning id into v_id;
     else
       -- C1: документ берётся под лок до проверки статуса — иначе параллельное проведение
@@ -3318,6 +4443,12 @@ begin
       -- и чужой черновик не перетащить на свой склад: проверяется и старый склад документа.
       if not tandem.user_store_ok(v_user.id, tandem.doc_own_store(v_doc.doc_type, v_doc.store_from, v_doc.store_to)) then
         return tandem.err('forbidden', 'Документ чужого склада'); end if;
+      -- окно дат — только если дату меняют (второй круг V3)
+      if v_date is distinct from v_doc.doc_date
+         and (v_date < date '2024-01-01' or (v_date > tandem.local_now()::date + 1
+              and coalesce(current_setting('tandem.orders_docs', true), '') <> '1')) then
+        return tandem.err('validation', 'Дата документа — не раньше 01.01.2024 и не позже завтрашнего дня');
+      end if;
       v_num := v_doc.number;
       update tandem.documents set doc_date = v_date, store_from = v_from, store_to = v_to, counteragent_id = v_ca,
         reason = v_reason, comment = payload->>'comment', ext_number = v_ext_num, ext_date = v_ext_date,
@@ -3375,14 +4506,19 @@ begin
     return jsonb_build_object('ok', true, 'rows', (
       select coalesce(jsonb_agg(jsonb_build_object(
         'report_id', r.id, 'report_date', r.report_date, 'point_id', p.id, 'point_name', p.name,
-        'point_mode', p.mode, 'store_id', p.default_store_id, 'store_name', st.name,
+        -- склад продажи: у созданного документа — его собственный (документ остаётся на складе дня, 0041)
+        'point_mode', p.mode, 'store_id', coalesce(d.store_from, p.default_store_id), 'store_name', st.name,
         'money', r.cash + r.kaspi_qr + r.transfer + r.card,
         'lines', (select count(*) from tandem.sale_lines s where s.report_id = r.id)
                + (select count(*) from tandem.takeout_lines t where t.report_id = r.id),
         'doc_id', d.id, 'number', d.number, 'status', d.status, 'cost', d.total_sum, 'sync_note', d.sync_note,
         'sale_sum', (select sum(l.sum) from tandem.document_lines l where l.document_id = d.id and l.line_kind = 'item'),
-        'state', case when d.id is not null and d.status = 'posted' and d.sync_note like 'Отчёт изменён%' then 'locked'
-                      when d.id is not null and d.status = 'posted' and d.sync_note like 'Сбой%' then 'stale'
+        -- «Не пересчитана после изменения «готовым»…» — пересборку не пускает инвентаризация (как «изменён»);
+        -- «Пересчёт: …» — помечена, ждёт пересборки частями (второй круг V7, V10)
+        'state', case when d.id is not null and d.status = 'posted'
+                           and (d.sync_note like 'Отчёт изменён%' or d.sync_note like 'Не пересчитана%') then 'locked'
+                      when d.id is not null and d.status = 'posted'
+                           and (d.sync_note like 'Сбой%' or d.sync_note like 'Пересчёт:%') then 'stale'
                       when d.id is not null and d.status = 'posted' then 'posted'
                       when d.id is not null then 'draft'
                       when p.default_store_id is null then 'no_store'
@@ -3393,8 +4529,8 @@ begin
         order by r.report_date desc, p.sort_order), '[]'::jsonb)
       from tandem.daily_reports r
       join tandem.points p on p.id = r.point_id
-      left join tandem.stores st on st.id = p.default_store_id
       left join tandem.documents d on d.source_kind = 'daily_report' and d.source_id = r.id::text
+      left join tandem.stores st on st.id = coalesce(d.store_from, p.default_store_id)
       where r.report_date between v_d1 and v_d2
         and (nullif(payload->>'point_id','') is null or r.point_id = payload->>'point_id')
         and (not exists (select 1 from tandem.user_stores us where us.user_id = v_user.id)
@@ -3424,6 +4560,8 @@ begin
         v_res := tandem.sale_sync(v_rep.id);
       exception when others then
         v_res := jsonb_build_object('status', 'error');
+        -- замки в порядке sale_sync: отчёт, потом документ (второй круг V11)
+        perform 1 from tandem.daily_reports where id = v_rep.id for update;
         update tandem.documents set sync_note = 'Сбой пересчёта: ' || sqlerrm
           where source_kind = 'daily_report' and source_id = v_rep.id::text;
       end;
@@ -3437,8 +4575,9 @@ begin
   if action = 'stock_balances' then
     select coalesce(jsonb_agg(to_jsonb(x) - 'cnt'), '[]'::jsonb), coalesce(max(x.cnt), 0)
       into v_rows, v_total from (
+      -- Сумма — стоимость остатка value, а не qty × средняя: она равна сумме движений пары (0041, ревью п. 9).
       select b.store_id, s.name as store_name, b.item_code, i.name, i.unit_id, b.qty, b.avg_cost,
-             round(b.qty * b.avg_cost, 2) as sum, count(*) over () as cnt
+             round(b.value, 2) as sum, count(*) over () as cnt
       from tandem.stock_balances b
       join tandem.stores s on s.id = b.store_id
       join tandem.items i on i.code = b.item_code
@@ -3448,7 +4587,7 @@ begin
       order by s.name, i.name limit 200 offset (v_page-1)*200) x;
     -- Итог считается по всей отобранной выборке, а не по одной странице,
     -- иначе сумма под таблицей меняется при листании.
-    select coalesce(sum(round(b.qty * b.avg_cost, 2)), 0) into v_sum
+    select coalesce(sum(round(b.value, 2)), 0) into v_sum
       from tandem.stock_balances b
       join tandem.stores s on s.id = b.store_id
       join tandem.items i on i.code = b.item_code
@@ -3456,10 +4595,13 @@ begin
         and (v_q = '' or i.name ilike '%'||v_q||'%' or i.code = v_q)
         and (coalesce((payload->>'only_nonzero')::boolean, true) = false or b.qty <> 0);
     -- CSV — тяжёлая строка на весь список, строится только по явному запросу экспорта.
+    -- Числа — с десятичной запятой: при разделителе «;» русский Excel иначе делает из 1.5 дату
+    -- «01.май», а среднюю цену оставляет текстом (контракт п. 16, ревью п. 74).
     if coalesce((payload->>'export')::boolean, false) then
       select 'store;code;name;unit;qty;avg_cost;sum' || E'\n' ||
              coalesce(string_agg(concat_ws(';', replace(s.name, ';', ','), b.item_code, replace(i.name, ';', ','), i.unit_id,
-                                           b.qty, b.avg_cost, round(b.qty * b.avg_cost, 2)),
+                                           replace(b.qty::text, '.', ','), replace(b.avg_cost::text, '.', ','),
+                                           replace(round(b.value, 2)::text, '.', ',')),
                                  E'\n' order by s.name, i.name), '')
         into v_csv
         from tandem.stock_balances b
@@ -3478,8 +4620,9 @@ begin
   if action = 'stock_moves' then
     select coalesce(jsonb_agg(to_jsonb(x) - 'cnt'), '[]'::jsonb), coalesce(max(x.cnt), 0)
       into v_rows, v_total from (
+      -- строка с qty = 0 — переоценка остатка (второй круг V2): её сумма — поправка adj
       select m.id, m.move_date, m.posted_at, s.name as store_name, m.store_id, m.item_code, i.name,
-             m.qty, m.unit_cost, round(m.qty * m.unit_cost, 2) as sum,
+             m.qty, m.unit_cost, m.adj, round(m.qty * m.unit_cost + m.adj, 2) as sum,
              m.document_id, d.number, d.doc_type, count(*) over () as cnt
       from tandem.stock_moves m
       join tandem.documents d on d.id = m.document_id
@@ -3503,7 +4646,8 @@ begin
                    from tandem.stock_balances b join tandem.stores s on s.id = b.store_id
                    where b.item_code = v_code and b.qty <> 0 and tandem.user_store_ok(v_user.id, b.store_id)),
       'moves', (select coalesce(jsonb_agg(x), '[]'::jsonb) from (
-                  select m.move_date, s.name as store_name, m.qty, m.unit_cost, d.number, d.doc_type
+                  select m.move_date, s.name as store_name, m.qty, m.unit_cost, m.adj,
+                         round(m.qty * m.unit_cost + m.adj, 2) as sum, d.number, d.doc_type
                   from tandem.stock_moves m
                   join tandem.documents d on d.id = m.document_id
                   join tandem.stores s on s.id = m.store_id
@@ -3599,6 +4743,20 @@ begin
          or exists (select 1 from tandem.points where pin = payload->>'pin' and id <> v_point) then
         return tandem.err('validation', 'Этот код уже занят — придумайте другой'); end if;
     end if;
+    -- Перевод в «касса» посреди дня: первый чек пересобрал бы деньги и продажи дня из чеков и стёр
+    -- уже сданный отчёт. Если сегодня (по местной дате) отчёт с данными уже есть и он не из чеков —
+    -- режим меняют завтра.
+    if payload->>'mode' = 'checks'
+       and exists (select 1 from tandem.points where id = v_point and mode <> 'checks')
+       and exists (select 1 from tandem.daily_reports d
+                    where d.point_id = v_point and d.report_date = tandem.local_now()::date
+                      and (d.cash <> 0 or d.kaspi_qr <> 0 or d.transfer <> 0 or d.card <> 0
+                           or exists (select 1 from tandem.sale_lines s where s.report_id = d.id)
+                           or exists (select 1 from tandem.takeout_lines t where t.report_id = d.id)
+                           or exists (select 1 from tandem.cash_expenses e where e.report_id = d.id)))
+       and not exists (select 1 from tandem.checks c where c.point_id = v_point and c.check_date = tandem.local_now()::date) then
+      return tandem.err('validation', 'Сегодня у точки уже есть отчёт — переключите режим завтра');
+    end if;
     if not exists (select 1 from tandem.points where id = v_point) then
       if v_point !~ '^[a-z][a-z0-9_]{1,30}$' then
         return tandem.err('validation', 'Код новой точки — латиница, цифры и подчёркивание, например eneshka2'); end if;
@@ -3640,6 +4798,7 @@ declare
   v_id uuid; v_login text; v_name text; v_role text; v_pin text;
 begin
   if action = 'users_list' then
+    -- store_ids — все привязки, в том числе к выключенным складам: форма показывает их и отправляет обратно.
     return jsonb_build_object('ok', true,
       'users', (select coalesce(jsonb_agg(jsonb_build_object('id', id, 'login', login, 'name', name, 'role', role,
                   'active', active, 'must_change_pin', must_change_pin, 'created_at', created_at,
@@ -3657,6 +4816,16 @@ begin
     if v_name = '' then return tandem.err('validation', 'Имя пустое'); end if;
     if v_role not in ('admin','owner','accountant','technologist','storekeeper') then
       return tandem.err('validation', 'Роль не из списка');
+    end if;
+    -- Склады пользователя меняются, только если ключ пришёл: пустой массив снимает привязку (все склады).
+    -- Проверяются до записи: отказ после сохранения оставлял пользователя созданным, а повтор упирался
+    -- в «Такой логин уже есть».
+    if payload ? 'store_ids' then
+      if jsonb_typeof(payload->'store_ids') is distinct from 'array' then
+        return tandem.err('validation', 'Склады — списком'); end if;
+      if exists (select 1 from jsonb_array_elements_text(payload->'store_ids') x
+                  where not exists (select 1 from tandem.stores s where s.id::text = lower(btrim(x)))) then
+        return tandem.err('validation', 'Склад не найден — обновите страницу'); end if;
     end if;
     v_id := nullif(payload->>'id','')::uuid;
     if exists (select 1 from tandem.users where login = v_login and (v_id is null or id <> v_id)) then
@@ -3686,13 +4855,10 @@ begin
         delete from tandem.sessions where user_id = v_id;
       end if;
     end if;
-    -- Склады пользователя меняются, только если ключ пришёл: пустой массив снимает привязку.
     if payload ? 'store_ids' then
-      if jsonb_typeof(payload->'store_ids') <> 'array' then
-        return tandem.err('validation', 'Склады — списком'); end if;
       delete from tandem.user_stores where user_id = v_id;
       insert into tandem.user_stores (user_id, store_id)
-        select v_id, x::uuid from jsonb_array_elements_text(payload->'store_ids') x
+        select v_id, lower(btrim(x))::uuid from jsonb_array_elements_text(payload->'store_ids') x
         on conflict do nothing;
     end if;
     return jsonb_build_object('ok', true, 'id', v_id);
@@ -3711,6 +4877,236 @@ begin
 
   return tandem.err('unknown_action', 'Неизвестное действие: ' || action);
 end $function$
+;
+
+CREATE OR REPLACE FUNCTION tandem.order_get(p_point text, p_for_date date)
+ RETURNS jsonb
+ LANGUAGE sql
+ STABLE
+ SET search_path TO 'tandem', 'public'
+AS $function$
+  select jsonb_build_object('ok', true, 'for_date', p_for_date,
+    'open', tandem.order_open(p_for_date) and not tandem.order_locked(p_for_date),
+    'cutoff', coalesce((select value from tandem.settings where key = 'orders_cutoff'), '20:00'),
+    'tomorrow', tandem.local_now()::date + 1,
+    'order', (select jsonb_build_object('sent_by', o.sent_by, 'comment', o.comment, 'updated_at', o.updated_at,
+        'lines', (select coalesce(jsonb_agg(jsonb_build_object('item_code', l.item_code, 'name', i.name, 'unit', i.unit_id, 'qty', l.qty) order by i.name), '[]'::jsonb)
+                    from tandem.order_lines l join tandem.items i on i.code = l.item_code where l.order_id = o.id))
+      from tandem.orders o where o.point_id = p_point and o.for_date = p_for_date))
+$function$
+;
+
+CREATE OR REPLACE FUNCTION tandem.order_locked(p_for_date date)
+ RETURNS boolean
+ LANGUAGE sql
+ STABLE
+ SET search_path TO 'tandem', 'public'
+AS $function$
+  select exists (select 1 from tandem.documents where source_kind = 'orders' and source_id like p_for_date::text || '/%')
+$function$
+;
+
+CREATE OR REPLACE FUNCTION tandem.order_open(p_for_date date)
+ RETURNS boolean
+ LANGUAGE sql
+ STABLE
+ SET search_path TO 'tandem', 'public'
+AS $function$
+  select p_for_date > tandem.local_now()::date + 1
+      or (p_for_date = tandem.local_now()::date + 1
+          and tandem.local_now()::time < coalesce((select value from tandem.settings where key = 'orders_cutoff'), '20:00')::time)
+$function$
+;
+
+CREATE OR REPLACE FUNCTION tandem.order_save(p_point text, payload jsonb)
+ RETURNS jsonb
+ LANGUAGE plpgsql
+ SET search_path TO 'tandem', 'public'
+AS $function$
+declare
+  v_date date;
+  v_id   bigint;
+  v_bad  text;
+begin
+  begin v_date := (payload->>'for_date')::date; exception when others then v_date := null; end;
+  if v_date is null then return jsonb_build_object('ok', false, 'error', 'Не указан день заявки'); end if;
+  -- Заявки дня и создание документов по ним идут по очереди: иначе правка, сохранённая в момент
+  -- создания перемещений, в них бы не попала.
+  perform pg_advisory_xact_lock(hashtext('tandem.orders:' || v_date::text));
+  if tandem.order_locked(v_date) then
+    return jsonb_build_object('ok', false, 'error', 'План на этот день уже передан в производство — заявку не изменить. Позвоните на кухню.'); end if;
+  if not tandem.order_open(v_date) then
+    return jsonb_build_object('ok', false, 'error', 'Приём заявок на этот день закрыт (отсечка ' ||
+      coalesce((select value from tandem.settings where key = 'orders_cutoff'), '20:00') || '). Подайте на следующий день.'); end if;
+  if jsonb_typeof(payload->'lines') is distinct from 'array' then
+    return jsonb_build_object('ok', false, 'error', 'Нет строк заявки'); end if;
+  if exists (select 1 from jsonb_array_elements(payload->'lines') x
+              where coalesce(x->>'qty', '') !~ '^[0-9]+([.][0-9]+)?$' or (x->>'qty')::numeric <= 0
+                 or nullif(btrim(coalesce(x->>'item_code', '')), '') is null) then
+    return jsonb_build_object('ok', false, 'error', 'В каждой строке — позиция и количество больше нуля'); end if;
+  select string_agg(coalesce(i.name, x->>'item_code'), ', ') into v_bad
+    from jsonb_array_elements(payload->'lines') x
+    left join tandem.items i on i.code = x->>'item_code' and i.active and i.for_sale
+   where i.code is null;
+  if v_bad is not null then return jsonb_build_object('ok', false, 'error', 'Позиции нет в продаже: ' || v_bad); end if;
+  -- Штучное — только целыми: полтора беляша не испечь.
+  select string_agg(i.name, ', ') into v_bad
+    from jsonb_array_elements(payload->'lines') x join tandem.items i on i.code = x->>'item_code'
+   where i.unit_id in ('шт', 'порц') and (x->>'qty')::numeric <> trunc((x->>'qty')::numeric);
+  if v_bad is not null then return jsonb_build_object('ok', false, 'error', 'Штучные позиции — только целым числом: ' || v_bad); end if;
+
+  if jsonb_array_length(payload->'lines') = 0 then
+    delete from tandem.orders where point_id = p_point and for_date = v_date;
+    return tandem.order_get(p_point, v_date);
+  end if;
+  insert into tandem.orders (point_id, for_date, sent_by, comment)
+    values (p_point, v_date, nullif(btrim(coalesce(payload->>'sent_by', '')), ''), nullif(btrim(coalesce(payload->>'comment', '')), ''))
+    on conflict (point_id, for_date) do update set sent_by = excluded.sent_by, comment = excluded.comment, updated_at = now()
+    returning id into v_id;
+  delete from tandem.order_lines where order_id = v_id;
+  insert into tandem.order_lines (order_id, item_code, qty)
+    select v_id, x->>'item_code', sum((x->>'qty')::numeric) from jsonb_array_elements(payload->'lines') x group by x->>'item_code';
+  return tandem.order_get(p_point, v_date);
+end $function$
+;
+
+CREATE OR REPLACE FUNCTION tandem.orders_make_docs(p_for_date date, p_user tandem.users, p_force boolean DEFAULT false, p_store uuid DEFAULT NULL::uuid)
+ RETURNS jsonb
+ LANGUAGE plpgsql
+ SET search_path TO 'tandem', 'public'
+AS $function$
+declare
+  v_store uuid := coalesce(p_store, nullif((select value from tandem.settings where key = 'orders_store_id'), '')::uuid);
+  v_lines jsonb;
+  v_r     jsonb;
+  v_made  int := 0;
+  v_skip  text := '';
+  v_bad   text;
+  pt      record;
+begin
+  perform pg_advisory_xact_lock(hashtext('tandem.orders:' || p_for_date::text));
+  if p_store is not null and not exists (select 1 from tandem.stores where id = p_store and active) then
+    return tandem.err('validation', 'Склад кухни не найден или выключен'); end if;
+  if v_store is null or not exists (select 1 from tandem.stores where id = v_store and active) then
+    return tandem.err('validation', 'Не выбран склад кухни, с которого отгружаются заявки'); end if;
+  if not exists (select 1 from tandem.orders where for_date = p_for_date) then
+    return tandem.err('validation', 'На этот день заявок нет'); end if;
+  if tandem.order_open(p_for_date) and not p_force then
+    return tandem.err('validation', 'Приём заявок на этот день ещё открыт — точки могут поправить заявки. Создать документы всё равно?'); end if;
+  -- Дробный выпуск штучных, отмеченный до 0041, при раскладке тихо терялся — пусть его исправят.
+  select string_agg(i.name, ', ' order by i.name) into v_bad
+    from tandem.order_plan pl join tandem.items i on i.code = pl.item_code
+   where pl.for_date = p_for_date and i.unit_id in ('шт', 'порц') and pl.fact_qty <> trunc(pl.fact_qty);
+  if v_bad is not null then
+    return tandem.err('validation', 'Штучные позиции — выпуск только целым числом, исправьте выпуск: ' || v_bad); end if;
+
+  create temp table if not exists _ord_alloc (point_id text, item_code text, qty numeric) on commit drop;
+  truncate _ord_alloc;
+  insert into _ord_alloc
+  with b as (
+    select o.point_id, l.item_code, l.qty, pl.fact_qty, i.unit_id in ('шт', 'порц') as whole,
+           sum(l.qty) over (partition by l.item_code) as total
+      from tandem.order_lines l join tandem.orders o on o.id = l.order_id
+      join tandem.items i on i.code = l.item_code
+      left join tandem.order_plan pl on pl.for_date = p_for_date and pl.item_code = l.item_code
+     where o.for_date = p_for_date
+  ), e as (
+    select *, case when fact_qty is null then qty else qty * fact_qty / total end as exact from b
+  ), f as (
+    -- База: заявка как есть, если выпуск не отмечен; иначе доля выпуска — у штучных целая часть, у весовых
+    -- с точностью 0,001 вниз. Остаток выпуска раздаётся ниже шагом 1 или 0,001 тем, у кого отброшенная
+    -- часть больше, — сумма по точкам равна выпуску (у весовых прежде терялось до 0,001 на точку).
+    select *, case when fact_qty is null then round(exact, 3)
+                   when whole then floor(exact)
+                   else trunc(exact, 3) end as base from e
+  ), r as (
+    select *, row_number() over (partition by item_code order by exact - base desc, point_id) as rn,
+           case when fact_qty is null then 0
+                when whole then fact_qty - sum(base) over (partition by item_code)
+                else round((fact_qty - sum(base) over (partition by item_code)) * 1000) end as rest
+      from f
+  )
+  select point_id, item_code, base + case when rn <= rest then case when whole then 1 else 0.001 end else 0 end from r;
+
+  -- Документы плана датируются днём плана, а он бывает и позже завтрашнего: окно дат doc_save
+  -- (не позже завтра) на время этого вызова открыто. Настройка живёт до конца транзакции,
+  -- и выставить её можно только изнутри базы — через бэк-офис её не передать.
+  perform set_config('tandem.orders_docs', '1', true);
+
+  if not exists (select 1 from tandem.documents where source_kind = 'orders' and source_id = p_for_date::text || '/production') then
+    select coalesce(jsonb_agg(jsonb_build_object('item_code', x.item_code, 'qty', x.q)), '[]'::jsonb) into v_lines
+      from (select a.item_code, sum(a.qty) q from _ord_alloc a
+             where tandem.active_chart(a.item_code, p_for_date) is not null group by a.item_code) x where x.q > 0;
+    if jsonb_array_length(v_lines) > 0 then
+      v_r := tandem.office_stock('doc_save', jsonb_build_object('doc_type', 'production', 'doc_date', p_for_date,
+               'store_from', v_store, 'comment', 'План выпечки на ' || to_char(p_for_date, 'DD.MM.YYYY'), 'lines', v_lines), p_user);
+      if not coalesce((v_r->>'ok')::boolean, false) then
+        raise exception using errcode = 'P0001', message = 'Акт производства не создан: ' || coalesce(v_r->>'message', v_r->>'error', 'ошибка'); end if;
+      update tandem.documents set source_kind = 'orders', source_id = p_for_date::text || '/production' where id = (v_r->>'id')::uuid;
+      -- Строки «готовым» (кухня — склад точки) ставит проведение акта, а не черновик (второй круг V4).
+      v_made := v_made + 1;
+    end if;
+  end if;
+
+  for pt in select o.point_id, p.name, p.default_store_id from tandem.orders o join tandem.points p on p.id = o.point_id
+             where o.for_date = p_for_date order by p.sort_order loop
+    continue when exists (select 1 from tandem.documents where source_kind = 'orders' and source_id = p_for_date::text || '/' || pt.point_id);
+    if pt.default_store_id is null or pt.default_store_id = v_store then
+      v_skip := v_skip || case when v_skip = '' then '' else ', ' end || pt.name; continue; end if;
+    select coalesce(jsonb_agg(jsonb_build_object('item_code', item_code, 'qty', qty)), '[]'::jsonb) into v_lines
+      from _ord_alloc where point_id = pt.point_id and qty > 0;
+    continue when jsonb_array_length(v_lines) = 0;
+    v_r := tandem.office_stock('doc_save', jsonb_build_object('doc_type', 'transfer', 'doc_date', p_for_date,
+             'store_from', v_store, 'store_to', pt.default_store_id, 'comment', 'Заявка «' || pt.name || '» на ' || to_char(p_for_date, 'DD.MM.YYYY'),
+             'lines', v_lines), p_user);
+    if not coalesce((v_r->>'ok')::boolean, false) then
+      raise exception using errcode = 'P0001', message = 'Перемещение для «' || pt.name || '» не создано: ' || coalesce(v_r->>'message', v_r->>'error', 'ошибка'); end if;
+    update tandem.documents set source_kind = 'orders', source_id = p_for_date::text || '/' || pt.point_id where id = (v_r->>'id')::uuid;
+    -- Позиции с картой склад точки получает готовыми с дня плана — строку ставит проведение перемещения
+    -- по его фактическим строкам, а не черновик (второй круг V4).
+    v_made := v_made + 1;
+  end loop;
+  perform set_config('tandem.orders_docs', '', true);
+  return jsonb_build_object('ok', true, 'made', v_made, 'skipped', nullif(v_skip, ''));
+end $function$
+;
+
+CREATE OR REPLACE FUNCTION tandem.orders_report(p_for_date date)
+ RETURNS jsonb
+ LANGUAGE sql
+ STABLE
+ SET search_path TO 'tandem', 'public'
+AS $function$
+  select jsonb_build_object('ok', true, 'for_date', p_for_date, 'open', tandem.order_open(p_for_date), 'locked', tandem.order_locked(p_for_date),
+    'cutoff', coalesce((select value from tandem.settings where key = 'orders_cutoff'), '20:00'),
+    'store_id', (select value from tandem.settings where key = 'orders_store_id'),
+    'orders', (select coalesce(jsonb_agg(jsonb_build_object('point_id', o.point_id, 'point_name', p.name, 'sent_by', o.sent_by,
+        'comment', o.comment, 'updated_at', o.updated_at, 'has_store', p.default_store_id is not null,
+        'lines', (select count(*) from tandem.order_lines l where l.order_id = o.id)) order by p.sort_order), '[]'::jsonb)
+      from tandem.orders o join tandem.points p on p.id = o.point_id where o.for_date = p_for_date),
+    'plan', (select coalesce(jsonb_agg(jsonb_build_object('item_code', x.item_code, 'name', i.name, 'unit', i.unit_id, 'qty', x.q,
+        'fact', pl.fact_qty, 'has_chart', tandem.active_chart(x.item_code, p_for_date) is not null, 'by_point', x.byp) order by i.name), '[]'::jsonb)
+      from (select l.item_code, sum(l.qty) q, jsonb_object_agg(o.point_id, l.qty) byp
+              from tandem.order_lines l join tandem.orders o on o.id = l.order_id
+             where o.for_date = p_for_date group by l.item_code) x
+      join tandem.items i on i.code = x.item_code
+      left join tandem.order_plan pl on pl.for_date = p_for_date and pl.item_code = x.item_code),
+    'docs', (select coalesce(jsonb_agg(jsonb_build_object('id', d.id, 'number', d.number, 'doc_type', d.doc_type, 'status', d.status,
+        'source_id', d.source_id) order by d.doc_type, d.number), '[]'::jsonb)
+      from tandem.documents d where d.source_kind = 'orders' and d.source_id like p_for_date::text || '/%'))
+$function$
+;
+
+CREATE OR REPLACE FUNCTION tandem.pin_ip_blocked(p_ip text)
+ RETURNS boolean
+ LANGUAGE sql
+ STABLE
+ SET search_path TO 'tandem', 'public'
+AS $function$
+  select p_ip is not null
+     and (select count(*) from tandem.pin_failures
+           where ip = p_ip and key <> 'master' and at > now() - interval '10 minutes') >= 30
+$function$
 ;
 
 CREATE OR REPLACE FUNCTION tandem.quality_report(p_user tandem.users)
@@ -3735,7 +5131,10 @@ begin
     -- Полуфабрикат-ингредиент без своей карты («Вода ПФ») так же обрывает расчёт: его учётную
     -- цену расчёт не читает, поэтому лечится картой либо сменой типа на «товар» с ценой.
     select i.code, i.name, ing.dishes,
-           case when i.item_type = 'goods' then '' else ' — полуфабрикат без техкарты: заведите карту или смените тип на «товар» и задайте цену' end as how
+           case when i.item_type = 'goods' then ''
+                when exists (select 1 from tandem.charts x where x.item_code = i.code)
+                  then ' — у полуфабриката нет действующей техкарты: продлите или заведите карту на сегодня'
+                else ' — полуфабрикат без техкарты: заведите карту или смените тип на «товар» и задайте цену' end as how
       from ing join tandem.items i on i.code = ing.code
      where (i.item_type = 'goods' and i.cost_price is null)
         or (i.item_type in ('dish','prepared') and tandem.active_chart(i.code, current_date) is null)
@@ -3796,16 +5195,37 @@ begin
     'title', 'Точки без склада',
     'hint', 'В разделе «Склады» откройте склад точки, выберите точку и отметьте «склад точки по умолчанию».');
 
-  -- 7. Продажи, которые не проведены или устарели, за последние 45 дней.
-  select count(*), coalesce(jsonb_agg(jsonb_build_object('code', number, 'name', point_name || ' · ' || doc_date, 'detail', coalesce(sync_note, 'не проведена')) order by doc_date desc) filter (where rn <= 300), '[]'::jsonb)
+  -- 7. Продажи, которые не проведены или устарели, за последние 45 дней — и отчёты точек с действующим
+  -- складом, по которым документ продажи так и не создан: склад привязали позже, или первое создание
+  -- сорвалось и пометку ставить было некуда (0041, ревью п. 70). Отчёт без проданного (только услуги,
+  -- вынос вернули) документа и не должен иметь — его не показываем.
+  select count(*), coalesce(jsonb_agg(jsonb_build_object('code', number, 'name', point_name || ' · ' || doc_date, 'detail', detail) order by doc_date desc) filter (where rn <= 300), '[]'::jsonb)
     into v_count, v_rows from (
-      select d.number, d.doc_date, d.sync_note, p.name as point_name, row_number() over (order by d.doc_date desc) rn
-        from tandem.documents d
-        join tandem.daily_reports r on d.source_kind = 'daily_report' and d.source_id = r.id::text
-        join tandem.points p on p.id = r.point_id
-       where d.doc_type = 'sale' and d.doc_date >= current_date - 45
-         and (d.status <> 'posted' or d.sync_note like 'Сбой%' or d.sync_note like 'Отчёт изменён%')
-         and tandem.user_store_ok(p_user.id, d.store_from)) x;
+      select y.*, row_number() over (order by y.doc_date desc, y.point_name) rn from (
+        select d.number, d.doc_date, coalesce(d.sync_note, 'не проведена') as detail, p.name as point_name
+          from tandem.documents d
+          join tandem.daily_reports r on d.source_kind = 'daily_report' and d.source_id = r.id::text
+          join tandem.points p on p.id = r.point_id
+         where d.doc_type = 'sale' and d.doc_date >= current_date - 45
+           -- и помеченные пересчётом «готовым» или не пересчитанные после него (второй круг V7, V10)
+           and (d.status <> 'posted' or d.sync_note like 'Сбой%' or d.sync_note like 'Отчёт изменён%'
+                or d.sync_note like 'Пересчёт:%' or d.sync_note like 'Не пересчитана%')
+           and tandem.user_store_ok(p_user.id, d.store_from)
+        union all
+        select null, r.report_date, 'продажа не создана — нажмите «Провести продажи за период»', p.name
+          from tandem.daily_reports r
+          join tandem.points p on p.id = r.point_id
+          join tandem.stores s on s.id = p.default_store_id and s.active
+         where r.report_date >= current_date - 45
+           and tandem.user_store_ok(p_user.id, p.default_store_id)
+           and not exists (select 1 from tandem.documents d where d.source_kind = 'daily_report' and d.source_id = r.id::text)
+           and exists (select 1 from (select sl.item_code, sl.qty as q from tandem.sale_lines sl
+                                       where sl.report_id = r.id and sl.item_code is not null
+                                      union all
+                                      select t.item_code, t.issued - t.returned from tandem.takeout_lines t
+                                       where t.report_id = r.id and t.item_code is not null) u
+                         join tandem.items i on i.code = u.item_code
+                        where i.item_type <> 'service' group by u.item_code having sum(u.q) > 0)) y) x;
   v_checks := v_checks || jsonb_build_object('id', 'sales_not_posted', 'severity', 'bad', 'target', 'sale', 'count', v_count, 'rows', v_rows,
     'title', 'Продажи не проведены', 'hint', 'Откройте вкладку «Продажи» и нажмите «Провести продажи за период». Если мешает инвентаризация — причина написана в строке.');
 
@@ -3841,26 +5261,33 @@ CREATE OR REPLACE FUNCTION tandem.rebuild_balance(p_store uuid, p_item text)
  RETURNS void
  LANGUAGE plpgsql
 AS $function$
-declare r record; v_qty numeric := 0; v_avg numeric := 0;
+declare r record; s record; v_qty numeric := 0; v_val numeric := 0; v_avg numeric := 0;
 begin
   -- I3: пара захватывается первым же оператором, до чтения движений. on conflict do update
   -- блокирует строку всегда (do nothing — не блокирует), поэтому параллельная отмена
   -- проведения не может пересобрать ту же пару по половине движений.
   insert into tandem.stock_balances (store_id, item_code) values (p_store, p_item)
     on conflict (store_id, item_code) do update set updated_at = now();
+  -- Строки-поправки (qty = 0) пары зависят от порядка и состава движений — они пересчитываются заново
+  -- (второй круг V2): старые удаляются, новые пишутся на документ, строку и дату вызвавшего их прихода.
+  delete from tandem.stock_moves where store_id = p_store and item_code = p_item and qty = 0;
   -- Порядок — по id: posted_at внутри одной транзакции одинаков у всех её движений
   -- (now() не меняется), и сортировка по нему неустойчива — средняя зависела бы от плана.
-  for r in select qty, unit_cost from tandem.stock_moves where store_id = p_store and item_code = p_item
-           order by id loop
-    if r.qty > 0 then
-      if v_qty <= 0 then v_avg := r.unit_cost;
-      else v_avg := round((v_qty * v_avg + r.qty * r.unit_cost) / (v_qty + r.qty), 4); end if;
+  -- Арифметика стоимости — ровно как в apply_move (tandem.move_step).
+  for r in select document_id, line_id, qty, unit_cost, move_date, posted_at from tandem.stock_moves
+            where store_id = p_store and item_code = p_item and qty <> 0
+            order by id loop
+    select * into s from tandem.move_step(v_qty, v_val, v_avg, r.qty, r.unit_cost);
+    if s.o_adj <> 0 then
+      insert into tandem.stock_moves (document_id, line_id, store_id, item_code, qty, unit_cost, adj, move_date, posted_at)
+        values (r.document_id, r.line_id, p_store, p_item, 0, 0, s.o_adj, r.move_date, r.posted_at);
     end if;
-    v_qty := v_qty + r.qty;
+    v_qty := s.o_qty; v_val := s.o_val; v_avg := s.o_avg;
   end loop;
-  insert into tandem.stock_balances (store_id, item_code, qty, avg_cost, updated_at)
-    values (p_store, p_item, v_qty, v_avg, now())
-    on conflict (store_id, item_code) do update set qty = excluded.qty, avg_cost = excluded.avg_cost, updated_at = now();
+  insert into tandem.stock_balances (store_id, item_code, qty, value, avg_cost, updated_at)
+    values (p_store, p_item, v_qty, v_val, v_avg, now())
+    on conflict (store_id, item_code) do update set qty = excluded.qty, value = excluded.value,
+       avg_cost = excluded.avg_cost, updated_at = now();
 end $function$
 ;
 
@@ -3868,14 +5295,16 @@ CREATE OR REPLACE FUNCTION tandem.rebuild_balances()
  RETURNS integer
  LANGUAGE plpgsql
 AS $function$
-declare r record; v_bad int := 0; v_qty numeric; v_avg numeric;
+declare r record; v_bad int := 0; v_qty numeric; v_avg numeric; v_val numeric; v_diff boolean;
 begin
   for r in select store_id, item_code from tandem.stock_balances
            union select store_id, item_code from tandem.stock_moves loop
-    select qty, avg_cost into v_qty, v_avg from tandem.stock_balances where store_id = r.store_id and item_code = r.item_code;
+    select qty, avg_cost, value into v_qty, v_avg, v_val from tandem.stock_balances where store_id = r.store_id and item_code = r.item_code;
     perform tandem.rebuild_balance(r.store_id, r.item_code);
-    if v_qty is distinct from (select qty from tandem.stock_balances where store_id = r.store_id and item_code = r.item_code)
-       or v_avg is distinct from (select avg_cost from tandem.stock_balances where store_id = r.store_id and item_code = r.item_code) then
+    -- Сверяется и стоимость остатка (0041): расхождение в ней — тоже повод пересобрать.
+    select b.qty is distinct from v_qty or b.avg_cost is distinct from v_avg or b.value is distinct from v_val into v_diff
+      from tandem.stock_balances b where b.store_id = r.store_id and b.item_code = r.item_code;
+    if v_diff then
       v_bad := v_bad + 1;
     end if;
   end loop;
@@ -3898,9 +5327,9 @@ declare
   v_id    uuid;
   v_num   text;
   v_note  text;
-  v_skip  text;
   v_inv   text;
   v_same  boolean;
+  v_ready boolean;   -- продажа помечена пересчётом «готовым со склада» (store_ready_mark)
 begin
   v_sys.role := 'admin';
   -- Лок отчёта: сохранение отчёта точкой и пересчёт из бэк-офиса идут по очереди. Без него
@@ -3911,14 +5340,32 @@ begin
   if r.id is null then return tandem.err('not_found', 'Отчёт не найден'); end if;
   select * into v_doc from tandem.documents
     where source_kind = 'daily_report' and source_id = p_report::text for update;
+  -- Пометку пересчёта «готовым» (и неудачу прошлого такого пересчёта) обычный пересчёт не стирает:
+  -- продажа помечена — значит, её списание расходится с тем, что склад получает готовым (второй круг V10).
+  v_ready := coalesce(v_doc.sync_note like 'Пересчёт: изменилось, что склад получает готовым%'
+                      or v_doc.sync_note like 'Не пересчитана после изменения «готовым%', false);
 
-  v_store := r.default_store_id;
-  if v_store is not null and not exists (select 1 from tandem.stores where id = v_store and active) then
-    v_store := null;
+  -- Склад продажи: у существующего документа — его собственный (склад на день продажи), склад точки —
+  -- только для нового. Иначе после смены склада точки пересчёт переносил всю историю её продаж на
+  -- новый склад (0041, ревью п. 36). Выключенный склад документа — пересчёт невозможен.
+  if v_doc.id is not null then
+    v_store := v_doc.store_from;
+    if not exists (select 1 from tandem.stores where id = v_store and active) then
+      update tandem.documents set sync_note = 'Склад продажи выключен — продажа не пересчитана'
+        where id = v_doc.id;
+      return jsonb_build_object('ok', true, 'status', 'no_store');
+    end if;
+  else
+    v_store := r.default_store_id;
+    if v_store is not null and not exists (select 1 from tandem.stores where id = v_store and active) then
+      v_store := null;
+    end if;
   end if;
 
-  -- Проданное по позиции: продажи + вынос (выдано − возвращено). Без кода, выключенные,
-  -- услуги и позиции с итогом ≤ 0 (возврат перекрыл продажу) в склад не идут.
+  -- Проданное по позиции: продажи + вынос (выдано − возвращено). Без кода, услуги и позиции
+  -- с итогом ≤ 0 (возврат перекрыл продажу) в склад не идут. Выключенные позиции — идут: их
+  -- продали, пока они были в работе, и выключение не должно снимать списание из проведённых
+  -- продаж при пересборке (0041, ревью п. 35).
   with u as (
     select s.item_code, s.qty as q, s.qty * coalesce(s.price, 0) as amt
       from tandem.sale_lines s where s.report_id = p_report and s.item_code is not null
@@ -3928,29 +5375,19 @@ begin
   ), g as (
     select u.item_code, sum(u.q) as q, sum(u.amt) as amt
       from u join tandem.items i on i.code = u.item_code
-     where i.active and i.item_type <> 'service'
+     where i.item_type <> 'service'
      group by u.item_code having sum(u.q) > 0
   )
   select coalesce(jsonb_agg(jsonb_build_object('item_code', item_code, 'qty', q,
            'price', round(amt / q, 2)) order by item_code), '[]'::jsonb)
     into v_lines from g;
-  -- Выключенные позиции в отчёте — в пометку: иначе склад разойдётся с отчётом без объяснения.
-  select string_agg(distinct i.name, ', ') into v_skip
-    from (select item_code from tandem.sale_lines where report_id = p_report and item_code is not null
-          union all
-          select item_code from tandem.takeout_lines where report_id = p_report and item_code is not null) u
-    join tandem.items i on i.code = u.item_code where not i.active;
 
-  if v_store is null then
-    if v_doc.id is not null then
-      update tandem.documents set sync_note = 'У точки нет действующего склада — продажа не пересчитана'
-        where id = v_doc.id;
-    end if;
+  if v_store is null then   -- сюда доходит только новый документ: у точки нет действующего склада
     return jsonb_build_object('ok', true, 'status', 'no_store');
   end if;
 
   if v_doc.id is not null and v_doc.status = 'posted' then
-    v_same := v_doc.store_from = v_store and v_doc.doc_date = r.report_date
+    v_same := v_doc.doc_date = r.report_date
        and not exists (
          select x.item_code, (x.qty)::numeric, (x.price)::numeric
            from jsonb_to_recordset(v_lines) x(item_code text, qty numeric, price numeric)
@@ -3964,8 +5401,8 @@ begin
          select x.item_code, (x.qty)::numeric, (x.price)::numeric
            from jsonb_to_recordset(v_lines) x(item_code text, qty numeric, price numeric));
     -- Строки те же и пометки нет (или она про «изменён после инвентаризации», а отчёт
-    -- вернули к проведённому) — документ верен. Иная пометка («без техкарты», «сбой») —
-    -- повод провести заново: например, технолог добавил карту.
+    -- вернули к проведённому) — документ верен. Иная пометка («без техкарты», «сбой»,
+    -- пересчёт «готовым») — повод провести заново: например, технолог добавил карту.
     if v_same and (v_doc.sync_note is null or v_doc.sync_note like 'Отчёт изменён%') then
       if v_doc.sync_note is not null then
         update tandem.documents set sync_note = null where id = v_doc.id;
@@ -3974,7 +5411,11 @@ begin
     end if;
     v_res := tandem.doc_unpost(v_doc.id, v_sys);
     if not coalesce((v_res->>'ok')::boolean, false) then
-      update tandem.documents set sync_note = 'Отчёт изменён после проведения, продажа не пересчитана: '
+      -- Пересчёт «готовым», которому мешает инвентаризация, — своя пометка: правило «Отчёт изменён%»
+      -- выше её не сбрасывает, и расхождение видно в продажах и «Готовности» (второй круг V10).
+      update tandem.documents set sync_note = case when v_ready
+               then 'Не пересчитана после изменения «готовым со склада»: '
+               else 'Отчёт изменён после проведения, продажа не пересчитана: ' end
              || coalesce(v_res->>'message', 'отмена проведения не удалась')
         where id = v_doc.id;
       return jsonb_build_object('ok', true, 'status', 'locked', 'doc_id', v_doc.id, 'number', v_doc.number,
@@ -3995,7 +5436,7 @@ begin
       returning id into v_id;
   else
     v_id := v_doc.id; v_num := v_doc.number;
-    update tandem.documents set store_from = v_store, doc_date = r.report_date, updated_at = now()
+    update tandem.documents set doc_date = r.report_date, updated_at = now()   -- склад документа остаётся своим
       where id = v_id;
     delete from tandem.document_lines where document_id = v_id;
   end if;
@@ -4006,7 +5447,9 @@ begin
 
   -- Инвентаризация этого склада более поздним днём уже учла проданное в своей недостаче:
   -- провести продажу сейчас — списать то же самое второй раз. Документ остаётся черновиком
-  -- с пометкой. Инвентаризация в тот же день считается утренней (до продаж) и не мешает.
+  -- с пометкой. Инвентаризация того же дня не мешает: расчёт у неё — «на конец дня» из уже проведённого;
+  -- проведённая до неё часть продажи в расчёте, пересборка снимает её и списывает снова вместе с новыми
+  -- чеками — после пересчёта уходит только проданное после него.
   select inv.number into v_inv from tandem.documents inv
    where inv.doc_type = 'inventory' and inv.status = 'posted' and inv.store_from = v_store
      and inv.doc_date > r.report_date
@@ -4031,13 +5474,21 @@ begin
     from tandem.document_lines l join tandem.items i on i.code = l.item_code
    where l.document_id = v_id and l.line_kind = 'item' and i.item_type in ('dish','prepared')
      and tandem.active_chart(l.item_code, r.report_date) is null;
-  update tandem.documents set sync_note = nullif(concat_ws('. ',
-           case when v_note is not null then 'Без техкарты списаны как есть: ' || v_note end,
-           case when v_skip is not null then 'Выключенные позиции не списаны: ' || v_skip end), '')
+  update tandem.documents set sync_note = case when v_note is not null then 'Без техкарты списаны как есть: ' || v_note end
     where id = v_id;
   return jsonb_build_object('ok', true, 'status', 'posted', 'doc_id', v_id, 'number', v_num,
                             'warnings', v_res->'warnings');
 end $function$
+;
+
+CREATE OR REPLACE FUNCTION tandem.stock_qty_at(p_store uuid, p_item text, p_date date)
+ RETURNS numeric
+ LANGUAGE sql
+ STABLE
+AS $function$
+  select coalesce(sum(m.qty), 0) from tandem.stock_moves m
+   where m.store_id = p_store and m.item_code = p_item and m.move_date <= p_date
+$function$
 ;
 
 CREATE OR REPLACE FUNCTION tandem.store_avg(p_store uuid, p_item text)
@@ -4045,9 +5496,147 @@ CREATE OR REPLACE FUNCTION tandem.store_avg(p_store uuid, p_item text)
  LANGUAGE sql
  STABLE
 AS $function$
-  select coalesce((select nullif(avg_cost, 0) from tandem.stock_balances where store_id = p_store and item_code = p_item),
-                  (select cost_price from tandem.items where code = p_item), 0)
+  -- Цена расхода: средняя склада; нет её — учётная цена позиции; нет и её — себестоимость по действующей
+  -- сегодня техкарте, если она посчитана целиком (полуфабрикаты и блюда без остатка на складе: у них почти
+  -- никогда нет учётной цены, и расход шёл по нулю — 0041, ревью п. 10); иначе 0.
+  select coalesce((select avg_cost from tandem.stock_balances where store_id = p_store and item_code = p_item and avg_cost > 0),
+                  (select cost_price from tandem.items where code = p_item and cost_price > 0),
+                  (select c.cost from tandem.item_cost(p_item, tandem.local_now()::date) c where c.cost > 0),
+                  0)
 $function$
+;
+
+CREATE OR REPLACE FUNCTION tandem.store_ready_mark(p_store uuid, p_item text, p_from date, p_to date)
+ RETURNS integer
+ LANGUAGE plpgsql
+ SET search_path TO 'tandem', 'public'
+AS $function$
+declare v_n int;
+begin
+  perform 1 from tandem.daily_reports r
+    where r.id in (select d.source_id::bigint from tandem.documents d
+                    where d.doc_type = 'sale' and d.status = 'posted' and d.source_kind = 'daily_report'
+                      and d.store_from = p_store and d.doc_date >= p_from and (p_to is null or d.doc_date < p_to)
+                      and exists (select 1 from tandem.document_lines l
+                                   where l.document_id = d.id and l.line_kind = 'item' and l.item_code = p_item))
+    order by r.id for update of r;
+  update tandem.documents d set sync_note = 'Пересчёт: изменилось, что склад получает готовым'
+   where d.doc_type = 'sale' and d.status = 'posted' and d.source_kind = 'daily_report'
+     and d.store_from = p_store and d.doc_date >= p_from and (p_to is null or d.doc_date < p_to)
+     and exists (select 1 from tandem.document_lines l
+                  where l.document_id = d.id and l.line_kind = 'item' and l.item_code = p_item);
+  get diagnostics v_n = row_count;
+  return v_n;
+end $function$
+;
+
+CREATE OR REPLACE FUNCTION tandem.store_ready_orders_recalc(p_store uuid, p_item text, p_except uuid)
+ RETURNS integer
+ LANGUAGE plpgsql
+ SET search_path TO 'tandem', 'public'
+AS $function$
+declare v_old date; v_src text; v_new date;
+begin
+  select date_from, source into v_old, v_src from tandem.store_ready where store_id = p_store and item_code = p_item for update;
+  if v_old is null or v_src <> 'orders' then return 0; end if;
+  select min(x.doc_date) into v_new
+    from tandem.documents x join tandem.document_lines l on l.document_id = x.id and l.line_kind = 'item'
+   where x.source_kind = 'orders' and x.status = 'posted' and x.id <> p_except and l.item_code = p_item
+     and ((x.doc_type = 'transfer' and x.store_to = p_store)
+          or (x.doc_type = 'production' and x.store_from = p_store
+              and exists (select 1 from tandem.points p where p.default_store_id = p_store and p.active)))
+     and tandem.active_chart(p_item, x.doc_date) is not null;
+  if v_new is null then
+    delete from tandem.store_ready where store_id = p_store and item_code = p_item;
+    return tandem.store_ready_mark(p_store, p_item, v_old, null);
+  end if;
+  if v_new = v_old then return 0; end if;
+  update tandem.store_ready set date_from = v_new where store_id = p_store and item_code = p_item;
+  return tandem.store_ready_mark(p_store, p_item, least(v_old, v_new), greatest(v_old, v_new));
+end $function$
+;
+
+CREATE OR REPLACE FUNCTION tandem.store_ready_resync_next(p_store uuid, p_user uuid, p_limit integer DEFAULT 5)
+ RETURNS jsonb
+ LANGUAGE plpgsql
+ SET search_path TO 'tandem', 'public'
+AS $function$
+declare r record; v_res jsonb; v_n int := 0; v_ids uuid[]; v_left int;
+begin
+  select array_agg(x.id order by x.doc_date, x.id) into v_ids from (
+    select d.id, d.doc_date from tandem.documents d
+     where d.doc_type = 'sale' and d.source_kind = 'daily_report'
+       and d.sync_note = 'Пересчёт: изменилось, что склад получает готовым'
+       and (p_store is null or d.store_from = p_store)
+       and (p_user is null or tandem.user_store_ok(p_user, d.store_from))
+     order by d.doc_date, d.id limit greatest(coalesce(p_limit, 5), 0)) x;
+  perform 1 from tandem.daily_reports dr
+    where dr.id in (select d.source_id::bigint from tandem.documents d where d.id = any(coalesce(v_ids, '{}')))
+    order by dr.id for update of dr;
+  for r in select d.id, d.source_id from unnest(coalesce(v_ids, '{}')) with ordinality u(id, ord)
+             join tandem.documents d on d.id = u.id order by u.ord loop
+    begin
+      v_res := tandem.sale_sync(r.source_id::bigint);
+      if v_res->>'status' = 'posted' then v_n := v_n + 1; end if;
+    exception
+      when lock_not_available then raise;
+      when others then
+        perform 1 from tandem.daily_reports where id = r.source_id::bigint for update;
+        update tandem.documents set sync_note = 'Сбой пересчёта: ' || sqlerrm where id = r.id;
+    end;
+  end loop;
+  select count(*) into v_left from tandem.documents d
+   where d.doc_type = 'sale' and d.source_kind = 'daily_report'
+     and d.sync_note = 'Пересчёт: изменилось, что склад получает готовым'
+     and (p_store is null or d.store_from = p_store)
+     and (p_user is null or tandem.user_store_ok(p_user, d.store_from));
+  return jsonb_build_object('resynced', v_n, 'remaining', v_left);
+end $function$
+;
+
+CREATE OR REPLACE FUNCTION tandem.store_ready_set(p_store uuid, p_item text, p_date date, p_source text)
+ RETURNS integer
+ LANGUAGE plpgsql
+ SET search_path TO 'tandem', 'public'
+AS $function$
+declare v_old date; v_src text; v_new date;
+begin
+  select date_from, source into v_old, v_src from tandem.store_ready where store_id = p_store and item_code = p_item for update;
+  if p_source = 'orders' and v_src = 'manual' then return 0; end if;
+  v_new := case when p_source = 'orders' then least(coalesce(v_old, p_date), p_date) else p_date end;
+  insert into tandem.store_ready (store_id, item_code, date_from, source) values (p_store, p_item, v_new, p_source)
+    on conflict (store_id, item_code) do update set date_from = excluded.date_from,
+       source = case when excluded.source = 'manual' then 'manual' else tandem.store_ready.source end;
+  if v_old is not distinct from v_new then return 0; end if;
+  return tandem.store_ready_mark(p_store, p_item, least(coalesce(v_old, v_new), v_new),
+                                 case when v_old is not null then greatest(v_old, v_new) end);
+end $function$
+;
+
+CREATE OR REPLACE FUNCTION tandem.to_date(p text)
+ RETURNS date
+ LANGUAGE plpgsql
+ IMMUTABLE
+AS $function$
+begin
+  if p is null or p !~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' then return null; end if;
+  return p::date;
+exception when others then
+  return null;
+end $function$
+;
+
+CREATE OR REPLACE FUNCTION tandem.to_num(p text)
+ RETURNS numeric
+ LANGUAGE plpgsql
+ IMMUTABLE
+AS $function$
+declare
+  v text := tandem.num_clean(p);
+begin
+  if v = '' or not tandem.num_ok(p) then return null; end if;
+  return v::numeric;
+end $function$
 ;
 
 CREATE OR REPLACE FUNCTION tandem.user_doc_ok(p_user uuid, p_from uuid, p_to uuid)
@@ -4109,387 +5698,72 @@ begin
 end $function$
 ;
 
-CREATE OR REPLACE FUNCTION tandem.check_rollup(p_point text, p_date date)
- RETURNS bigint
- LANGUAGE plpgsql
- SET search_path TO 'tandem', 'public'
-AS $function$
-declare
-  v_id bigint;
-begin
-  insert into tandem.daily_reports (point_id, report_date) values (p_point, p_date)
-    on conflict (point_id, report_date) do nothing;
-  select id into v_id from tandem.daily_reports where point_id = p_point and report_date = p_date for update;
-  update tandem.daily_reports d set
-      cash     = coalesce((select sum(total) from tandem.checks where point_id = p_point and check_date = p_date and status = 'active' and pay_kind = 'cash'), 0),
-      kaspi_qr = coalesce((select sum(total) from tandem.checks where point_id = p_point and check_date = p_date and status = 'active' and pay_kind = 'kaspi_qr'), 0),
-      transfer = coalesce((select sum(total) from tandem.checks where point_id = p_point and check_date = p_date and status = 'active' and pay_kind = 'transfer'), 0),
-      card     = coalesce((select sum(total) from tandem.checks where point_id = p_point and check_date = p_date and status = 'active' and pay_kind = 'card'), 0),
-      updated_at = now()
-    where d.id = v_id;
-  delete from tandem.sale_lines where report_id = v_id;
-  insert into tandem.sale_lines (report_id, item_code, item_name, qty, price, price_list)
-    -- Одна строка на позицию (в sale_lines название уникально внутри отчёта): цена — средняя по чекам,
-    -- скидка видна как разница с ценой прейскуранта. Два кода с одним названием различаются кодом в скобках.
-    select v_id, g.item_code,
-           g.item_name || case when count(*) over (partition by g.item_name) > 1 then ' [' || g.item_code || ']' else '' end,
-           g.qty, g.price, g.price_list
-      from (select l.item_code, min(l.item_name) as item_name, sum(l.qty) as qty,
-                   round(sum(l.qty * l.price) / sum(l.qty), 2) as price, max(l.price_list) as price_list
-              from tandem.check_lines l join tandem.checks c on c.id = l.check_id
-             where c.point_id = p_point and c.check_date = p_date and c.status = 'active'
-             group by l.item_code) g
-     order by g.item_name;
-  return v_id;
-end $function$
-;
-
-CREATE OR REPLACE FUNCTION tandem.check_apply(p_point text, p_date date)
- RETURNS void
- LANGUAGE plpgsql
- SET search_path TO 'tandem', 'public'
-AS $function$
-declare
-  v_id bigint;
-begin
-  v_id := tandem.check_rollup(p_point, p_date);
-  begin
-    perform tandem.sale_sync(v_id);
-  exception when others then
-    begin
-      update tandem.documents set sync_note = 'Сбой при сохранении чека: ' || sqlerrm
-             || ' — нажмите «Провести продажи за период»'
-        where source_kind = 'daily_report' and source_id = v_id::text;
-    exception when others then null;
-    end;
-  end;
-end $function$
-;
-
-CREATE OR REPLACE FUNCTION tandem.check_save(p_point text, payload jsonb)
- RETURNS jsonb
- LANGUAGE plpgsql
- SET search_path TO 'tandem', 'public'
-AS $function$
-declare
-  v_uid   uuid;
-  v_date  date := nullif(payload->>'date','')::date;
-  v_pay   text := payload->>'pay_kind';
-  v_chk   tandem.checks;
-  v_id    bigint;
-  v_bad   text;
-  v_total numeric;
-  v_was   text;
-begin
-  begin v_uid := (payload->>'uid')::uuid; exception when others then v_uid := null; end;
-  if v_uid is null then return jsonb_build_object('ok', false, 'error', 'У чека нет номера устройства (uid)'); end if;
-  if v_pay is null or v_pay not in ('cash','kaspi_qr','transfer','card') then
-    return jsonb_build_object('ok', false, 'error', 'Не выбран способ оплаты'); end if;
-  if jsonb_typeof(payload->'lines') is distinct from 'array' or jsonb_array_length(payload->'lines') = 0 then
-    return jsonb_build_object('ok', false, 'error', 'В чеке нет позиций'); end if;
-  if exists (select 1 from jsonb_array_elements(payload->'lines') x
-              where coalesce(nullif(x->>'qty','')::numeric, 0) <= 0 or coalesce(nullif(x->>'price','')::numeric, 0) < 0) then
-    return jsonb_build_object('ok', false, 'error', 'Количество должно быть больше нуля, цена — не меньше нуля'); end if;
-  select string_agg(x->>'item_code', ', ') into v_bad
-    from jsonb_array_elements(payload->'lines') x
-    left join tandem.items i on i.code = x->>'item_code' and i.active and i.for_sale
-   where i.code is null;
-  if v_bad is not null then
-    return jsonb_build_object('ok', false, 'error', 'Позиции нет в продаже: ' || v_bad); end if;
-
-  perform 1 from tandem.points where id = p_point for update;   -- нумерация чеков дня — по очереди
-  select * into v_chk from tandem.checks where uid = v_uid;
-  if v_chk.id is not null and v_chk.point_id <> p_point then
-    return jsonb_build_object('ok', false, 'error', 'Чек принадлежит другой точке'); end if;
-  if v_chk.id is not null and v_chk.status = 'void' then
-    return jsonb_build_object('ok', false, 'error', 'Чек отменён, исправить его нельзя'); end if;
-  if v_chk.id is null then
-    -- День чека присылает планшет (у сервера время UTC); принимаем только соседние с сегодняшним.
-    if v_date is null or v_date < current_date - 2 or v_date > current_date + 1 then
-      return jsonb_build_object('ok', false, 'error', 'Дата чека не похожа на сегодняшнюю — проверьте дату на планшете'); end if;
-    insert into tandem.checks (uid, point_id, check_date, no, seller, pay_kind)
-      values (v_uid, p_point, v_date,
-              coalesce((select max(no) from tandem.checks where point_id = p_point and check_date = v_date), 0) + 1,
-              nullif(btrim(coalesce(payload->>'seller','')), ''), v_pay)
-      returning id into v_id;
-  else
-    v_id := v_chk.id; v_date := v_chk.check_date;
-    -- «Исправлен» ставится, только если чек действительно изменился: досылка после обрыва связи — не правка.
-    select v_chk.pay_kind || '|' || string_agg(item_code || ':' || qty::text || ':' || price::text, ',' order by id) into v_was
-      from tandem.check_lines where check_id = v_id;
-    update tandem.checks set pay_kind = v_pay, updated_at = now() where id = v_id;
-    delete from tandem.check_lines where check_id = v_id;
-  end if;
-
-  insert into tandem.check_lines (check_id, item_code, item_name, qty, price, price_list)
-    select v_id, i.code, i.name, (x->>'qty')::numeric,
-           coalesce(nullif(x->>'price','')::numeric, pp.price, i.price, 0), coalesce(pp.price, i.price)
-      from jsonb_array_elements(payload->'lines') with ordinality t(x, ord)
-      join tandem.items i on i.code = x->>'item_code'
-      left join tandem.item_prices pp on pp.item_code = i.code and pp.point_id = p_point
-     order by ord;
-  select coalesce(sum(round(qty * price, 2)), 0) into v_total from tandem.check_lines where check_id = v_id;
-  update tandem.checks set total = v_total,
-         edited = edited or (v_was is not null and v_was <> (select v_pay || '|' || string_agg(item_code || ':' || qty::text || ':' || price::text, ',' order by id)
-                                                              from tandem.check_lines where check_id = v_id))
-   where id = v_id;
-
-  perform tandem.check_apply(p_point, v_date);
-  return jsonb_build_object('ok', true, 'check', (select jsonb_build_object('uid', uid, 'no', no, 'total', total,
-           'date', check_date, 'edited', edited) from tandem.checks where id = v_id));
-end $function$
-;
-
-CREATE OR REPLACE FUNCTION tandem.check_void(p_point text, payload jsonb)
- RETURNS jsonb
- LANGUAGE plpgsql
- SET search_path TO 'tandem', 'public'
-AS $function$
-declare
-  v_uid uuid;
-  v_chk tandem.checks;
-begin
-  begin v_uid := (payload->>'uid')::uuid; exception when others then v_uid := null; end;
-  perform 1 from tandem.points where id = p_point for update;
-  select * into v_chk from tandem.checks where uid = v_uid and point_id = p_point;
-  if v_chk.id is null then return jsonb_build_object('ok', false, 'error', 'Чек не найден'); end if;
-  if v_chk.status = 'active' then
-    update tandem.checks set status = 'void', updated_at = now(),
-           void_reason = nullif(btrim(coalesce(payload->>'reason','')), '') where id = v_chk.id;
-    perform tandem.check_apply(p_point, v_chk.check_date);
-  end if;
-  return jsonb_build_object('ok', true);
-end $function$
-;
-
-CREATE OR REPLACE FUNCTION tandem.check_list(p_point text, p_date date)
- RETURNS jsonb
- LANGUAGE sql
- STABLE
- SET search_path TO 'tandem', 'public'
-AS $function$
-  select jsonb_build_object('ok', true, 'date', p_date,
-    'closed_at', (select closed_at from tandem.daily_reports where point_id = p_point and report_date = p_date),
-    'totals', (select jsonb_build_object(
-        'count', count(*), 'total', coalesce(sum(total), 0),
-        'cash', coalesce(sum(total) filter (where pay_kind = 'cash'), 0),
-        'kaspi_qr', coalesce(sum(total) filter (where pay_kind = 'kaspi_qr'), 0),
-        'transfer', coalesce(sum(total) filter (where pay_kind = 'transfer'), 0),
-        'card', coalesce(sum(total) filter (where pay_kind = 'card'), 0))
-      from tandem.checks where point_id = p_point and check_date = p_date and status = 'active'),
-    'checks', (select coalesce(jsonb_agg(jsonb_build_object(
-        'uid', c.uid, 'no', c.no, 'seller', c.seller, 'pay_kind', c.pay_kind, 'total', c.total,
-        'status', c.status, 'void_reason', c.void_reason, 'edited', c.edited, 'created_at', c.created_at,
-        'lines', (select coalesce(jsonb_agg(jsonb_build_object('item_code', l.item_code, 'item_name', l.item_name,
-                    'qty', l.qty, 'price', l.price, 'price_list', l.price_list) order by l.id), '[]'::jsonb)
-                  from tandem.check_lines l where l.check_id = c.id)) order by c.no desc), '[]'::jsonb)
-      from tandem.checks c where c.point_id = p_point and c.check_date = p_date));
-$function$
-;
-
-
--- Местное время Казахстана (с 2024 года UTC+5 по всей стране): отсечка заявок считается по нему,
--- а не по часам сервера.
-create or replace function tandem.local_now() returns timestamp
-language sql stable as $$ select (now() at time zone 'UTC') + interval '5 hours' $$;
-
--- Можно ли ещё подать или поправить заявку на этот день: на завтра — до отсечки сегодня,
--- на послезавтра и дальше — всегда, на сегодня и прошлое — нельзя.
-create or replace function tandem.order_open(p_for_date date) returns boolean
-language sql stable set search_path to 'tandem', 'public' as $$
-  select p_for_date > tandem.local_now()::date + 1
-      or (p_for_date = tandem.local_now()::date + 1
-          and tandem.local_now()::time < coalesce((select value from tandem.settings where key = 'orders_cutoff'), '20:00')::time)
-$$;
-
--- План дня уже передан в производство (созданы документы) — заявки этого дня не меняются.
-create or replace function tandem.order_locked(p_for_date date) returns boolean
-language sql stable set search_path to 'tandem', 'public' as $$
-  select exists (select 1 from tandem.documents where source_kind = 'orders' and source_id like p_for_date::text || '/%')
-$$;
-
-create or replace function tandem.order_get(p_point text, p_for_date date) returns jsonb
-language sql stable set search_path to 'tandem', 'public' as $$
-  select jsonb_build_object('ok', true, 'for_date', p_for_date,
-    'open', tandem.order_open(p_for_date) and not tandem.order_locked(p_for_date),
-    'cutoff', coalesce((select value from tandem.settings where key = 'orders_cutoff'), '20:00'),
-    'tomorrow', tandem.local_now()::date + 1,
-    'order', (select jsonb_build_object('sent_by', o.sent_by, 'comment', o.comment, 'updated_at', o.updated_at,
-        'lines', (select coalesce(jsonb_agg(jsonb_build_object('item_code', l.item_code, 'name', i.name, 'unit', i.unit_id, 'qty', l.qty) order by i.name), '[]'::jsonb)
-                    from tandem.order_lines l join tandem.items i on i.code = l.item_code where l.order_id = o.id))
-      from tandem.orders o where o.point_id = p_point and o.for_date = p_for_date))
-$$;
-
--- Подать или поправить заявку целиком. Пустой список строк отзывает заявку.
-create or replace function tandem.order_save(p_point text, payload jsonb) returns jsonb
-language plpgsql set search_path to 'tandem', 'public' as $$
-declare
-  v_date date;
-  v_id   bigint;
-  v_bad  text;
-begin
-  begin v_date := (payload->>'for_date')::date; exception when others then v_date := null; end;
-  if v_date is null then return jsonb_build_object('ok', false, 'error', 'Не указан день заявки'); end if;
-  -- Заявки дня и создание документов по ним идут по очереди: иначе правка, сохранённая в момент
-  -- создания перемещений, в них бы не попала.
-  perform pg_advisory_xact_lock(hashtext('tandem.orders:' || v_date::text));
-  if tandem.order_locked(v_date) then
-    return jsonb_build_object('ok', false, 'error', 'План на этот день уже передан в производство — заявку не изменить. Позвоните на кухню.'); end if;
-  if not tandem.order_open(v_date) then
-    return jsonb_build_object('ok', false, 'error', 'Приём заявок на этот день закрыт (отсечка ' ||
-      coalesce((select value from tandem.settings where key = 'orders_cutoff'), '20:00') || '). Подайте на следующий день.'); end if;
-  if jsonb_typeof(payload->'lines') is distinct from 'array' then
-    return jsonb_build_object('ok', false, 'error', 'Нет строк заявки'); end if;
-  if exists (select 1 from jsonb_array_elements(payload->'lines') x
-              where coalesce(x->>'qty', '') !~ '^[0-9]+([.][0-9]+)?$' or (x->>'qty')::numeric <= 0
-                 or nullif(btrim(coalesce(x->>'item_code', '')), '') is null) then
-    return jsonb_build_object('ok', false, 'error', 'В каждой строке — позиция и количество больше нуля'); end if;
-  select string_agg(coalesce(i.name, x->>'item_code'), ', ') into v_bad
-    from jsonb_array_elements(payload->'lines') x
-    left join tandem.items i on i.code = x->>'item_code' and i.active and i.for_sale
-   where i.code is null;
-  if v_bad is not null then return jsonb_build_object('ok', false, 'error', 'Позиции нет в продаже: ' || v_bad); end if;
-  -- Штучное — только целыми: полтора беляша не испечь.
-  select string_agg(i.name, ', ') into v_bad
-    from jsonb_array_elements(payload->'lines') x join tandem.items i on i.code = x->>'item_code'
-   where i.unit_id in ('шт', 'порц') and (x->>'qty')::numeric <> trunc((x->>'qty')::numeric);
-  if v_bad is not null then return jsonb_build_object('ok', false, 'error', 'Штучные позиции — только целым числом: ' || v_bad); end if;
-
-  if jsonb_array_length(payload->'lines') = 0 then
-    delete from tandem.orders where point_id = p_point and for_date = v_date;
-    return tandem.order_get(p_point, v_date);
-  end if;
-  insert into tandem.orders (point_id, for_date, sent_by, comment)
-    values (p_point, v_date, nullif(btrim(coalesce(payload->>'sent_by', '')), ''), nullif(btrim(coalesce(payload->>'comment', '')), ''))
-    on conflict (point_id, for_date) do update set sent_by = excluded.sent_by, comment = excluded.comment, updated_at = now()
-    returning id into v_id;
-  delete from tandem.order_lines where order_id = v_id;
-  insert into tandem.order_lines (order_id, item_code, qty)
-    select v_id, x->>'item_code', sum((x->>'qty')::numeric) from jsonb_array_elements(payload->'lines') x group by x->>'item_code';
-  return tandem.order_get(p_point, v_date);
-end $$;
-
--- Сводный план дня для бэк-офиса: заявки точек, итог по позиции, факт выпуска, документы.
-create or replace function tandem.orders_report(p_for_date date) returns jsonb
-language sql stable set search_path to 'tandem', 'public' as $$
-  select jsonb_build_object('ok', true, 'for_date', p_for_date, 'open', tandem.order_open(p_for_date), 'locked', tandem.order_locked(p_for_date),
-    'cutoff', coalesce((select value from tandem.settings where key = 'orders_cutoff'), '20:00'),
-    'store_id', (select value from tandem.settings where key = 'orders_store_id'),
-    'orders', (select coalesce(jsonb_agg(jsonb_build_object('point_id', o.point_id, 'point_name', p.name, 'sent_by', o.sent_by,
-        'comment', o.comment, 'updated_at', o.updated_at, 'has_store', p.default_store_id is not null,
-        'lines', (select count(*) from tandem.order_lines l where l.order_id = o.id)) order by p.sort_order), '[]'::jsonb)
-      from tandem.orders o join tandem.points p on p.id = o.point_id where o.for_date = p_for_date),
-    'plan', (select coalesce(jsonb_agg(jsonb_build_object('item_code', x.item_code, 'name', i.name, 'unit', i.unit_id, 'qty', x.q,
-        'fact', pl.fact_qty, 'has_chart', tandem.active_chart(x.item_code, p_for_date) is not null, 'by_point', x.byp) order by i.name), '[]'::jsonb)
-      from (select l.item_code, sum(l.qty) q, jsonb_object_agg(o.point_id, l.qty) byp
-              from tandem.order_lines l join tandem.orders o on o.id = l.order_id
-             where o.for_date = p_for_date group by l.item_code) x
-      join tandem.items i on i.code = x.item_code
-      left join tandem.order_plan pl on pl.for_date = p_for_date and pl.item_code = x.item_code),
-    'docs', (select coalesce(jsonb_agg(jsonb_build_object('id', d.id, 'number', d.number, 'doc_type', d.doc_type, 'status', d.status,
-        'source_id', d.source_id) order by d.doc_type, d.number), '[]'::jsonb)
-      from tandem.documents d where d.source_kind = 'orders' and d.source_id like p_for_date::text || '/%'))
-$$;
-
--- Документы из плана: акт производства на склад кухни (по факту выпуска, где он отмечен, иначе по заявке;
--- только позиции с техкартой) и перемещения с кухни на склады точек по заявкам. Создаются черновиками —
--- кладовщик проверяет и проводит. Повторный вызов недостающие документы досоздаёт, готовые не трогает.
-create or replace function tandem.orders_make_docs(p_for_date date, p_user tandem.users, p_force boolean default false) returns jsonb
-language plpgsql set search_path to 'tandem', 'public' as $$
-declare
-  v_store uuid := nullif((select value from tandem.settings where key = 'orders_store_id'), '')::uuid;
-  v_lines jsonb;
-  v_r     jsonb;
-  v_made  int := 0;
-  v_skip  text := '';
-  pt      record;
-begin
-  perform pg_advisory_xact_lock(hashtext('tandem.orders:' || p_for_date::text));
-  if v_store is null or not exists (select 1 from tandem.stores where id = v_store and active) then
-    return tandem.err('validation', 'Не выбран склад кухни, с которого отгружаются заявки'); end if;
-  if not exists (select 1 from tandem.orders where for_date = p_for_date) then
-    return tandem.err('validation', 'На этот день заявок нет'); end if;
-  if tandem.order_open(p_for_date) and not p_force then
-    return tandem.err('validation', 'Приём заявок на этот день ещё открыт — точки могут поправить заявки. Создать документы всё равно?'); end if;
-
-  create temp table if not exists _ord_alloc (point_id text, item_code text, qty numeric) on commit drop;
-  truncate _ord_alloc;
-  insert into _ord_alloc
-  with b as (
-    select o.point_id, l.item_code, l.qty, pl.fact_qty, i.unit_id in ('шт', 'порц') as whole,
-           sum(l.qty) over (partition by l.item_code) as total
-      from tandem.order_lines l join tandem.orders o on o.id = l.order_id
-      join tandem.items i on i.code = l.item_code
-      left join tandem.order_plan pl on pl.for_date = p_for_date and pl.item_code = l.item_code
-     where o.for_date = p_for_date
-  ), e as (
-    select *, case when fact_qty is null then qty else qty * fact_qty / total end as exact from b
-  ), f as (
-    select *, case when whole and fact_qty is not null then floor(exact) else round(exact, 3) end as base from e
-  ), r as (
-    select *, row_number() over (partition by item_code order by exact - base desc, point_id) as rn,
-           case when whole and fact_qty is not null then fact_qty - sum(base) over (partition by item_code) else 0 end as rest
-      from f
-  )
-  select point_id, item_code, base + case when rn <= rest then 1 else 0 end from r;
-
-  if not exists (select 1 from tandem.documents where source_kind = 'orders' and source_id = p_for_date::text || '/production') then
-    select coalesce(jsonb_agg(jsonb_build_object('item_code', x.item_code, 'qty', x.q)), '[]'::jsonb) into v_lines
-      from (select a.item_code, sum(a.qty) q from _ord_alloc a
-             where tandem.active_chart(a.item_code, p_for_date) is not null group by a.item_code) x where x.q > 0;
-    if jsonb_array_length(v_lines) > 0 then
-      v_r := tandem.office_stock('doc_save', jsonb_build_object('doc_type', 'production', 'doc_date', p_for_date,
-               'store_from', v_store, 'comment', 'План выпечки на ' || to_char(p_for_date, 'DD.MM.YYYY'), 'lines', v_lines), p_user);
-      if not coalesce((v_r->>'ok')::boolean, false) then
-        raise exception using errcode = 'P0001', message = 'Акт производства не создан: ' || coalesce(v_r->>'message', v_r->>'error', 'ошибка'); end if;
-      update tandem.documents set source_kind = 'orders', source_id = p_for_date::text || '/production' where id = (v_r->>'id')::uuid;
-      update tandem.items set sell_from_stock = true where code in (select x->>'item_code' from jsonb_array_elements(v_lines) x) and not sell_from_stock;
-      v_made := v_made + 1;
-    end if;
-  end if;
-
-  for pt in select o.point_id, p.name, p.default_store_id from tandem.orders o join tandem.points p on p.id = o.point_id
-             where o.for_date = p_for_date order by p.sort_order loop
-    continue when exists (select 1 from tandem.documents where source_kind = 'orders' and source_id = p_for_date::text || '/' || pt.point_id);
-    if pt.default_store_id is null or pt.default_store_id = v_store then
-      v_skip := v_skip || case when v_skip = '' then '' else ', ' end || pt.name; continue; end if;
-    select coalesce(jsonb_agg(jsonb_build_object('item_code', item_code, 'qty', qty)), '[]'::jsonb) into v_lines
-      from _ord_alloc where point_id = pt.point_id and qty > 0;
-    continue when jsonb_array_length(v_lines) = 0;
-    v_r := tandem.office_stock('doc_save', jsonb_build_object('doc_type', 'transfer', 'doc_date', p_for_date,
-             'store_from', v_store, 'store_to', pt.default_store_id, 'comment', 'Заявка «' || pt.name || '» на ' || to_char(p_for_date, 'DD.MM.YYYY'),
-             'lines', v_lines), p_user);
-    if not coalesce((v_r->>'ok')::boolean, false) then
-      raise exception using errcode = 'P0001', message = 'Перемещение для «' || pt.name || '» не создано: ' || coalesce(v_r->>'message', v_r->>'error', 'ошибка'); end if;
-    update tandem.documents set source_kind = 'orders', source_id = p_for_date::text || '/' || pt.point_id where id = (v_r->>'id')::uuid;
-    v_made := v_made + 1;
-  end loop;
-  return jsonb_build_object('ok', true, 'made', v_made, 'skipped', nullif(v_skip, ''));
-end $$;
-
 
 -- ---------------------------------------------------------------- представления
 create or replace view tandem.v_daily as
- SELECT r.id, r.report_date, r.point_id, p.name AS point_name, p.mode, r.shift_by,
-    r.cash, r.kaspi_qr, r.transfer,
+ SELECT r.id,
+    r.report_date,
+    r.point_id,
+    p.name AS point_name,
+    p.mode,
+    r.shift_by,
+    r.cash,
+    r.kaspi_qr,
+    r.transfer,
     r.cash + r.kaspi_qr + r.transfer + r.card AS revenue_total,
-    r.qr_statement, r.tr_statement,
-    CASE WHEN r.qr_statement IS NULL THEN NULL::numeric ELSE r.kaspi_qr - r.qr_statement END AS diff_qr,
-    CASE WHEN r.tr_statement IS NULL THEN NULL::numeric ELSE r.transfer - r.tr_statement END AS diff_transfer,
-    r.cash_open, r.cash_handed,
-    COALESCE(( SELECT sum(e.amount) FROM tandem.cash_expenses e WHERE e.report_id = r.id), 0::numeric) AS podotchet,
-    r.cash_open + r.cash - r.cash_handed - COALESCE(( SELECT sum(e.amount) FROM tandem.cash_expenses e WHERE e.report_id = r.id), 0::numeric) AS cash_expected,
+    r.qr_statement,
+    r.tr_statement,
+        CASE
+            WHEN r.qr_statement IS NULL THEN NULL::numeric
+            ELSE r.kaspi_qr - r.qr_statement
+        END AS diff_qr,
+        CASE
+            WHEN r.tr_statement IS NULL THEN NULL::numeric
+            ELSE r.transfer - r.tr_statement
+        END AS diff_transfer,
+    r.cash_open,
+    r.cash_handed,
+    COALESCE(( SELECT sum(e.amount) AS sum
+           FROM tandem.cash_expenses e
+          WHERE e.report_id = r.id), 0::numeric) AS podotchet,
+    r.cash_open + r.cash - r.cash_handed - COALESCE(( SELECT sum(e.amount) AS sum
+           FROM tandem.cash_expenses e
+          WHERE e.report_id = r.id), 0::numeric) AS cash_expected,
     r.cash_counted,
-    CASE WHEN r.cash_counted IS NULL THEN NULL::numeric
-         ELSE r.cash_open + r.cash - r.cash_handed - COALESCE(( SELECT sum(e.amount) FROM tandem.cash_expenses e WHERE e.report_id = r.id), 0::numeric) - r.cash_counted
-    END AS diff_cash,
-    COALESCE(( SELECT count(*) FROM tandem.cash_expenses e
+        CASE
+            WHEN r.cash_counted IS NULL THEN NULL::numeric
+            ELSE r.cash_open + r.cash - r.cash_handed - COALESCE(( SELECT sum(e.amount) AS sum
+               FROM tandem.cash_expenses e
+              WHERE e.report_id = r.id), 0::numeric) - r.cash_counted
+        END AS diff_cash,
+    COALESCE(( SELECT count(*) AS count
+           FROM tandem.cash_expenses e
           WHERE e.report_id = r.id AND (e.receipt_no IS NULL OR btrim(e.receipt_no) = ''::text)), 0::bigint) AS expenses_no_receipt,
-    COALESCE(( SELECT sum((t.issued - t.returned) * COALESCE(t.price, 0::numeric)) FROM tandem.takeout_lines t WHERE t.report_id = r.id), 0::numeric) AS takeout_amount,
-    COALESCE(( SELECT sum(s.qty * COALESCE(s.price, 0::numeric)) FROM tandem.sale_lines s WHERE s.report_id = r.id), 0::numeric) AS sales_amount,
-    r.comment, r.created_at,
-    r.card, r.closed_at,
-    ( SELECT count(*) FROM tandem.checks c WHERE c.point_id = r.point_id AND c.check_date = r.report_date AND c.status = 'active') AS checks_count
+    COALESCE(( SELECT sum((t.issued - t.returned) * COALESCE(t.price, 0::numeric)) AS sum
+           FROM tandem.takeout_lines t
+          WHERE t.report_id = r.id), 0::numeric) AS takeout_amount,
+    COALESCE(( SELECT sum(s.qty * COALESCE(s.price, 0::numeric)) AS sum
+           FROM tandem.sale_lines s
+          WHERE s.report_id = r.id), 0::numeric) AS sales_amount,
+    r.comment,
+    r.created_at,
+    r.card,
+    r.closed_at,
+    ( SELECT count(*) AS count
+           FROM tandem.checks c
+          WHERE c.point_id = r.point_id AND c.check_date = r.report_date AND c.status = 'active'::text) AS checks_count,
+    ( SELECT count(*)::integer AS count
+           FROM tandem.checks c
+          WHERE c.point_id = r.point_id AND c.check_date = r.report_date AND c.status = 'void'::text) AS void_count,
+    ( SELECT COALESCE(sum(COALESCE(c.first_total, c.total)), 0::numeric) AS "coalesce"
+           FROM tandem.checks c
+          WHERE c.point_id = r.point_id AND c.check_date = r.report_date AND c.status = 'void'::text) AS void_sum,
+    ( SELECT count(*)::integer AS count
+           FROM tandem.checks c
+          WHERE c.point_id = r.point_id AND c.check_date = r.report_date AND c.status = 'active'::text AND c.edited) AS edited_count,
+    ( SELECT COALESCE(sum(COALESCE(c.first_total, c.total) - c.total), 0::numeric) AS "coalesce"
+           FROM tandem.checks c
+          WHERE c.point_id = r.point_id AND c.check_date = r.report_date AND c.status = 'active'::text AND c.edited) AS edited_diff
    FROM tandem.daily_reports r
      JOIN tandem.points p ON p.id = r.point_id;
 
@@ -4501,12 +5775,12 @@ CREATE TRIGGER users_role_sessions AFTER UPDATE OF role ON tandem.users FOR EACH
 -- ---------------------------------------------------------------- RLS: запрет всего, доступ только через функции
 alter table tandem.assets enable row level security;
 alter table tandem.cash_expenses enable row level security;
+alter table tandem.catalog_1c enable row level security;
 alter table tandem.chart_lines enable row level security;
 alter table tandem.charts enable row level security;
-alter table tandem.counteragents enable row level security;
-alter table tandem.catalog_1c enable row level security;
 alter table tandem.check_lines enable row level security;
 alter table tandem.checks enable row level security;
+alter table tandem.counteragents enable row level security;
 alter table tandem.daily_reports enable row level security;
 alter table tandem.doc_counters enable row level security;
 alter table tandem.document_lines enable row level security;
@@ -4516,6 +5790,9 @@ alter table tandem.item_groups enable row level security;
 alter table tandem.item_prices enable row level security;
 alter table tandem.item_rank enable row level security;
 alter table tandem.items enable row level security;
+alter table tandem.order_lines enable row level security;
+alter table tandem.order_plan enable row level security;
+alter table tandem.orders enable row level security;
 alter table tandem.pin_failures enable row level security;
 alter table tandem.points enable row level security;
 alter table tandem.realization_clients enable row level security;
@@ -4526,6 +5803,7 @@ alter table tandem.sessions enable row level security;
 alter table tandem.settings enable row level security;
 alter table tandem.stock_balances enable row level security;
 alter table tandem.stock_moves enable row level security;
+alter table tandem.store_ready enable row level security;
 alter table tandem.stores enable row level security;
 alter table tandem.takeout_lines enable row level security;
 alter table tandem.units enable row level security;

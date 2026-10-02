@@ -5,13 +5,13 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="theme-color" content="#1F3864">
 <title>Тандем KZ — бэк-офис</title>
-<link rel="stylesheet" href="office.css?v=19">
+<link rel="stylesheet" href="office.css?v=20">
 </head>
 <body>
 <div id="login" class="login" hidden>
   <div class="card">
     <h1>Тандем KZ · бэк-офис</h1>
-    <div class="sub">Справочники, техкарты, склад · сборка 19</div>
+    <div class="sub">Справочники, техкарты, склад · сборка 20</div>
     <label for="llogin">Логин</label>
     <input id="llogin" autocomplete="username" autocapitalize="off">
     <label for="lpin">PIN</label>
@@ -23,14 +23,43 @@
 
 <div id="pinchange" class="login" hidden>
   <div class="card">
-    <h1>Смените PIN</h1>
-    <div class="sub">Временный PIN нужно заменить своим — не меньше 4 цифр.</div>
+    <h1 id="ptitle">Смените PIN</h1>
+    <div class="sub"><span id="pfirst">Временный PIN нужно заменить своим. </span>PIN — только цифры: не меньше 4, у администратора и собственника — не меньше 6.</div>
+    <div id="opinbox">
+      <label for="opin">Текущий PIN</label>
+      <input id="opin" type="password" inputmode="numeric" autocomplete="current-password">
+    </div>
     <label for="npin">Новый PIN</label>
-    <input id="npin" type="password" inputmode="numeric">
+    <input id="npin" type="password" inputmode="numeric" autocomplete="new-password">
     <label for="npin2">Ещё раз</label>
-    <input id="npin2" type="password" inputmode="numeric">
+    <input id="npin2" type="password" inputmode="numeric" autocomplete="new-password">
     <button id="nbtn">Сохранить</button>
+    <button id="ncancel" class="ghost" hidden>Отмена</button>
     <div class="err" id="nerr"></div>
+  </div>
+</div>
+
+<!-- Повторный вход поверх страницы: сессия кончилась посреди работы, открытые формы остаются под окном. -->
+<div id="relogin" class="overlay" hidden>
+  <div class="card">
+    <h1>Войдите снова</h1>
+    <div class="sub">Сессия закончилась. Войдите — всё, что вы ввели в открытых окнах, останется на месте; затем повторите последнее действие.</div>
+    <div id="rstep1">
+      <label for="rlogin">Логин</label>
+      <input id="rlogin" autocomplete="username" autocapitalize="off">
+      <label for="rpin">PIN</label>
+      <input id="rpin" type="password" inputmode="numeric" autocomplete="current-password">
+      <button id="rbtn">Войти</button>
+    </div>
+    <div id="rstep2" hidden>
+      <div class="sub">PIN сброшен администратором — задайте свой. Только цифры: не меньше 4, у администратора и собственника — не меньше 6.</div>
+      <label for="rnpin">Новый PIN</label>
+      <input id="rnpin" type="password" inputmode="numeric" autocomplete="new-password">
+      <label for="rnpin2">Ещё раз</label>
+      <input id="rnpin2" type="password" inputmode="numeric" autocomplete="new-password">
+      <button id="rnbtn">Сохранить PIN</button>
+    </div>
+    <div class="err" id="rerr"></div>
   </div>
 </div>
 
@@ -42,12 +71,13 @@
       <a class="link" href="help.html" target="_blank" rel="noopener" style="margin-right:8px">Памятка</a>
       <a class="link" href="guide.html" target="_blank" rel="noopener" style="margin-right:8px">Маршрут проверки</a>
       <a class="link" href="stock.html" style="margin-right:8px">Телефон</a>
+      <button class="link" id="chpin">Сменить PIN</button>
       <button class="link" id="logout">Выйти</button></div>
   </header>
   <main id="main"></main>
 </div>
 <div id="toast" class="toast" hidden></div>
-<script src="config.js?v=19"></script>
-<script type="module" src="js/office/app.js?v=19"></script>
+<script src="config.js?v=20"></script>
+<script type="module" src="js/office/app.js?v=20"></script>
 </body>
 </html>

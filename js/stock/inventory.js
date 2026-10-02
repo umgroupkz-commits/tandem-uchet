@@ -1,16 +1,16 @@
 import { ask, el, fmt, today, toast, debounce, itemPicker, linesTable, drafts,
-  withBusy, saveDoc, draftHint, okNum, numOf, hasNum } from "./common.js?v=19";
+  withBusy, saveDoc, postDoc, showPosted, newKey, draftHint, okNum, numOf, hasNum } from "./common.js?v=20";
 
 const SCN = "inventory";
 export async function mount(root, ctx) {
   root.innerHTML = "";
   const st = ctx.store;
-  const d = drafts.load(SCN, st.id) || { lines: [], server_id: null };
+  const d = drafts.load(SCN, st.id) || { lines: [], server_id: null, client_key: newKey() };
   const lines = d.lines;
   // Черновик пишется на каждый ввод цифры — без задержки это запись в localStorage
   // на каждое нажатие по списку в сотни строк.
-  const save = debounce(() => drafts.save(SCN, st.id, { lines, server_id: d.server_id || null }), 300);
-  const saveNow = () => drafts.save(SCN, st.id, { lines, server_id: d.server_id || null });
+  const save = debounce(() => drafts.save(SCN, st.id, { lines, server_id: d.server_id || null, client_key: d.client_key }), 300);
+  const saveNow = () => drafts.save(SCN, st.id, { lines, server_id: d.server_id || null, client_key: d.client_key });
 
   // список позиций с остатком — без расчётного количества (слепой подсчёт);
   // avg_cost берём здесь же, чтобы в сводке показать сумму расхождения
@@ -52,6 +52,7 @@ export async function mount(root, ctx) {
       try {
         s = await saveDoc(d, { doc_type: "inventory", doc_date: today(), store_from: st.id,
           lines: counted.map((l) => ({ item_code: l.item_code, fact_qty: numOf(l.fact_qty) })) }, saveNow);
+        if (s.already) return showPosted(ctx, SCN, st.id, s, () => mount(root, ctx), d);
         d.server_id = s.id; saveNow();
         const g = await ask("doc_get", { id: s.id });
         // сводка расхождений — только теперь показываем расчёт
@@ -60,7 +61,7 @@ export async function mount(root, ctx) {
           .map((r) => ({ ...r, diff: r.fact - r.calc })).filter((r) => Math.abs(r.diff) > 1e-9);
         showSummary(s, rows, counted.length);
       } catch (e) {
-        err.textContent = e.message + draftHint(s && s.number);
+        err.textContent = e.message + draftHint(s && s.number, e);
       }
     });
   }
@@ -91,10 +92,11 @@ export async function mount(root, ctx) {
       serr.textContent = "";
       await withBusy(btn, async () => {
         try {
-          const p = await ask("doc_post", { id: s.id });
+          const p = await postDoc(s.id);
+          if (p.already) return showPosted(ctx, SCN, st.id, p, () => mount(root, ctx), d);
           drafts.clear(SCN, st.id);
           ctx.result({ title: "Инвентаризация проведена: " + s.number, lines: [st.name + " · расхождений " + rows.length + " · сумма " + fmt(p.total_sum) + " ₸"], again: () => mount(root, ctx) });
-        } catch (e) { serr.textContent = e.message + draftHint(s.number); }
+        } catch (e) { serr.textContent = e.message + draftHint(s.number, e); }
       });
     }
   }

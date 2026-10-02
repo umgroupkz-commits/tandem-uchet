@@ -19,7 +19,11 @@ services:
   proxy:
     build: .
     environment:
-      DATABASE_URL: postgres://tandem:${DB_PASSWORD}@db:5432/tandem
+      # Пароль — отдельной переменной, не внутри postgres://…: знаки / # ? + в нём ломали разбор адреса.
+      PGHOST: db
+      PGUSER: tandem
+      PGDATABASE: tandem
+      PGPASSWORD: ${DB_PASSWORD}
       PORT: "8787"
       CORS_ORIGIN: ${CORS_ORIGIN:-*}
     depends_on:
@@ -30,11 +34,16 @@ services:
     image: postgres:17
     environment:
       PGPASSWORD: ${DB_PASSWORD}
-    volumes: ["./backups:/backups"]
+    # Копии — вне клона репозитория: папку клона может отдавать nginx, а в дампе коды точек и собственника.
+    volumes: ["${BACKUP_DIR:-/var/backups/tandem}:/backups"]
     depends_on:
       db: { condition: service_healthy }
-    # Раз в сутки — дамп в ./backups, хранится 30 последних.
-    entrypoint: ["sh", "-c", "while true; do f=/backups/tandem_$$(date +%Y%m%d_%H%M).dump; pg_dump -h db -U tandem -d tandem -Fc -f $$f && ls -1t /backups/*.dump | tail -n +31 | xargs -r rm --; sleep 86400; done"]
+    # Раз в сутки — дамп в BACKUP_DIR, хранится 30 последних. Пишется во временный файл и переименовывается
+    # только после успеха: недописанная копия не встаёт в ротацию. Сбой — строка ОШИБКА в журнале
+    # (docker compose logs backup) и повтор через час. Файлы читает только root (umask 077).
+    # Ротация трогает только свои tandem_*.dump: дампы Supabase в той же папке (supabase_*.dump, README
+    # шаг 9) она не удаляет, и лимит в 30 копий они не съедают.
+    entrypoint: ["sh", "-c", "umask 077; rm -f /backups/*.tmp; while true; do f=/backups/tandem_$$(date +%Y%m%d_%H%M).dump; if pg_dump -h db -U tandem -d tandem -Fc -f $$f.tmp && mv $$f.tmp $$f; then echo \"$$(date '+%F %T') копия $$f\"; ls -1t /backups/tandem_*.dump | tail -n +31 | xargs -r rm --; s=86400; else rm -f $$f.tmp; echo \"$$(date '+%F %T') ОШИБКА: резервная копия не снята\" >&2; s=3600; fi; sleep $$s; done"]
     restart: unless-stopped
 volumes:
   dbdata:

@@ -2,15 +2,19 @@
 // попадает в дневной отчёт точки и на склад (миграция 0033). Связь на точках нестабильная, поэтому
 // чек сначала кладётся в очередь планшета (localStorage) и досылается в фоне; сервер узнаёт
 // повторную досылку по uid и второй чек не создаёт.
-import { el, fmt, toast, today, debounce } from "../office/ui.js?v=19";
+import { el, fmt, toast, today, debounce } from "../office/ui.js?v=20";
 
 const API = window.TANDEM_API_URL || "https://qeehxcnnuzuwskznhdyg.supabase.co/functions/v1/uchet";
 const $ = (id) => document.getElementById(id);
 const PAY = { cash: "Наличные", kaspi_qr: "Kaspi QR", transfer: "Перевод", card: "Карта" };
 const MAX_TILES = 150;
+const TIMEOUT = 20000;   // дольше ответа не ждём: повисший запрос не должен останавливать досылку
 
+// sess меняется при каждом входе и выходе: ответ, пришедший после смены точки, к новой смене не относится.
+// flushing — идущий проход досылки, sending — запись, которая сейчас в пути ({uid, ver}).
 const S = { point: null, pin: "", seller: "", items: [], byCode: new Map(), cat: "__fav", q: "",
-  cart: [], editUid: null, editNo: null, queue: [], flushing: false, online: true };
+  cart: [], editUid: null, editNo: null, editDate: null, queue: [], flushing: null, sending: null,
+  online: true, authFail: false, sess: 0 };
 
 // ---------------------------------------------------------------- хранилище планшета
 const store = {
@@ -25,15 +29,25 @@ function saveQueue() {
 }
 
 // ---------------------------------------------------------------- сервер
-// Отказ сервера (ok:false) возвращается как есть; обрыв связи и 5xx — исключение с offline=true.
-async function call(action, payload) {
-  let res;
+// Отказ сервера (ok:false) возвращается как есть; обрыв связи, таймаут и 5xx — исключение с offline=true.
+// server=true — сервер ответил ошибкой; maybe=true — запрос мог дойти до сервера (всё, кроме обрыва
+// при выключенной сети). who = {pin, point} — от чьего имени слать: досылка шлёт от имени точки, чья
+// это очередь, а не той, что открыта сейчас.
+async function call(action, payload, who) {
+  const pin = who ? who.pin : S.pin, point_id = who ? who.point : (S.point ? S.point.id : null);
+  const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), TIMEOUT);
+  const fail = (text, server) => { const w = new Error(text); w.offline = true; w.server = server;
+    w.maybe = server || ctl.signal.aborted || !(typeof navigator !== "undefined" && navigator.onLine === false); return w; };
   try {
-    res = await fetch(API, { method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ action, payload: { pin: S.pin, point_id: S.point ? S.point.id : null, ...payload } }) });
-  } catch (e) { const w = new Error("Нет связи с сервером"); w.offline = true; throw w; }
-  if (res.status >= 500) { const w = new Error("Сервер не ответил"); w.offline = true; throw w; }
-  try { return await res.json(); } catch { const w = new Error("Сервер ответил непонятно"); w.offline = true; throw w; }
+    let res;
+    try {
+      res = await fetch(API, { method: "POST", headers: { "content-type": "application/json" }, signal: ctl.signal,
+        body: JSON.stringify({ action, payload: { pin, point_id, ...payload } }) });
+    } catch (e) { throw fail("Нет связи с сервером", false); }
+    if (res.status >= 500) throw fail("Сервер не ответил", true);
+    try { return await res.json(); }
+    catch { throw ctl.signal.aborted ? fail("Нет связи с сервером", false) : fail("Сервер ответил непонятно", true); }
+  } finally { clearTimeout(timer); }
 }
 const norm = (s) => String(s || "").toLowerCase().replace(/ё/g, "е").replace(/[^a-zа-я0-9]+/g, " ").trim();
 const money = (n) => fmt(n || 0) + " ₸";
@@ -42,6 +56,7 @@ const r2 = (n) => Math.round(n * 100) / 100;
 const num = (v) => { const x = parseFloat(String(v).replace(/\s/g, "").replace(",", ".")); return Number.isFinite(x) ? x : NaN; };
 const uuid = () => (crypto.randomUUID ? crypto.randomUUID()
   : "10000000-1000-4000-8000-100000000000".replace(/[018]/g, (c) => (c ^ (crypto.getRandomValues(new Uint8Array(1))[0] & (15 >> (c / 4)))).toString(16)));
+const ddmm = (d) => d.split("-").reverse().join(".");
 
 // ---------------------------------------------------------------- вход
 async function initLogin() {
@@ -51,8 +66,7 @@ async function initLogin() {
   const sel = $("lpoint");
   let points = null;
   try {
-    const r = await fetch(API, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "points", payload: {} }) });
-    points = (await r.json()).filter((p) => p.mode === "checks");
+    points = (await call("points", {}, {})).filter((p) => p.mode === "checks");
     store.set("tandem_kassa_points", points);
   } catch { points = store.get("tandem_kassa_points", null); }
   sel.innerHTML = "";
@@ -92,16 +106,22 @@ async function doLogin() {
 
 function logout() {
   if (S.cart.length && !window.confirm("В чеке есть позиции. Выйти и очистить чек?")) return;
-  S.point = null; S.pin = ""; S.cart = []; S.editUid = null; S.queue = [];
+  const n = S.queue.filter(unsent).length;
+  if (n && !window.confirm("Ещё не ушли на сервер чеки: " + n + ". Они останутся на планшете и уйдут, когда сюда снова войдут в эту точку. Выйти?")) return;
+  // Идущая досылка увидит смену sess и остановится; чеки этой точки остаются в её очереди на планшете.
+  S.sess++; S.flushing = null; S.sending = null; clearTimeout(retryTimer); retryTimer = null;
+  S.point = null; S.pin = ""; S.cart = []; S.editUid = null; S.queue = []; S.authFail = false;
   initLogin();
 }
 
 // ---------------------------------------------------------------- каркас
 function openShell() {
-  $("login").hidden = true; $("shell").hidden = false;
+  S.sess++; S.authFail = false; S.online = true;
+  $("login").hidden = true; $("shell").hidden = false; $("shift").innerHTML = "";
   $("pname").textContent = S.point.name || "Касса";
   $("sellerbtn").textContent = "Продавец: " + S.seller;
-  S.queue = store.get(qKey(), []) || [];
+  // Записи прежних сборок — без версии и точки: очередь хранится по точке, значит запись её.
+  S.queue = (store.get(qKey(), []) || []).map((q) => ({ ...q, ver: q.ver || nextVer(), point: q.point || S.point.id }));
   S.cart = []; S.editUid = null; S.cat = "__fav"; S.q = ""; $("q").value = "";
   showTab("sale"); drawCart(); drawSync(); loadItems(); flush();
 }
@@ -115,14 +135,16 @@ function showTab(name) {
 
 // ---------------------------------------------------------------- меню
 async function loadItems() {
-  const cached = store.get(iKey(), null);
+  const sess = S.sess, key = iKey();
+  const cached = store.get(key, null);
   if (cached) setItems(cached); else drawState("Загружаю меню точки…");
   try {
     const r = await call("items", {});
+    if (sess !== S.sess) return;   // пока грузилось, вошли в другую точку — это меню не её
     if (!r.ok) throw new Error(r.error || "Меню не загрузилось");
-    store.set(iKey(), r.items); setItems(r.items);
+    store.set(key, r.items); setItems(r.items);
   } catch (e) {
-    if (!cached) drawState(e.offline ? "Нет связи — меню не загрузилось." : e.message, loadItems);
+    if (!cached && sess === S.sess) drawState(e.offline ? "Нет связи — меню не загрузилось." : e.message, loadItems);
   }
 }
 function setItems(items) {
@@ -220,11 +242,18 @@ function sheet(open) { $("receipt").classList.toggle("open", open); $("scrim").h
 function pay(kind) {
   if (!S.cart.length) return;
   if (S.cart.some((c) => !(c.price > 0)) && !window.confirm("В чеке есть позиция с нулевой ценой. Пробить так?")) return;
-  const entry = { uid: S.editUid || uuid(), no: S.editNo, date: today(), seller: S.seller, pay_kind: kind, total: cartTotal(),
-    created: new Date().toISOString(), state: "wait", edit: !!S.editUid,
+  // Правка чека, который ещё в очереди: та же запись с новой версией. День, продавец и время пробития —
+  // прежние; «правкой» (edit) она становится, только если чек уже был на сервере.
+  const prev = S.editUid ? S.queue.find((q) => q.uid === S.editUid) : null;
+  const entry = { uid: S.editUid || uuid(), ver: nextVer(), point: S.point.id, no: S.editNo || (prev && prev.no) || null,
+    date: prev ? prev.date : S.editUid ? (S.editDate || today()) : today(), seller: prev ? prev.seller : S.seller,
+    pay_kind: kind, total: cartTotal(), created: prev ? prev.created : new Date().toISOString(), state: "wait",
+    edit: prev ? !!prev.edit : !!S.editUid, sent: !!prev && (!!prev.sent || inFlight(prev.uid)),
     lines: S.cart.map((c) => ({ item_code: c.code, item_name: c.name, unit: c.unit, qty: c.qty, price: c.price, price_list: c.price_list })) };
-  S.queue = S.queue.filter((q) => q.uid !== entry.uid); S.queue.push(entry); saveQueue();
-  toast((entry.edit ? "Чек исправлен · " : "Чек пробит · ") + money(entry.total) + " · " + PAY[kind]);
+  const k = S.queue.findIndex((q) => q.uid === entry.uid);   // правка остаётся на месте: номера чекам сервер даёт по порядку
+  if (k >= 0) S.queue[k] = entry; else S.queue.push(entry);
+  saveQueue();
+  toast((S.editUid ? "Чек исправлен · " : "Чек пробит · ") + money(entry.total) + " · " + PAY[kind]);
   S.cart = []; S.editUid = null; S.editNo = null; drawCart(); drawTiles(); sheet(false);
   flush();
 }
@@ -249,94 +278,226 @@ function askCash() {
 }
 
 // ---------------------------------------------------------------- очередь и досылка
+// Запись очереди — чек целиком плюс служебные поля: ver — версия, меняется при каждой правке на планшете;
+// point — чья запись; sent — отправка уже уходила без ответа, чек мог дойти до сервера.
+// Состояния: wait — ждёт отправки; bad — сервер отказал; drop — продавец удалил чек, который мог уже
+// дойти до сервера: досылка отменит его там (check_void) с причиной продавца.
+let verSeq = Date.now();
+const nextVer = () => ++verSeq;
+const unsent = (q) => q.state === "wait" || q.state === "drop";
+const inFlight = (uid) => !!S.sending && S.sending.uid === uid;
+// Правку уже существующего чека сервер не принимает: смена закрыта или чек старый (контракт п. 5).
+const LOCKED = /^(Смена закрыта|Чек слишком старый)/;
+const sig = (pay, lines) => pay + "|" + lines.map((l) => l.item_code + ":" + Number(l.qty) + ":" + Number(l.price)).join(",");
 let retryTimer = null;
-async function flush() {
-  if (S.flushing || !S.point) return;
-  S.flushing = true; clearTimeout(retryTimer);
+function retry(ms) { clearTimeout(retryTimer); retryTimer = setTimeout(() => { retryTimer = null; flush(); }, ms); }
+
+// Повтор после потерянного ответа: чек с этим uid уже на сервере, и правку сервер не принимает. Если там
+// ровно то, что ушло с планшета, чек на месте — отказ относится не к нему.
+async function landed(q, who) {
   try {
-    for (const q of S.queue.filter((x) => x.state === "wait")) {
+    const r = await call("check_list", { date: q.date }, who);
+    const c = r && r.ok && (r.checks || []).find((x) => x.uid === q.uid);
+    return !!c && c.status === "active" && sig(c.pay_kind, c.lines || []) === sig(q.pay_kind, q.lines);
+  } catch { return false; }
+}
+
+// Досылка идёт по живой очереди, а не по снимку: каждый шаг берёт первую неотправленную запись своей
+// точки. Пробитый во время отправки чек уйдёт следующим шагом, исправленный — новой версией: запись
+// убирается из очереди, только если за время запроса её версия не изменилась.
+async function flush() {
+  if (S.flushing || !S.point || S.authFail) return;
+  const run = {}, sess = S.sess, who = { pin: S.pin, point: S.point.id };
+  const skip = new Set();   // uid:ver, на которых сервер ответил ошибкой 5xx: вернёмся к ним по таймеру
+  S.flushing = run; clearTimeout(retryTimer); retryTimer = null;
+  try {
+    for (;;) {
+      const q = S.queue.find((x) => unsent(x) && x.point === who.point && !skip.has(x.uid + ":" + x.ver));
+      if (!q) break;
+      const sent = { uid: q.uid, ver: q.ver }, act = q.state === "drop" ? "check_void" : "check_save";
       let r;
-      try { r = await call("check_save", { uid: q.uid, date: q.date, seller: q.seller, pay_kind: q.pay_kind,
-        lines: q.lines.map((l) => ({ item_code: l.item_code, qty: l.qty, price: l.price })) }); }
-      catch (e) { S.online = false; retryTimer = setTimeout(flush, 15000); return; }
+      S.sending = sent;
+      try {
+        r = act === "check_void" ? await call("check_void", { uid: q.uid, reason: q.drop_reason }, who)
+          : await call("check_save", { uid: q.uid, date: q.date, seller: q.seller, pay_kind: q.pay_kind,
+              lines: q.lines.map((l) => ({ item_code: l.item_code, qty: l.qty, price: l.price })) }, who);
+        r = r || {};
+        if (act === "check_save" && !r.ok && LOCKED.test(r.error || "") && await landed(q, who)) r = { ok: true };
+      } catch (e) {
+        if (sess !== S.sess) return;
+        const cur = S.queue.find((x) => x.uid === sent.uid);
+        if (cur && act === "check_save" && !cur.sent && e.maybe) { cur.sent = true; saveQueue(); }
+        if (e.server) { skip.add(sent.uid + ":" + sent.ver); continue; }
+        S.online = false; retry(15000); return;
+      } finally { if (S.sending === sent) S.sending = null; }
+      if (sess !== S.sess) return;   // вышли или вошли в другую точку: её очередь этот проход не трогает
       S.online = true;
-      if (r.ok) S.queue = S.queue.filter((x) => x.uid !== q.uid);
-      else if (r.code === "throttled" || r.error === "Нет доступа") {   // код точки сменили или вход закрыт: чеки ждут, продавец входит заново
-        toast("Сервер не принял код точки. Чеки сохранены на планшете — войдите заново.", "bad"); retryTimer = setTimeout(flush, 60000); return;
-      } else { q.state = "bad"; q.error = r.error || "Сервер не принял чек"; toast("Чек не принят: " + q.error, "bad"); }
+      if (r.code === "throttled") {
+        toast("Сервер временно закрыл вход по коду. Чеки сохранены на планшете и уйдут позже.", "bad"); retry(60000); return;
+      }
+      if (r.error === "Нет доступа") {   // код точки сменили: каждый повтор считался бы неверным кодом
+        S.authFail = true; toast("Сервер не принял код точки. Чеки сохранены на планшете — выйдите и войдите заново.", "bad"); return;
+      }
+      const cur = S.queue.find((x) => x.uid === sent.uid), same = !!cur && cur.ver === sent.ver;
+      if (act === "check_void") {
+        if (r.ok || r.error === "Чек не найден") {
+          if (same) S.queue = S.queue.filter((x) => x !== cur);
+          if (r.ok) toast("Удалённый чек успел дойти до сервера — там он отменён");
+        } else if (same) { cur.state = "bad"; cur.error = r.error || "Сервер не отменил чек"; toast("Чек не отменён: " + cur.error, "bad"); }
+      } else if (r.ok) {
+        if (same) S.queue = S.queue.filter((x) => x !== cur);
+        else if (cur) { cur.sent = true; if (!cur.no && r.check) cur.no = r.check.no; }   // уйдёт новая версия
+      } else if (same && cur.state === "wait") {
+        cur.state = "bad"; cur.error = r.error || "Сервер не принял чек"; toast("Чек не принят: " + cur.error, "bad");
+      }
       saveQueue();
     }
-  } finally { S.flushing = false; drawSync(); if (!$("shift").hidden) drawShift(); }
+    if (skip.size) retry(15000);
+  } finally {
+    if (S.flushing === run) S.flushing = null;
+    if (sess === S.sess) { drawSync(); if (!$("shift").hidden) drawShift(); }
+  }
 }
 function drawSync() {
   const s = $("sync"); if (!S.point) return;
-  const wait = S.queue.filter((q) => q.state === "wait").length, bad = S.queue.filter((q) => q.state === "bad").length;
-  s.className = "sync" + (bad ? " bad" : wait ? " wait" : "");
-  s.textContent = bad ? "Не приняты сервером: " + bad : wait ? (S.online ? "Отправляю: " : "Нет связи · ждут отправки: ") + wait : "Все чеки на сервере";
+  const wait = S.queue.filter(unsent).length, bad = S.queue.filter((q) => q.state === "bad").length;
+  s.className = "sync" + (bad || S.authFail ? " bad" : wait ? " wait" : "");
+  s.textContent = bad ? "Не приняты сервером: " + bad + (wait ? " · ждут: " + wait : "")
+    : wait ? (S.authFail ? "Код точки не принят — войдите заново · ждут: " : S.online ? "Отправляю: " : "Нет связи · ждут отправки: ") + wait
+    : "Все чеки на сервере";
 }
 
 // ---------------------------------------------------------------- смена
+// Закрыть смену с неотправленными чеками сегодняшнего дня нельзя: отчёт выйдет без них, а опоздавший чек
+// потом молча изменит закрытый день. Чеки прошлых дней и непринятые — предупреждение.
+let leaving = false;
+function closeShift(e) {
+  const day = today(), now = S.queue.filter((q) => unsent(q) && q.date === day).length;
+  if (now) {
+    e.preventDefault(); flush();
+    window.alert("Ещё не ушли на сервер чеки за сегодня: " + now + ". Без них отчёт смены выйдет неполным и касса не сойдётся. " +
+      (S.authFail ? "Сервер не принимает код точки — выйдите, войдите заново и дождитесь надписи «Все чеки на сервере»."
+        : S.online ? "Дождитесь надписи «Все чеки на сервере» и закройте смену."
+        : "Нет связи: когда она появится и чеки уйдут (надпись «Все чеки на сервере»), закройте смену."));
+    return;
+  }
+  const old = S.queue.filter(unsent).length, bad = S.queue.filter((q) => q.state === "bad").length;
+  if ((old || bad) && !window.confirm("На планшете есть чеки не на сервере" + (old ? ": прошлых дней ждут отправки — " + old : "") +
+      (bad ? (old ? ", " : ": ") + "не приняты сервером — " + bad : "") +
+      ". В отчёт они не попадут. Разберите их во вкладке «Смена» или позвоните в офис. Всё равно перейти к закрытию смены?")) { e.preventDefault(); return; }
+  leaving = true; setTimeout(() => { leaving = false; }, 3000);
+}
+
 let shiftSeq = 0;
 async function drawShift() {
-  const box = $("shift"), seq = ++shiftSeq, day = today();
-  const head = (extra) => { box.innerHTML = ""; box.append(el("h2", {}, "Смена · " + day.split("-").reverse().join(".")), ...(extra || []).filter(Boolean)); };
+  const box = $("shift"), seq = ++shiftSeq, sess = S.sess, day = today();
+  const head = (extra) => { box.innerHTML = ""; box.append(el("h2", {}, "Смена · " + ddmm(day)), ...(extra || []).filter(Boolean)); };
   if (!box.firstChild) head([el("div", { class: "state" }, "Загружаю чеки…")]);
   let data = null, offline = false;
   try { const r = await call("check_list", { date: day }); if (r.ok) data = r; else throw new Error(r.error); }
   catch (e) { offline = true; }
-  if (seq !== shiftSeq) return;
-  const pending = S.queue.filter((q) => q.date === day);
-  const t = data ? { ...data.totals } : { count: 0, total: 0, cash: 0, kaspi_qr: 0, transfer: 0, card: 0 };
-  // Неотправленные новые чеки добавляем к итогам: продавец сверяет кассу с тем, что пробил, а не с тем, что дошло.
-  for (const q of pending.filter((x) => x.state === "wait" && !x.edit)) { t.count = Number(t.count) + 1; t.total = Number(t.total) + q.total; t[q.pay_kind] = Number(t[q.pay_kind]) + q.total; }
+  if (seq !== shiftSeq || sess !== S.sess) return;
+  const server = data ? data.checks.map((c) => ({ ...c, date: day })) : [];
+  const onSrv = new Map(server.map((c) => [c.uid, c]));
+  const t = { count: 0, total: 0, cash: 0, kaspi_qr: 0, transfer: 0, card: 0 };
+  if (data) for (const k of Object.keys(t)) t[k] = Number(data.totals[k]) || 0;
+  // Итоги — по тому, что пробито, а не по тому, что дошло: неотправленный чек добавляем, правка дошедшего
+  // заменяет его сумму, удаляемый вычитаем.
+  for (const q of S.queue.filter((x) => unsent(x) && x.date === day)) {
+    const c = onSrv.get(q.uid);
+    if (c && c.status !== "active") continue;
+    if (c) { t.count -= 1; t.total -= Number(c.total); t[c.pay_kind] -= Number(c.total); }
+    if (q.state === "wait") { t.count += 1; t.total += q.total; t[q.pay_kind] += q.total; }
+  }
+  // Всё, что лежит на планшете, — любой даты: ждёт отправки, удаляется или отклонено сервером.
+  const local = [...S.queue].sort((a, b) => (b.date + b.created).localeCompare(a.date + a.created));
   head([
     offline ? el("div", { class: "note" }, "Нет связи: показаны только чеки, которые ещё не ушли на сервер. ", el("button", { class: "link", onclick: drawShift }, "Обновить")) : null,
-    data && data.closed_at ? el("div", { class: "note ok" }, "Смена закрыта в " + new Date(data.closed_at).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" }) + ". Новые чеки всё равно попадут в отчёт этого дня.") : null,
+    data && data.closed_at ? el("div", { class: "note ok" }, "Смена закрыта в " + new Date(data.closed_at).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" }) + ". Новые чеки всё равно попадут в отчёт этого дня, а исправить или отменить чек теперь можно только через офис.") : null,
     el("div", { class: "kpis" },
       el("div", { class: "kpi main" }, el("span", {}, "Итого за смену"), el("b", {}, money(t.total))),
       el("div", { class: "kpi" }, el("span", {}, "Чеков"), el("b", {}, String(t.count))),
       ...Object.entries(PAY).map(([k, title]) => el("div", { class: "kpi" }, el("span", {}, title), el("b", {}, money(t[k]))))),
     el("div", { class: "shiftbar" },
-      el("a", { class: "link", href: "index.html" }, "Закрыть смену: пересчёт наличных и расходы →"),
+      el("a", { class: "link", href: "index.html", onclick: closeShift }, "Закрыть смену: пересчёт наличных и расходы →"),
       el("button", { class: "link", onclick: drawShift }, "Обновить список")),
+    local.length ? el("h3", { class: "qhead" }, "Не на сервере: " + local.length) : null,
+    local.some((q) => q.date !== day) ? el("div", { class: "dim" }, "Здесь и чеки прошлых дней: они уходят в отчёт своего дня. Если сервер не принял чек по дате — позвоните в офис.") : null,
   ]);
-  const pendingUids = new Set(pending.map((q) => q.uid));
-  for (const q of [...pending].reverse()) box.append(checkCard(q, true));
-  const list = data ? data.checks.filter((c) => !pendingUids.has(c.uid)) : [];
-  for (const c of list) box.append(checkCard(c, false));
-  if (!pending.length && !list.length && !offline) box.append(el("div", { class: "state" }, "За сегодня чеков ещё нет. Пробейте первый на вкладке «Продажа»."));
+  for (const q of local) box.append(checkCard(q, true));
+  const list = server.filter((c) => !S.queue.some((q) => q.uid === c.uid));
+  if (local.length && list.length) box.append(el("h3", { class: "qhead" }, "На сервере"));
+  for (const c of list) box.append(checkCard(c, false, !!data.closed_at));
+  if (!local.length && !list.length && !offline) box.append(el("div", { class: "state" }, "За сегодня чеков ещё нет. Пробейте первый на вкладке «Продажа»."));
 }
-function checkCard(c, local) {
-  const isVoid = c.status === "void", bad = local && c.state === "bad";
+// Что сказать продавцу о записи очереди и какие действия ей оставить.
+function localNote(c) {
+  if (c.state === "drop") return { text: "Чек уже отправлялся. Если он дошёл до сервера, его там отменят с причиной: " + c.drop_reason, acts: [] };
+  if (c.state !== "bad") return { text: null, acts: ["edit", "drop"] };
+  if (c.drop_reason) return { text: "Чек удалён на планшете, но на сервере остался: " + c.error + ".", acts: ["forget"] };
+  if (LOCKED.test(c.error || "")) return { text: c.error + (c.edit ? ". На сервере чек остался прежним." : "."), acts: ["forget"] };
+  if (/^Дата чека/.test(c.error || "")) return { text: "Сервер не принял чек за " + ddmm(c.date) + ": " + c.error + ". Позвоните в офис — чек внесут вручную, после этого удалите его здесь.", acts: ["edit", "drop"] };
+  return { text: c.error + ". Исправьте чек или удалите его.", acts: ["edit", "drop"] };
+}
+// closed — смена дня закрыта: чек на сервере правит и отменяет уже только офис.
+function checkCard(c, local, closed) {
+  const isVoid = c.status === "void", bad = local && c.state === "bad", drop = local && c.state === "drop";
   const time = new Date(c.created_at || c.created).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
+  const n = local ? localNote(c) : null;
+  const acts = local ? n.acts : isVoid || closed ? [] : ["edit", "void"];
   return el("div", { class: "chk" + (isVoid ? " void" : "") + (local ? (bad ? " rejected" : " pending") : "") },
     el("div", { class: "chead" },
-      el("b", {}, c.no ? "Чек №" + c.no : "Новый чек"), el("span", { class: "dim" }, time + (c.seller ? " · " + c.seller : "")),
+      el("b", {}, c.no ? "Чек №" + c.no : "Новый чек"), el("span", { class: "dim" }, (local ? ddmm(c.date) + " " : "") + time + (c.seller ? " · " + c.seller : "")),
       el("span", { class: "pill" }, PAY[c.pay_kind] || c.pay_kind),
-      local ? el("span", { class: "pill " + (bad ? "bad" : "warn") }, bad ? "не принят" : "ждёт отправки") : null,
+      local ? el("span", { class: "pill " + (bad ? "bad" : "warn") }, drop ? "удаляется" : bad ? "не принят" : "ждёт отправки") : null,
       !local && c.edited ? el("span", { class: "pill warn" }, "исправлен") : null,
       isVoid ? el("span", { class: "pill bad" }, "отменён" + (c.void_reason ? ": " + c.void_reason : "")) : null,
       el("span", { class: "sum" }, money(c.total))),
-    bad ? el("div", { class: "err" }, c.error + ". Исправьте чек или удалите его.") : null,
+    n && n.text ? el("div", { class: bad ? "err" : "dim" }, n.text) : null,
     el("ul", { class: "clines" }, c.lines.map((l) => el("li", {}, el("span", {}, l.item_name + " × " + fmt(l.qty)), el("span", {}, fmt(r2(l.qty * l.price)))))),
-    isVoid ? null : el("div", { class: "cact" },
-      el("button", { onclick: () => startEdit(c) }, "Исправить"),
-      local ? el("button", { onclick: () => dropLocal(c) }, "Удалить") : el("button", { onclick: (e) => voidCheck(c, e.target) }, "Отменить чек")));
+    acts.length ? el("div", { class: "cact" },
+      acts.includes("edit") ? el("button", { onclick: () => startEdit(c) }, "Исправить") : null,
+      acts.includes("drop") ? el("button", { onclick: () => dropLocal(c) }, "Удалить") : null,
+      acts.includes("forget") ? el("button", { onclick: () => dropLocal(c) }, "Убрать с планшета") : null,
+      acts.includes("void") ? el("button", { onclick: (e) => voidCheck(c, e.target) }, "Отменить чек") : null) : null);
 }
 function startEdit(c) {
   if (S.cart.length && !window.confirm("В чеке уже есть позиции. Заменить их исправляемым чеком?")) return;
-  S.editUid = c.uid; S.editNo = c.no || null;
+  S.editUid = c.uid; S.editNo = c.no || null; S.editDate = c.date || today();
   S.cart = c.lines.map((l) => { const i = S.byCode.get(l.item_code);
     return { code: l.item_code, name: l.item_name, unit: l.unit || (i && i.unit) || "шт", qty: Number(l.qty), price: Number(l.price),
       price_list: l.price_list === null || l.price_list === undefined ? null : Number(l.price_list) }; });
   showTab("sale"); drawCart(); drawTiles(); sheet(true);
 }
+// Причина отмены обязательна: её видят собственник и офис.
+function askReason(text) {
+  for (;;) {
+    const v = window.prompt(text, "");
+    if (v === null) return null;
+    if (v.trim()) return v.trim();
+    text = "Без причины чек не отменить. " + text;
+  }
+}
 function dropLocal(c) {
-  if (!window.confirm(c.edit ? "Убрать неотправленную правку? На сервере чек останется прежним." : "Удалить чек, который ещё не ушёл на сервер?")) return;
-  S.queue = S.queue.filter((q) => q.uid !== c.uid); saveQueue(); drawShift();
+  const q = S.queue.find((x) => x.uid === c.uid);
+  if (!q) { drawShift(); return; }   // уже ушёл на сервер или убран
+  const maybe = q.sent || inFlight(q.uid);   // мог уже дойти до сервера
+  if (q.state === "bad" && (q.drop_reason || LOCKED.test(q.error || ""))) {
+    if (!window.confirm("Убрать чек с планшета? На сервере он останется таким, какой там сейчас. Если это неверно — позвоните в офис.")) return;
+  } else if (q.edit) {
+    if (!window.confirm(maybe ? "Правка уже отправлялась и могла дойти до сервера. Убрать её с планшета? Если дошла, чек на сервере останется исправленным — его можно исправить ещё раз."
+      : "Убрать неотправленную правку? На сервере чек останется прежним.")) return;
+  } else if (maybe) {
+    // Удалённый чек не должен молча появиться на сервере: досылка проверит и, если он там, отменит его.
+    const reason = askReason("Чек уже отправлялся и мог дойти до сервера — тогда его там отменят. Почему удаляете чек на " + money(q.total) + "?");
+    if (reason === null) return;
+    Object.assign(q, { state: "drop", drop_reason: reason, error: null, ver: nextVer() });
+    saveQueue(); drawShift(); flush(); return;
+  } else if (!window.confirm("Удалить чек, который ещё не ушёл на сервер?")) return;
+  S.queue = S.queue.filter((x) => x !== q); saveQueue(); drawShift();
 }
 async function voidCheck(c, btn) {
-  const reason = window.prompt("Почему отменяете чек №" + c.no + " на " + money(c.total) + "?", "");
+  const reason = askReason("Почему отменяете чек №" + c.no + " на " + money(c.total) + "? Причину увидит собственник.");
   if (reason === null) return;
   btn.disabled = true;
   try {
@@ -364,6 +525,7 @@ $("sellerbtn").onclick = () => {
   if (v && v.trim()) { S.seller = v.trim(); store.set("tandem_kassa_seller", S.seller); $("sellerbtn").textContent = "Продавец: " + S.seller; }
 };
 window.addEventListener("online", flush);
-// Неотправленные чеки лежат в памяти планшета и переживут закрытие вкладки, но предупредить стоит.
-window.addEventListener("beforeunload", (e) => { if (S.cart.length) { e.preventDefault(); e.returnValue = ""; } });
+// Неотправленные чеки лежат в памяти планшета и переживут закрытие вкладки, но предупредить стоит:
+// без открытой кассы они не уйдут.
+window.addEventListener("beforeunload", (e) => { if (S.cart.length || (!leaving && S.queue.some(unsent))) { e.preventDefault(); e.returnValue = ""; } });
 initLogin();

@@ -5,12 +5,17 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="theme-color" content="#1F3864">
 <title>Тандем KZ — касса</title>
-<link rel="stylesheet" href="kassa.css?v=19">
+<link rel="stylesheet" href="kassa.css?v=20">
+<style>
+  /* «Смена»: заголовки блоков «Не на сервере» (очередь планшета любой даты) и «На сервере» */
+  .shift .qhead{font-size:15px;color:var(--ink2);margin:16px 0 8px}
+  .chk div.dim{margin-top:4px}
+</style>
 </head>
 <body>
 <div id="login" class="login" hidden>
   <h1>Касса · Тандем KZ</h1>
-  <p class="sub">Вход для продавца · сборка 19</p>
+  <p class="sub">Вход для продавца · сборка 20</p>
   <label for="lpoint">Точка</label>
   <select id="lpoint"><option value="">Загружаю точки…</option></select>
   <label for="lpin">Код точки</label>
@@ -79,7 +84,7 @@
   </div>
 </div>
 <div id="toast" class="toast" hidden></div>
-<script src="config.js?v=19"></script>
-<script type="module" src="js/kassa/app.js?v=19"></script>
+<script src="config.js?v=20"></script>
+<script type="module" src="js/kassa/app.js?v=20"></script>
 </body>
 </html>

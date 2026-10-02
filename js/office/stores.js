@@ -1,5 +1,5 @@
-import { api, can } from "./api.js?v=19";
-import { el, toast, modal } from "./ui.js?v=19";
+import { api, can } from "./api.js?v=20";
+import { el, toast, modal, errText, saveFailed } from "./ui.js?v=20";
 
 let root, data, pts;
 // Режимы экрана точки: как продавец сдаёт продажи.
@@ -8,8 +8,11 @@ const MODES = { checks: "касса — чек на каждую продажу"
 export async function mount(r) { root = r; await load(); }
 
 async function load() {
-  [data, pts] = await Promise.all([api("stores_list", {}), api("store_points_list", {})]);
-  if (!data.ok) { toast(data.message, "bad"); return; }
+  // Неудачный ответ не затирает уже показанный список: карточки складов и точек открываются
+  // по data/pts, и без этого строка на экране после обрыва переставала открываться.
+  const [d, p] = await Promise.all([api("stores_list", {}), api("store_points_list", {})]);
+  if (!d.ok) { toast(errText(d), "bad"); return; }
+  data = d; pts = p;
   root.innerHTML = "";
   if (pts.ok) {
     const pt = el("table");
@@ -41,7 +44,7 @@ async function load() {
 
 function edit(s) {
   const ro = !can("stores", "edit");
-  const m = modal(s ? s.name : "Новый склад");
+  const m = modal(s ? s.name : "Новый склад", { keep: !ro });
   const name = el("input", { value: s ? s.name : "", readonly: ro });
   const point = el("select", { disabled: ro }, el("option", { value: "" }, "— без точки —"),
     ...data.points.map((p) => el("option", { value: p.id, selected: s && p.id === s.point_id }, p.name)));
@@ -52,17 +55,20 @@ function edit(s) {
   m.root.append(el("label", {}, "Название"), name, el("label", {}, "Точка"), point,
     el("div", { class: "actions" }, el("label", {}, def, " склад точки по умолчанию"), el("label", {}, active, " активен")), err,
     el("div", { class: "actions" },
-      ro ? null : el("button", { onclick: async () => {
+      ro ? null : el("button", { onclick: async (e) => {
+        e.target.disabled = true;   // второе нажатие до ответа заводило второй склад
         const r = await api("store_save", { id: s ? s.id : undefined, name: name.value, point_id: point.value || null, is_default: def.checked, active: active.checked });
-        if (!r.ok) { err.textContent = r.message; return; }
+        // новый склад после обрыва связи: повтор завёл бы второй — сначала проверить список
+        if (!r.ok) { if (saveFailed(r, !s, e.target, err)) load(); return; }
+        e.target.disabled = false;
         toast("Сохранено"); m.close(); load();
       } }, "Сохранить"),
-      el("button", { class: "ghost", onclick: m.close }, ro ? "Закрыть" : "Отмена")));
+      el("button", { class: "ghost", onclick: m.cancel }, ro ? "Закрыть" : "Отмена")));
 }
 
 function editPoint(x) {
   const ro = !can("stores", "edit");
-  const m = modal(x ? x.name : "Новая точка");
+  const m = modal(x ? x.name : "Новая точка", { keep: !ro });
   const id = el("input", { value: x ? x.id : "", readonly: !!x || ro, placeholder: "латиницей, например eneshka2" });
   const name = el("input", { value: x ? x.name : "", readonly: ro });
   const mode = el("select", { disabled: ro }, ...Object.entries(MODES).map(([k, v]) => el("option", { value: k, selected: x ? x.mode === k : k === "position" }, v)));
@@ -90,8 +96,8 @@ function editPoint(x) {
         const r = await api("store_point_save", { id: x ? x.id : id.value.trim(), name: name.value, mode: mode.value, legal_entity: le.value,
           pin: pin.value.trim(), active: active.checked, item_categories: [...chosen] });
         e.target.disabled = false;
-        if (!r.ok) { err.textContent = r.message; return; }
+        if (!r.ok) { err.textContent = errText(r); return; }
         toast("Сохранено"); m.close(); load();
       } }, "Сохранить"),
-      el("button", { class: "ghost", onclick: m.close }, ro ? "Закрыть" : "Отмена")));
+      el("button", { class: "ghost", onclick: m.cancel }, ro ? "Закрыть" : "Отмена")));
 }

@@ -3,12 +3,13 @@
 // с паузой от 1,3 с, которая сама подстраивается под лимит iiko, — около часа-полутора.
 // Ответы кэшируются в data/iiko/charts/<productId>.json, повторный запуск берёт кэш
 // и не ходит в iiko за уже полученным, поэтому обрыв на 429 не теряет сделанного.
-// Переменные окружения: IIKO_API_KEY, IIKO_APP_ID, IIKO_CLIENT_SECRET, TANDEM_SERVICE_KEY.
+// Переменные окружения: IIKO_API_KEY, IIKO_APP_ID, IIKO_CLIENT_SECRET, TANDEM_SERVICE_KEY,
+//   TANDEM_API_URL (адрес учёта; по умолчанию Supabase, после переезда — https://<адрес>/api/).
 // Запуск: node tools/iiko-migrate-charts.mjs [--dry] [--limit=N] [--skip-costs] [--only-costs]
 // Прогресс пишется в data/iiko/charts.log — запускайте в фоне и смотрите лог.
 import fs from "node:fs";
 const IIKO = "https://api-ru.iiko.services";
-const UCHET = "https://qeehxcnnuzuwskznhdyg.supabase.co/functions/v1/uchet";
+const UCHET = process.env.TANDEM_API_URL || "https://qeehxcnnuzuwskznhdyg.supabase.co/functions/v1/uchet";
 const CACHE = "data/iiko/charts";
 const LOG = "data/iiko/charts.log";
 const args = process.argv.slice(2);
@@ -77,7 +78,7 @@ async function charts() {
   const cand = (await migrate("chart_candidates", [])).rows;
   const list = LIMIT ? cand.slice(0, LIMIT) : cand;
   log(`кандидатов: ${cand.length}${LIMIT ? ", берём " + list.length : ""}`);
-  const rows = []; const failed = []; let fetched = 0, cached = 0, empty = 0;
+  const rows = []; const failed = []; const bySpec = []; let fetched = 0, cached = 0, empty = 0;
   for (const c of list) {
     const f = `${CACHE}/${c.iiko_id}.json`;
     let resp;
@@ -98,6 +99,14 @@ async function charts() {
     const items = resp.items || resp.assemblyCharts || [];
     if (!items.length) empty++;
     for (const ch of items) {
+      // Строка карты, которая в iiko списывается не во всех подразделениях (storeSpecification:
+      // inverse=true — «кроме перечисленных», inverse=false — «только в них»). У нас ограничений
+      // по складам у строк нет, и такая строка переносится общей — карты называются в отчёте,
+      // технолог разбирает их вручную. inverse=true с пустым списком — «везде», это обычная строка.
+      const spec = (ch.items || []).filter((l) => l.storeSpecification
+        && ((l.storeSpecification.departments || []).length || l.storeSpecification.inverse === false));
+      if (spec.length) bySpec.push(`${c.code} (карта с ${ch.dateFrom || "—"}${ch.dateTo ? " по " + ch.dateTo : ""}): строк ${spec.length}, `
+        + [...new Set(spec.map((l) => (l.storeSpecification.inverse === false ? "только " : "кроме ") + (l.storeSpecification.departments || []).join("/")))].join("; "));
       rows.push({
         iiko_id: ch.id, code: c.code, date_from: ch.dateFrom || null, date_to: ch.dateTo || null,
         output_amount: Number(ch.assembledAmount) || 1, technology: ch.technologyDescription || null,
@@ -111,6 +120,11 @@ async function charts() {
   if (failed.length) {
     log(`  iiko не отдал карты по ${failed.length} блюдам:`);
     for (const f of failed) log(`    ${f}`);
+  }
+  if (bySpec.length) {
+    log(`  карт со строками по подразделениям (storeSpecification): ${bySpec.length} — в учёт эти строки идут общими,`);
+    log(`  то есть списываются на всех складах; проверьте карты вручную (код блюда, подразделения iiko):`);
+    for (const s of bySpec) log(`    ${s}`);
   }
   if (DRY) return failed.length;
   let ins = 0, upd = 0, skip = 0, skipL = 0, unknown = new Set(), errors = [];
@@ -129,6 +143,8 @@ async function charts() {
   return failed.length;
 }
 
+const NO_CONTAINER = "00000000-0000-0000-0000-000000000000";   // строка накладной без фасовки
+
 // Предприятия для накладных — только те, что открыты этому api-логину: дерево
 // /api/inventory/v1/organizations/tree шире (в нём есть, например, Актау), но по чужому
 // подразделению список накладных отвечает 400 «doesn't belong to your api login».
@@ -142,7 +158,8 @@ async function costs() {
   log(`предприятий: ${orgs.length}`);
   const from = "2026-01-01", to = new Date().toISOString().slice(0, 10);
   const last = new Map();   // product → {price, date}
-  let docs = 0, lines = 0, badOrgs = 0, badDocs = 0;
+  const mismatch = [];
+  let docs = 0, lines = 0, packedLines = 0, badOrgs = 0, badDocs = 0;
   for (const o of orgs) {
     await sleep(pause);
     let l;
@@ -170,8 +187,16 @@ async function costs() {
       const inv = g.incomingInvoice || g;
       const date = String(d.date || inv.date).slice(0, 10);
       for (const it of (inv.items || [])) {
-        const price = Number(it.price || (it.sum && it.amount ? it.sum / it.amount : 0));
+        // amount в накладной iiko — в основных единицах товара (кг, л, шт), а price у строки с фасовкой
+        // (containerId не нулевой) — цена за упаковку: хлеб 2,25 кг = 5 буханок по 175 ₸ давал 175 ₸/кг
+        // вместо 388,89. Поэтому с фасовкой цена — только sum/amount; без фасовки price, как и раньше.
+        const perUnit = it.sum && it.amount ? it.sum / it.amount : 0;
+        const packed = it.containerId && it.containerId !== NO_CONTAINER;
+        const price = Number(packed ? perUnit : (it.price || perUnit));
         if (!it.product || !(price > 0)) continue;
+        // Без фасовки price и sum/amount обязаны сходиться: расхождение больше 1 % — в отчёт, разобрать руками.
+        if (!packed && it.price && perUnit && Math.abs(it.price - perUnit) > perUnit * 0.01) mismatch.push(`${it.productArticle || it.product}: ${it.price} × ${it.amount} ≠ ${it.sum} (${date})`);
+        if (packed) packedLines++;
         lines++;
         const prev = last.get(it.product);
         if (!prev || prev.date <= date) last.set(it.product, { price, date });
@@ -180,6 +205,11 @@ async function costs() {
     }
   }
   log(`накладных прочитано ${docs}, строк ${lines}, товаров с ценой ${last.size}; предприятий пропущено ${badOrgs}, накладных не отдано ${badDocs}`);
+  log(`  строк с фасовкой (цена пересчитана из суммы за основную единицу): ${packedLines}`);
+  if (mismatch.length) {
+    log(`  строк без фасовки, где цена × количество не сходится с суммой больше чем на 1 %: ${mismatch.length}`);
+    for (const m of mismatch.slice(0, 30)) log(`    ${m}`);
+  }
   if (DRY) return;
   const rows = [...last.entries()].map(([iiko_id, v]) => ({ iiko_id, price: v.price, date: v.date, source: "iiko_invoice" }));
   let upd = 0, skip = 0;

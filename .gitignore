@@ -17,3 +17,9 @@ data/
 server/.env
 server/backups/
 server/node_modules/
+
+# дампы и SQL восстановления: в них коды точек и собственника, хэши PIN, выручка — в публичный репозиторий нельзя
+*.dump
+*.dump.tmp
+*.backup
+/restore.sql

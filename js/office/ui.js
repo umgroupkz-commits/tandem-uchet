@@ -34,12 +34,51 @@ export function debounce(fn, ms) {
   return (...a) => { clearTimeout(h); h = setTimeout(() => fn(...a), ms); };
 }
 export function confirmDlg(text) { return window.confirm(text); }
-// Оверлей с карточкой; возвращает {root, close}
-export function modal(title) {
+// Текст отказа сервера: у ошибок ввода он в message, у сбоя базы — только в error.
+export const errText = (r) => (r && (r.message || r.error)) || "Не получилось — повторите";
+// Отказ при сохранении записи из окна. У НОВОЙ записи (позиция, группа, контрагент, склад) обрыв
+// связи — особый случай: сервер мог успеть её создать, а повторное «Сохранить» ушло бы без кода
+// и завело вторую такую же (уникальности по имени нет). Поэтому кнопка остаётся выключенной,
+// а человек сначала проверяет список. Возвращает true, если это был такой обрыв.
+export const NET_NEW = "Нет связи — запись могла сохраниться. Закройте окно и проверьте список, прежде чем заводить снова";
+export function saveFailed(r, isNew, btn, errEl) {
+  if (isNew && r && r.error === "network") { btn.disabled = true; errEl.textContent = NET_NEW; return true; }
+  btn.disabled = false; errEl.textContent = errText(r); return false;
+}
+// Ключ повтора для сервера. crypto.randomUUID есть только на https и localhost, а свой сервер
+// может открываться по http — там собираем тот же вид UUID из getRandomValues.
+export function uid() {
+  if (crypto.randomUUID) return crypto.randomUUID();
+  const b = crypto.getRandomValues(new Uint8Array(16));
+  b[6] = (b[6] & 15) | 64; b[8] = (b[8] & 63) | 128;
+  const h = [...b].map((x) => x.toString(16).padStart(2, "0")).join("");
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+}
+// Оверлей с карточкой; возвращает {root, close, cancel, dirty}.
+// По фону окно закрывается, только если и нажатие, и отпускание мыши пришлись на сам фон:
+// раньше выделение текста в поле, отпущенное за краем карточки, давало click по фону и
+// закрывало форму со всем введённым. Окна с вводом (keep) по фону не закрываются вовсе.
+// dirty ставится при любом вводе в карточке (кроме полей с data-nodirty — поиск и выбор
+// версии); cancel() при изменениях спрашивает, точно ли бросить введённое.
+export function modal(title, opts = {}) {
   const card = el("div", { class: "card" }, el("h1", {}, title));
   const ov = el("div", { class: "overlay" }, card);
-  ov.addEventListener("click", (e) => { if (e.target === ov) close(); });
+  let downOv = false, upOv = false;
+  ov.addEventListener("mousedown", (e) => { downOv = e.target === ov; });
+  ov.addEventListener("mouseup", (e) => { upOv = e.target === ov; });
+  ov.addEventListener("click", (e) => {
+    if (e.target === ov && downOv && upOv && !opts.keep) close();
+    downOv = upOv = false;
+  });
+  const m = { root: card, close, cancel, dirty: false };
+  const touch = (e) => { if (!(e.target.closest && e.target.closest("[data-nodirty]"))) m.dirty = true; };
+  card.addEventListener("input", touch);
+  card.addEventListener("change", touch);
   function close() { ov.remove(); }
+  function cancel() {
+    if (m.dirty && !confirmDlg("Закрыть без сохранения? Введённое пропадёт.")) return;
+    close();
+  }
   document.body.append(ov);
-  return { root: card, close };
+  return m;
 }

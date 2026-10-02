@@ -41,14 +41,22 @@ Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
 
   if (req.method === "POST") {
-    let body: { action?: string; payload?: Record<string, unknown> };
+    // Переезд на свой сервер (server/README.md): секрет UCHET_MAINTENANCE=1 закрывает запись сюда.
+    // Ответ 503: касса считает его обрывом связи и держит чеки в очереди, а не помечает отклонёнными.
+    if (Deno.env.get("UCHET_MAINTENANCE") === "1") {
+      return json({ ok: false, error: "Сервер учёта переезжает, запись временно закрыта. Повторите позже" }, 503);
+    }
+    let body: { action?: string; payload?: unknown } | null;
     try {
       body = await req.json();
     } catch {
       return json({ ok: false, error: "Некорректный запрос" }, 400);
     }
-    const action = body.action ?? "";
-    const payload = (body.payload ?? {}) as Record<string, unknown>;
+    const action = body?.action ?? "";
+    const raw = body?.payload;
+    const payload = (raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {}) as Record<string, unknown>;
+    // IP клиента — для счётчика неверных кодов в гейте; присланное клиентом _ip всегда перезаписывается.
+    payload._ip = clientIp(req);
     // Вся маршрутизация, служебный ключ и счётчик неверных кодов — в базе (public.tandem_gate,
     // миграция 0029). Прокси остаётся тонким: тот же вызов делает server/proxy.mjs на своём сервере.
     return await proxy("tandem_gate", { action, payload });
@@ -60,6 +68,15 @@ Deno.serve(async (req: Request) => {
 
   return new Response(null, { status: 302, headers: { location: PAGE_URL, "cache-control": "no-store", ...CORS } });
 });
+
+// Адрес клиента: cf-connecting-ip ставит Cloudflare перед функцией, x-real-ip — запасной; в x-forwarded-for
+// клиент может дописать что угодно в начало, поэтому берётся последний элемент (его добавил ближайший прокси).
+function clientIp(req: Request): string | null {
+  const h = req.headers;
+  const xff = (h.get("x-forwarded-for") ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+  const ip = h.get("cf-connecting-ip") || h.get("x-real-ip") || xff[xff.length - 1] || "";
+  return ip.trim().slice(0, 64) || null;
+}
 
 function json(obj: unknown, status = 200): Response {
   return new Response(JSON.stringify(obj), {

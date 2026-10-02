@@ -2,7 +2,11 @@ const API = window.TANDEM_API_URL || "https://qeehxcnnuzuwskznhdyg.supabase.co/f
 
 var S = {
   role: null, point: null, pin: '', items: [], mode: null,
-  expenses: [], takeout: [], sales: [], dash: null, charts: null
+  expenses: [], takeout: [], sales: [], dash: null, charts: null,
+  // ready — отчёт выбранного дня загружен с сервера: только тогда можно сохранять и писать черновик
+  // (save_report заменяет отчёт целиком — сохранение пустой формы затёрло бы уже сданный).
+  // saveSeq — номер сохранения отчёта: выход его меняет, и ответ, ушедший до выхода, ни к чему не применяется.
+  ready: false, itemsOk: false, loadSeq: 0, dashSeq: 0, saveSeq: 0, saving: false, realUid: null, realKey: ''
 };
 var $ = function (id) { return document.getElementById(id); };
 var fmt = function (n) {
@@ -15,29 +19,64 @@ var num = function (v) {
   var x = parseFloat(s);
   return isNaN(x) ? 0 : x;
 };
-var today = function () {
-  var d = new Date();
-  var m = String(d.getMonth() + 1).padStart(2, '0');
-  var dd = String(d.getDate()).padStart(2, '0');
-  return d.getFullYear() + '-' + m + '-' + dd;
+// Число из поля для отправки: пробелы (и неразрывные из выписок) убираются, запятая → точка.
+// Пусто → null, мусор → NaN (его ловит проверка перед сохранением, num() молча дал бы 0 или «12» из «12абв»).
+var numOrNull = function (v) {
+  if (v === null || v === undefined) return null;
+  if (typeof v === 'number') return isFinite(v) ? v : NaN;
+  var s = String(v).replace(/\s/g, '').replace(',', '.');
+  if (s === '') return null;
+  return /^[-+]?(\d+\.?\d*|\.\d+)$/.test(s) ? Number(s) : NaN;
+};
+// Дата ГГГГ-ММ-ДД по часам устройства (toISOString дал бы UTC: до 05:00 по Алматы — вчерашний день).
+var isoDate = function (d) {
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+};
+var today = function () { return isoDate(new Date()); };
+// ГГГГ-ММ-ДД → местная дата (new Date('2026-10-02') читается как полночь UTC).
+var parseDate = function (s) {
+  var p = String(s || '').split('-');
+  return p.length === 3 ? new Date(+p[0], +p[1] - 1, +p[2]) : new Date();
+};
+var newUid = function () {
+  return crypto.randomUUID ? crypto.randomUUID()
+    : '10000000-1000-4000-8000-100000000000'.replace(/[018]/g, function (c) {
+      return (c ^ (crypto.getRandomValues(new Uint8Array(1))[0] & (15 >> (c / 4)))).toString(16);
+    });
 };
 
+/* Вызов сервера. Никогда не бросает: обрыв связи, таймаут и непонятный ответ приходят как
+   {ok:false, error, offline:true}, чтобы каждая кнопка разблокировалась и сказала, что случилось. */
+var NET_ERR = 'Нет связи с сервером. Данные могли не сохраниться — проверьте и повторите';
+function post(action, payload) {
+  var ctl = window.AbortController ? new AbortController() : null;
+  var timer = ctl ? setTimeout(function () { ctl.abort(); }, 20000) : null;
+  return fetch(API, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ action: action, payload: payload || {} }),
+    signal: ctl ? ctl.signal : undefined
+  }).then(function (r) {
+    return r.json().catch(function () {
+      return { ok: false, offline: true, error: 'Сервер ответил непонятно (' + r.status + '). Данные могли не сохраниться — проверьте и повторите' };
+    });
+  }, function () {
+    return { ok: false, offline: true, error: NET_ERR };
+  }).then(function (res) {
+    if (timer) clearTimeout(timer);
+    return res === null || typeof res !== 'object' ? { ok: false, error: 'Пустой ответ сервера' } : res;
+  });
+}
 function api(action, payload) {
   payload = payload || {};
   payload.pin = S.pin;
   if (S.point) payload.point_id = S.point.id;
-  return fetch(API, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ action: action, payload: payload })
-  }).then(function (r) { return r.json(); });
+  return post(action, payload);
 }
 
 function initLogin() {
-  fetch(API, {
-    method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ action: 'points', payload: {} })
-  }).then(function (r) { return r.json(); }).then(function (pts) {
+  post('points', {}).then(function (pts) {
+    if (!Array.isArray(pts)) { $('lerr').textContent = (pts && pts.error) || 'Список точек не загрузился'; return; }
     var sel = $('lpoint');
     sel.innerHTML = '<option value="">— выберите точку —</option>';
     for (var i = 0; i < pts.length; i++) {
@@ -55,14 +94,17 @@ function initLogin() {
 function doLogin(asOwner) {
   var pin = asOwner ? $('opin').value.trim() : $('lpin').value.trim();
   var pid = asOwner ? null : $('lpoint').value;
-  if (!asOwner && !pid) { $('lerr').textContent = 'Выберите точку'; return; }
-  if (!pin) { $('lerr').textContent = 'Введите код'; return; }
-  S.pin = pin;
-  fetch(API, {
-    method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ action: 'login', payload: { pin: pin, point_id: pid } })
-  }).then(function (r) { return r.json(); }).then(function (res) {
-    if (!res.ok) { $('lerr').textContent = res.error || 'Не пустило'; $('oerr').textContent = res.error || 'Не пустило'; return; }
+  var err = $(asOwner ? 'oerr' : 'lerr');
+  if (!asOwner && !pid) { err.textContent = 'Выберите точку'; return; }
+  if (!pin) { err.textContent = 'Введите код'; return; }
+  var btn = $(asOwner ? 'btn-owner' : 'btn-login');
+  btn.disabled = true; err.textContent = '';
+  post('login', { pin: pin, point_id: pid }).then(function (res) {
+    btn.disabled = false;
+    if (!res.ok) { err.textContent = res.offline ? 'Нет связи с сервером — проверьте интернет и повторите' : (res.error || 'Не пустило'); return; }
+    S.pin = pin;
+    // Код собственника и водителя на странице не оставляем: поле очищается сразу после входа.
+    $('opin').value = '';
     S.role = res.role;
     if (res.role === 'owner') { showDash(); return; }
     if (res.role === 'driver') { showDriver(); return; }
@@ -73,7 +115,11 @@ function doLogin(asOwner) {
 }
 
 function logout() {
-  S.role = null; S.point = null; S.pin = '';
+  S.role = null; S.point = null; S.pin = ''; S.dash = null; S.ready = false;
+  // Ответы на запросы, ушедшие до выхода, больше не применяются. Незавершённое сохранение отчёта
+  // не держит кнопку следующего входа: его ответ отбрасывается по saveSeq.
+  S.loadSeq++; S.dashSeq++; S.saveSeq++; S.saving = false;
+  $('opin').value = '';
   $('screen-login').hidden = false; $('screen-form').hidden = true;
   $('screen-dash').hidden = true; $('screen-driver').hidden = true;
 }
@@ -96,8 +142,18 @@ function showForm() {
   ['cash', 'kaspi_qr', 'transfer', 'card'].forEach(function (id) { $(id).readOnly = isK; });
   $('savebtn').textContent = isK ? 'Закрыть смену' : 'Сохранить отчёт';
   if (S.mode === 'import') mountImport();
+  S.itemsOk = false;
+  loadItems();
+}
+function loadItems() {
+  var point = S.point;
+  S.itemsLoading = true;
+  lockSave('Загружаю список позиций…');
   api('items', {}).then(function (r) {
-    S.items = (r && r.items) ? r.items : [];
+    if (S.point !== point) return;   // пока грузилось, вышли или вошли в другую точку
+    S.itemsLoading = false;
+    if (!r.ok || !Array.isArray(r.items)) { loadFailed('Список позиций не загрузился: ' + (r.offline ? 'нет связи с сервером' : (r.error || 'ошибка сервера'))); return; }
+    S.items = r.items; S.itemsOk = true;
     for (var i = 0; i < S.items.length; i++) S.items[i]._n = norm(S.items[i].name) + ' ' + (S.items[i].artikul || '');
     if (S.mode === 'takeout') mountSearch('tq', 'thint', 'tres', addTakeout);
     if (S.mode === 'position') mountSearch('sq', 'shint', 'sres', addSale);
@@ -105,6 +161,26 @@ function showForm() {
     api('charts', {}).then(function (c) { S.charts = (c && c.ok) ? c.charts : null; drawRaw(); });
     loadReport();
   });
+}
+
+/* Кнопка сохранения живёт только при загруженном отчёте. Пока он грузится или не загрузился,
+   она неактивна: save_report заменяет отчёт целиком, и пустая форма затёрла бы уже сданный. */
+function say(text, bad) {
+  var m = $('savemsg'); m.textContent = text || ''; m.className = 'msg' + (bad ? ' bad' : '');
+}
+function lockSave(text) {
+  S.ready = false;
+  $('savebtn').disabled = true; $('reloadbtn').hidden = true;
+  say(text);
+}
+function loadFailed(text) {
+  S.ready = false;
+  $('savebtn').disabled = true; $('reloadbtn').hidden = false;
+  say(text + '. Сохранять нельзя, пока отчёт не загружен, — иначе можно затереть уже сданный.', true);
+}
+function reloadForm() {
+  if (!S.point) return;
+  if (S.itemsOk) loadReport(); else if (!S.itemsLoading) loadItems();
 }
 
 /* ── поиск по номенклатуре ───────────────────────────────────────────────
@@ -230,8 +306,23 @@ function drawRaw() {
   box.innerHTML = html;
 }
 
+var MONEY_FIELDS = ['cash', 'kaspi_qr', 'transfer', 'card', 'qr_statement', 'tr_statement', 'cash_open', 'cash_handed', 'cash_counted'];
+function fillMoney(rep) {
+  for (var i = 0; i < MONEY_FIELDS.length; i++) {
+    var v = rep ? rep[MONEY_FIELDS[i]] : null;
+    $(MONEY_FIELDS[i]).value = v !== null && v !== undefined ? v : '';
+  }
+  if (S.mode === 'checks') $('kcount').textContent = rep ? rep.checks_count : '0';
+}
+
 function loadReport() {
-  api('get_report', { date: $('date').value }).then(function (r) {
+  if (!S.itemsOk) { reloadForm(); return; }   // отчёт загрузится следом за списком позиций
+  var seq = ++S.loadSeq, date = $('date').value;
+  lockSave('Загружаю отчёт за ' + date.split('-').reverse().join('.') + '…');
+  api('get_report', { date: date }).then(function (r) {
+    if (seq !== S.loadSeq) return;   // пока грузилось, выбрали другой день
+    if (!r.ok) { loadFailed('Отчёт не загрузился: ' + (r.offline ? 'нет связи с сервером' : (r.error || 'ошибка сервера'))); return; }
+    say('');
     S.expenses = r.expenses || []; S.takeout = r.takeout || []; S.sales = r.sales || [];
     // В строках продаж не хранится единица измерения — восстанавливаем из справочника,
     // иначе шаг «+/−» для килограммов станет штучным.
@@ -245,21 +336,25 @@ function loadReport() {
         }
       }
     }
-    restoreDraft(!rep);
+    // Сначала поля с сервера, потом черновик поверх пустых — не наоборот, иначе введённое
+    // до обрыва связи затиралось пустыми значениями сразу после восстановления.
     var rep = r.report;
-    var f = ['cash', 'kaspi_qr', 'transfer', 'card', 'qr_statement', 'tr_statement', 'cash_open', 'cash_handed', 'cash_counted'];
-    for (var i = 0; i < f.length; i++) {
-      $(f[i]).value = rep && rep[f[i]] !== null && rep[f[i]] !== undefined ? rep[f[i]] : '';
-    }
+    fillMoney(rep);
     $('shift_by').value = rep && rep.shift_by ? rep.shift_by : '';
     $('comment').value = rep && rep.comment ? rep.comment : '';
     $('saved').textContent = rep ? 'Отчёт за этот день уже был сохранён — можно поправить' : '';
+    // У кассы строка отчёта появляется с первым чеком: «сохранённым» он считается после закрытия смены.
+    // До закрытия в её полях остаток/сдано/пересчёт только умолчания (0 и пусто): строку создали чеки,
+    // а save_report в этом режиме всегда закрывает смену. Поэтому введённое в черновике их перекрывает —
+    // иначе «0» с сервера не давал восстановить остаток на начало и сдачу после похода в кассу и обратно.
+    var kassaOpen = S.mode === 'checks' && !!rep && !rep.closed_at;
+    restoreDraft(!rep || kassaOpen, kassaOpen);
     if (S.mode === 'checks') {
-      $('kcount').textContent = rep ? rep.checks_count : '0';
       // Имя продавца уже введено в кассе — не заставляем набирать второй раз.
       if (!$('shift_by').value) { try { $('shift_by').value = JSON.parse(localStorage.getItem('tandem_kassa_seller') || '""') || ''; } catch (e) { } }
       $('saved').textContent = rep && rep.closed_at ? 'Смена за этот день уже закрыта — можно поправить и закрыть заново'
         : (rep ? '' : 'За этот день чеков ещё нет');
+      drawKassaQueue();
     }
     // Восстанавливаем фасовку из справочника: в строках листа она не хранится.
     for (var z = 0; z < S.takeout.length; z++) {
@@ -270,9 +365,45 @@ function loadReport() {
         S.takeout[z].pack_price = rt.pack_price;
       }
     }
+    S.ready = true;
+    $('savebtn').disabled = S.saving;
     if (S.mode === 'takeout') prefillShortList();
     drawExp(); drawTakeout(); drawSales(); recalc();
   });
+}
+
+/* Касса: чеки, которые планшет ещё не отправил (очередь js/kassa/app.js в localStorage).
+   Отправленные из очереди убираются. Правило то же, что у кнопки «Закрыть смену» в кассе:
+   - wait (ждёт отправки) и drop (удалён на планшете, отмена ещё не ушла) за этот день — закрывать
+     смену нельзя: отчёт выйдет без части продаж, а опоздавший чек потом молча изменит закрытый день;
+   - bad (сервер отказал) — только предупреждение: на сервере такого чека нет или он остался прежним
+     (отклонённая правка), на отчёт он не влияет, а блокировка заперла бы продавца между кассой и отчётом. */
+function kassaPending(date) {
+  var q = [], res = { wait: 0, bad: 0 };   // wait — неотправленные (wait и drop), bad — непринятые
+  if (!S.point) return res;
+  try { q = JSON.parse(localStorage.getItem('tandem_kassa_queue_' + S.point.id) || '[]'); } catch (e) { q = []; }
+  if (!Array.isArray(q)) return res;
+  for (var i = 0; i < q.length; i++) {
+    if (!q[i] || q[i].date !== date) continue;
+    if (q[i].state === 'wait' || q[i].state === 'drop') res.wait++;
+    else if (q[i].state === 'bad') res.bad++;
+  }
+  return res;
+}
+function kassaPendingText(p) {
+  var bad = p.bad ? 'Не принято сервером чеков за этот день: ' + p.bad +
+    '. В отчёт они не попадут — разберите их в кассе (вкладка «Смена») или позвоните в офис.' : '';
+  if (!p.wait) return bad;
+  return 'Чеки за этот день ещё не ушли с планшета на сервер: ' + p.wait +
+    '. Смену закрывать рано: вернитесь в кассу, дождитесь надписи «Все чеки на сервере», потом закройте смену.' +
+    (bad ? ' ' + bad : '');
+}
+function drawKassaQueue() {
+  var box = $('kqueue'); if (!box) return;
+  var p = S.mode === 'checks' && S.point ? kassaPending($('date').value) : { wait: 0, bad: 0 };
+  var t = kassaPendingText(p);
+  box.textContent = t; box.hidden = !t;
+  box.className = 'chk ' + (p.wait ? 'bad' : 'wait');   // красное — не даёт закрыть, жёлтое — предупреждение
 }
 
 function addExp() {
@@ -286,9 +417,9 @@ function drawExp() {
     var e = S.expenses[i];
     var row = document.createElement('div'); row.className = 'erow';
     row.innerHTML =
-      '<input class="ep" placeholder="Кому и на что" value="' + String(e.purpose || '').replace(/"/g, '&quot;') + '">' +
-      '<input class="ea" inputmode="decimal" placeholder="Сумма" value="' + (e.amount || '') + '">' +
-      '<input class="er" placeholder="№ чека" value="' + (e.receipt_no || '') + '">' +
+      '<input class="ep" placeholder="Кому и на что" value="' + esc(e.purpose) + '">' +
+      '<input class="ea" inputmode="decimal" placeholder="Сумма" value="' + esc(e.amount) + '">' +
+      '<input class="er" placeholder="№ чека" value="' + esc(e.receipt_no) + '">' +
       '<button class="x" type="button">×</button>';
     (function (idx, row) {
       row.querySelector('.ep').oninput = function () { S.expenses[idx].purpose = this.value; };
@@ -353,7 +484,6 @@ function drawTakeout() {
   w.appendChild(head);
   for (var i = 0; i < S.takeout.length; i++) {
     var t = S.takeout[i];
-    var sold = soldOf(t);
     var small = lineSmall(t);
     // Подпись под названием: единица, а при фасовке — во что и почём пересчитывается.
     var sub = esc(t.unit || '');
@@ -361,22 +491,35 @@ function drawTakeout() {
       sub += ' → ' + fmt(t.pack_factor) + ' ' + esc(t.pack_unit || 'шт') +
         (num(t.pack_price) > 0 ? ' по ' + fmt(t.pack_price) + ' ₸' : '');
     }
-    var soldText = fmt(sold);
-    if (small !== null) soldText += '<b>' + fmt(small) + ' ' + esc(t.pack_unit || 'шт') + '</b>';
     var row = document.createElement('div'); row.className = 'trow';
     row.innerHTML =
       '<span class="tn">' + esc(t.item_name) + '<i>' + sub + '</i></span>' +
-      '<input class="ti" inputmode="decimal" value="' + (t.issued || '') + '">' +
-      '<input class="tr" inputmode="decimal" value="' + (t.returned || '') + '">' +
-      '<span class="tp' + (sold < 0 ? ' bad' : '') + '">' + soldText + '</span>' +
+      '<input class="ti" inputmode="decimal" value="' + esc(t.issued || '') + '">' +
+      '<input class="tr" inputmode="decimal" value="' + esc(t.returned || '') + '">' +
+      '<span class="tp"></span>' +
       '<button class="x" type="button">×</button>';
+    paintTakeoutRow(row, t);
+    // Ввод цифры обновляет только «продано» в своей строке и итоги: пересоздание строк на каждую
+    // цифру уводило фокус и закрывало клавиатуру телефона. Полная перерисовка — при добавлении/удалении.
     (function (idx, row) {
-      row.querySelector('.ti').oninput = function () { S.takeout[idx].issued = this.value; drawTakeout(); };
-      row.querySelector('.tr').oninput = function () { S.takeout[idx].returned = this.value; drawTakeout(); };
+      row.querySelector('.ti').oninput = function () { S.takeout[idx].issued = this.value; takeoutChanged(row, idx); };
+      row.querySelector('.tr').oninput = function () { S.takeout[idx].returned = this.value; takeoutChanged(row, idx); };
       row.querySelector('.x').onclick = function () { S.takeout.splice(idx, 1); drawTakeout(); };
     })(i, row);
     w.appendChild(row);
   }
+  if ($('ttotal')) $('ttotal').textContent = fmt(takeoutTotal()) + ' ₸';
+  drawRaw();
+  recalc();
+}
+function paintTakeoutRow(row, t) {
+  var sold = soldOf(t), small = lineSmall(t);
+  var cell = row.querySelector('.tp');
+  cell.className = 'tp' + (sold < 0 ? ' bad' : '');
+  cell.innerHTML = fmt(sold) + (small !== null ? '<b>' + fmt(small) + ' ' + esc(t.pack_unit || 'шт') + '</b>' : '');
+}
+function takeoutChanged(row, idx) {
+  paintTakeoutRow(row, S.takeout[idx]);
   if ($('ttotal')) $('ttotal').textContent = fmt(takeoutTotal()) + ' ₸';
   drawRaw();
   recalc();
@@ -414,35 +557,42 @@ function drawSales() {
     if ($('stotal')) $('stotal').textContent = '0 ₸';
     drawRaw(); recalc(); return;
   }
-  var sum = 0;
   for (var i = 0; i < S.sales.length; i++) {
     var s = S.sales[i];
-    var line = num(s.qty) * num(s.price);
-    sum += line;
-    // Цена в строке редактируется: «часто сами цены говорят». Отличие от прайса
-    // подсвечивается и считается скидкой — собственник видит её в сводке.
-    var changed = s.price_list !== undefined && s.price_list !== '' &&
-      num(s.price) !== num(s.price_list);
     var row = document.createElement('div'); row.className = 'srow';
     row.innerHTML =
-      '<span class="sn">' + esc(s.item_name) +
-      '<i>' + esc(s.unit || '') +
-      (changed ? ' · по прайсу ' + fmt(s.price_list) + ' ₸' : '') + '</i></span>' +
+      '<span class="sn">' + esc(s.item_name) + '<i></i></span>' +
       '<button class="pm minus" type="button">−</button>' +
-      '<input class="sq" inputmode="decimal" value="' + (s.qty === '' ? '' : s.qty) + '">' +
+      '<input class="sq" inputmode="decimal" value="' + esc(s.qty) + '">' +
       '<button class="pm plus" type="button">+</button>' +
-      '<input class="sq sp' + (changed ? ' spc' : '') + '" inputmode="decimal" value="' + (s.price === '' ? '' : s.price) + '">' +
+      '<input class="sq sp" inputmode="decimal" value="' + esc(s.price) + '">' +
       '<button class="x" type="button">×</button>';
+    paintSaleRow(row, s);
+    // Как в заборном листе: ввод обновляет свою строку и итог, не пересоздавая поля под пальцем.
     (function (idx, row) {
-      row.querySelector('.sq').oninput = function () { S.sales[idx].qty = this.value; drawSales(); };
-      row.querySelector('.sp').oninput = function () { S.sales[idx].price = this.value; drawSales(); };
+      row.querySelector('.sq').oninput = function () { S.sales[idx].qty = this.value; salesChanged(row, idx); };
+      row.querySelector('.sp').oninput = function () { S.sales[idx].price = this.value; salesChanged(row, idx); };
       row.querySelector('.minus').onclick = function () { chgSale(idx, -1); };
       row.querySelector('.plus').onclick = function () { chgSale(idx, +1); };
       row.querySelector('.x').onclick = function () { S.sales.splice(idx, 1); drawSales(); };
     })(i, row);
     w.appendChild(row);
   }
-  if ($('stotal')) $('stotal').textContent = fmt(sum) + ' ₸';
+  if ($('stotal')) $('stotal').textContent = fmt(salesTotal()) + ' ₸';
+  drawRaw();
+  recalc();
+}
+// Цена в строке редактируется: «часто сами цены говорят». Отличие от прайса
+// подсвечивается и считается скидкой — собственник видит её в сводке.
+function paintSaleRow(row, s) {
+  var changed = s.price_list !== undefined && s.price_list !== null && s.price_list !== '' &&
+    num(s.price) !== num(s.price_list);
+  row.querySelector('.sn i').textContent = (s.unit || '') + (changed ? ' · по прайсу ' + fmt(s.price_list) + ' ₸' : '');
+  row.querySelector('.sp').classList.toggle('spc', changed);
+}
+function salesChanged(row, idx) {
+  paintSaleRow(row, S.sales[idx]);
+  if ($('stotal')) $('stotal').textContent = fmt(salesTotal()) + ' ₸';
   drawRaw();
   recalc();
 }
@@ -463,7 +613,7 @@ function takeoutTotal() {
    восстанавливается, если смена ещё не была сохранена на сервере. */
 function draftKey() { return 'tandem_draft_' + (S.point ? S.point.id : '') + '_' + $('date').value; }
 function saveDraft() {
-  if (!S.point) return;
+  if (!S.point || !S.ready) return;   // пока отчёт дня не загружен, в полях чужие (прошлые) значения
   try {
     var f = {};
     ['shift_by','cash','kaspi_qr','transfer','card','qr_statement','tr_statement',
@@ -475,30 +625,42 @@ function saveDraft() {
     }));
   } catch (e) { }
 }
-function restoreDraft(serverEmpty) {
+/* override — касса до закрытия смены: в этих полях сервер отдаёт только умолчания, и непустое значение
+   черновика перекрывает серверное, а не заполняет одни пустые поля. Деньги по каналам (только чтение)
+   всегда с сервера — они собраны из чеков. Совпадающее с сервером значение «восстановлением» не считается:
+   черновик пишется на каждом пересчёте, и сообщение иначе появлялось бы при каждом открытии формы. */
+var DRAFT_OVERRIDE = ['cash_open', 'cash_handed', 'cash_counted', 'qr_statement', 'tr_statement', 'shift_by', 'comment'];
+function restoreDraft(serverEmpty, override) {
   if (!S.point || !serverEmpty) return;
   var raw = null;
   try { raw = localStorage.getItem(draftKey()); } catch (e) { }
   if (!raw) return;
   try {
-    var d = JSON.parse(raw);
-    for (var id in (d.fields || {})) { var el = $(id); if (el && !el.value) el.value = d.fields[id]; }
-    if (!S.expenses.length && d.expenses) S.expenses = d.expenses;
-    if (!S.takeout.length && d.takeout) S.takeout = d.takeout;
-    if (!S.sales.length && d.sales) S.sales = d.sales;
-    $('savemsg').textContent = 'Восстановлен черновик — данные не потерялись';
+    var d = JSON.parse(raw), got = false;
+    for (var id in (d.fields || {})) {
+      var el = $(id), v = d.fields[id];
+      if (!el || el.readOnly || v === null || v === undefined || v === '') continue;
+      if (el.value && !(override && DRAFT_OVERRIDE.indexOf(id) >= 0)) continue;
+      if (el.value === String(v)) continue;
+      el.value = v; got = true;
+    }
+    if (!S.expenses.length && d.expenses && d.expenses.length) { S.expenses = d.expenses; got = true; }
+    if (!S.takeout.length && d.takeout && d.takeout.length) { S.takeout = d.takeout; got = true; }
+    if (!S.sales.length && d.sales && d.sales.length && S.mode !== 'checks') { S.sales = d.sales; got = true; }
+    if (got) say('Восстановлен черновик — данные не потерялись. Проверьте и сохраните');
   } catch (e) { }
 }
 function clearDraft() { try { localStorage.removeItem(draftKey()); } catch (e) { } }
 
 /* ── «Как вчера» — заборный лист со вчерашними позициями ────────────── */
 function likeYesterday() {
-  var d = new Date($('date').value || today());
+  var d = parseDate($('date').value || today());
   d.setDate(d.getDate() - 1);
-  var y = d.toISOString().slice(0, 10);
+  var y = isoDate(d);
   api('get_report', { date: y }).then(function (r) {
-    var rows = (r && r.takeout) || [];
-    if (!rows.length) { $('savemsg').textContent = 'За вчера заборного листа нет'; return; }
+    if (!r.ok) { say('Вчерашний лист не загрузился: ' + (r.error || 'ошибка сервера'), true); return; }
+    var rows = r.takeout || [];
+    if (!rows.length) { say('За вчера заборного листа нет'); return; }
     var added = 0;
     for (var i = 0; i < rows.length; i++) {
       var exists = S.takeout.some(function (t) { return t.item_code === rows[i].item_code; });
@@ -513,7 +675,7 @@ function likeYesterday() {
       added++;
     }
     drawTakeout();
-    $('savemsg').textContent = added ? 'Подставлено вчерашних позиций: ' + added : 'Все вчерашние позиции уже в листе';
+    say(added ? 'Подставлено вчерашних позиций: ' + added : 'Все вчерашние позиции уже в листе');
   });
 }
 
@@ -521,7 +683,7 @@ function likeYesterday() {
    Формат заводской программы: лист TDSheet, «Сводка по товарообороту»:
    название | цена | количество | сумма полная | сумма со скидкой.
    Названия чужие — сопоставляются с номенклатурой один раз, карта хранится. */
-var IMP = { rows: [], aliases: {}, xlsxReady: false };
+var IMP = { rows: [], aliases: {}, aliasesOk: false, xlsxReady: false };
 
 function mountImport() {
   if (!IMP.mounted) {
@@ -529,7 +691,15 @@ function mountImport() {
     $('impfile').onchange = handleImportFile;
     $('impapply').onclick = applyImport;
   }
-  api('aliases', {}).then(function (r) { if (r && r.ok) IMP.aliases = r.aliases || {}; });
+  loadAliases();
+}
+// Без карты сопоставлений знакомые названия показались бы новыми, а ручной выбор переписал бы
+// общую карту — поэтому файл разбирается только после того, как карта загрузилась.
+function loadAliases() {
+  return api('aliases', {}).then(function (r) {
+    if (r.ok) { IMP.aliases = r.aliases || {}; IMP.aliasesOk = true; }
+    return IMP.aliasesOk;
+  });
 }
 
 function loadXlsxLib() {
@@ -551,7 +721,10 @@ function handleImportFile() {
   var f = $('impfile').files[0];
   if (!f) return;
   $('impstatus').textContent = 'Читаю файл…';
-  loadXlsxLib().then(function () {
+  (IMP.aliasesOk ? Promise.resolve(true) : loadAliases()).then(function (ok) {
+    if (!ok) throw new Error('Нет связи: карта сопоставлений не загрузилась. Выберите файл ещё раз, когда связь появится');
+    return loadXlsxLib();
+  }).then(function () {
     var rd = new FileReader();
     rd.onload = function () {
       try {
@@ -564,7 +737,7 @@ function handleImportFile() {
       }
     };
     rd.readAsArrayBuffer(f);
-  }).catch(function (e) { $('impstatus').textContent = e.message; });
+  }).catch(function (e) { $('impstatus').textContent = e.message; $('impfile').value = ''; });
 }
 
 function parseFactoryRows(arr) {
@@ -581,7 +754,9 @@ function parseFactoryRows(arr) {
       name: name, qty: qty,
       price_list: price || (qty ? sumFull / qty : 0),
       price: qty ? (sumDisc || sumFull) / qty : 0,
-      code: IMP.aliases[normAlias(name)] || matchByName(name) || ''
+      // код из карты годится, только если позиция есть в списке точки — иначе строка молча пропала бы
+      code: (itemByCode(IMP.aliases[normAlias(name)]) ? IMP.aliases[normAlias(name)] : '') || matchByName(name) || '',
+      manual: false
     });
   }
   drawImportMap();
@@ -606,61 +781,102 @@ function drawImportMap() {
   IMP.rows.forEach(function (r, idx) {
     var row = document.createElement('div');
     row.className = 'irow' + (r.code ? '' : ' miss');
-    var right = r.code
-      ? '<span class="iok">' + esc((itemByCode(r.code) || {}).name || r.code) + '</span>'
-      : '<input class="ialias" placeholder="Найти в номенклатуре" list="impdl">';
-    row.innerHTML =
-      '<span class="iname">' + esc(r.name) + '<i>' + fmt(r.qty) + ' × ' + fmt(r.price) + ' ₸</i></span>' + right;
-    if (!r.code) {
-      var inp = row.querySelector('.ialias');
+    row.innerHTML = '<span class="iname">' + esc(r.name) + '<i>' + fmt(r.qty) + ' × ' + fmt(r.price) + ' ₸</i></span>' +
+      (r.code
+        ? '<div class="iright"><span class="iok">' + esc((itemByCode(r.code) || {}).name || r.code) + '</span>' +
+          '<button class="x" type="button" title="Сопоставить с другой позицией">×</button></div>'
+        : '<div class="sbox"><input class="ialias" placeholder="Найти в номенклатуре" autocomplete="off">' +
+          '<div class="sres"></div></div>');
+    if (r.code) {
+      // Ошибочное сопоставление снимается до «Добавить в отчёт»; новая позиция заменит запись в карте.
+      row.querySelector('.x').onclick = function () { IMP.rows[idx].code = ''; IMP.rows[idx].manual = false; drawImportMap(); };
+    } else {
+      // Сопоставление — только явным нажатием на позицию из списка, не по первому совпадению при наборе.
+      var inp = row.querySelector('.ialias'), res = row.querySelector('.sres');
       inp.oninput = function () {
         var q = norm(this.value);
+        res.innerHTML = '';
         if (q.length < 2) return;
-        var hit = S.items.filter(function (m) { return m._n.indexOf(q) >= 0; });
-        if (hit.length === 1 || (hit.length && norm(hit[0].name) === q)) {
-          IMP.rows[idx].code = hit[0].code;
-          IMP.newAliases = IMP.newAliases || [];
-          IMP.newAliases.push({ alias: normAlias(IMP.rows[idx].name), code: hit[0].code });
-          drawImportMap();
-        }
+        var hit = findItems(q);
+        hit.list.slice(0, 8).forEach(function (m) {
+          var b = document.createElement('button');
+          b.type = 'button'; b.className = 'sitem';
+          b.innerHTML = '<span style="color:var(--ink);font-size:14px">' + hl(m.name, hit.words) + '</span><span>' + esc(m.unit) + '</span>';
+          b.onclick = function () { pickImport(idx, m.code); };
+          res.appendChild(b);
+        });
+        if (!hit.list.length) res.innerHTML = '<span class="shint" style="display:block;padding:8px 10px">Ничего не найдено</span>';
       };
     }
     w.appendChild(row);
   });
 
-  // подсказки для ручного сопоставления
-  if (!document.getElementById('impdl')) {
-    var dl = document.createElement('datalist');
-    dl.id = 'impdl';
-    S.items.forEach(function (m) {
-      var o = document.createElement('option'); o.value = m.name; dl.appendChild(o);
-    });
-    document.body.appendChild(dl);
-  }
   $('impapply').hidden = false;
   $('impapply').textContent = 'Добавить в отчёт (' + matched + ' из ' + IMP.rows.length + ')';
 }
 
-function applyImport() {
-  var added = 0;
+// Строки файла с тем же названием сопоставляются разом: позиция часто идёт двумя строками (цена менялась днём).
+function pickImport(idx, code) {
+  var alias = normAlias(IMP.rows[idx].name);
   IMP.rows.forEach(function (r) {
-    if (!r.code) return;
-    var it = itemByCode(r.code); if (!it) return;
-    var exists = S.sales.some(function (x) { return x.item_code === r.code; });
-    if (exists) return;
-    S.sales.push({
-      item_code: r.code, item_name: it.name, unit: it.unit,
-      qty: r.qty, price: Math.round(r.price * 100) / 100,
-      price_list: Math.round(r.price_list * 100) / 100
-    });
-    added++;
+    if (normAlias(r.name) === alias && (r === IMP.rows[idx] || !r.code)) { r.code = code; r.manual = true; }
   });
+  drawImportMap();
+}
+
+/* Строки с одним кодом складываются: количество — сумма, цена — средневзвешенная по количеству
+   (раньше вторая строка той же позиции молча выбрасывалась). Повторный импорт заменяет строки
+   продаж целиком: в этом режиме они приходят только из файла. */
+function aggregateImport(rows) {
+  var by = {}, order = [], skipped = 0, merged = 0;
+  rows.forEach(function (r) {
+    var it = r.code ? itemByCode(r.code) : null;
+    if (!it) { skipped++; return; }
+    var a = by[r.code];
+    if (a) merged++;
+    else { a = by[r.code] = { it: it, qty: 0, sum: 0, sumList: 0 }; order.push(r.code); }
+    a.qty += r.qty; a.sum += r.qty * r.price; a.sumList += r.qty * r.price_list;
+  });
+  return {
+    skipped: skipped, merged: merged,
+    sales: order.map(function (code) {
+      var a = by[code];
+      return {
+        item_code: code, item_name: a.it.name, unit: a.it.unit,
+        qty: Math.round(a.qty * 1000) / 1000,
+        price: a.qty ? Math.round(a.sum / a.qty * 100) / 100 : 0,
+        price_list: a.qty ? Math.round(a.sumList / a.qty * 100) / 100 : 0
+      };
+    })
+  };
+}
+
+function applyImport() {
+  var agg = aggregateImport(IMP.rows);
+  if (!agg.sales.length) { $('impstatus').textContent = 'Нет ни одной сопоставленной строки — сопоставьте позиции и повторите.'; return; }
+  if (S.sales.length && !window.confirm('В отчёте уже есть позиции (' + S.sales.length + '). Заменить их данными из файла?')) return;
+  S.sales = agg.sales;
   drawSales();
-  if (IMP.newAliases && IMP.newAliases.length) {
-    api('save_aliases', { data: IMP.newAliases });
-    IMP.newAliases = [];
+  var msg = 'В отчёт добавлено позиций: ' + agg.sales.length +
+    (agg.merged ? ' (строк одной позиции сложено: ' + agg.merged + ')' : '') +
+    (agg.skipped ? '. Не сопоставлено и не вошло строк: ' + agg.skipped : '') +
+    '. Проверьте сумму и сохраните отчёт.';
+  $('impstatus').textContent = msg;
+  // В общую карту уходят только ручные сопоставления, по одному на название (иначе сервер споткнётся о дубль).
+  var seen = {}, data = [];
+  IMP.rows.forEach(function (r) {
+    if (!r.manual || !r.code) return;
+    var a = normAlias(r.name);
+    if (seen[a]) return;
+    seen[a] = true; data.push({ alias: a, code: r.code });
+  });
+  if (data.length) {
+    api('save_aliases', { data: data }).then(function (res) {
+      if (!res.ok) { $('impstatus').textContent = msg + ' Сопоставления не запомнились: ' + (res.error || 'ошибка сервера'); return; }
+      data.forEach(function (x) { IMP.aliases[x.alias] = x.code; });
+      IMP.rows.forEach(function (r) { r.manual = false; });
+    });
   }
-  $('impstatus').textContent = 'В отчёт добавлено позиций: ' + added + '. Проверьте сумму и сохраните отчёт.';
 }
 
 /* ── Экран водителя: реализация и долги ────────────────────────────── */
@@ -698,20 +914,32 @@ function loadRealization() {
   });
 }
 function saveRealization() {
+  var f = [['rdeliv', 'Отвёз по накладной'], ['rpaid', 'Принял деньгами'], ['rret', 'Возврат продукции']];
+  for (var i = 0; i < f.length; i++) {
+    if (isNaN(numOrNull($(f[i][0]).value))) { $('rmsg').textContent = 'Неверное число в поле «' + f[i][1] + '»: ' + $(f[i][0]).value; return; }
+  }
   var deliv = num($('rdeliv').value), paid = num($('rpaid').value), ret = num($('rret').value);
   if (deliv === 0 && paid === 0 && ret === 0) { $('rmsg').textContent = 'Введите хотя бы одну сумму'; return; }
+  if (!$('rclient').value) { $('rmsg').textContent = 'Выберите, куда возили'; return; }
+  var data = { client_id: $('rclient').value, date: $('rdate').value,
+               delivered: deliv, paid: paid, returned: ret, note: $('rnote').value };
+  // uid записи — один до успеха: если ответ потерялся и водитель жмёт ещё раз с теми же данными,
+  // сервер узнаёт повтор и вторую строку (двойной долг клиента) не создаёт. Изменённые данные —
+  // уже другая запись: со старым uid сервер принял бы её за повтор и молча не записал.
+  var key = JSON.stringify(data);
+  if (!S.realUid || S.realKey !== key) { S.realUid = newUid(); S.realKey = key; }
+  data.uid = S.realUid;
   $('rsave').disabled = true;
-  api('realization', {
-    op: 'add',
-    data: { client_id: $('rclient').value, date: $('rdate').value,
-            delivered: deliv, paid: paid, returned: ret, note: $('rnote').value }
-  }).then(function (r) {
+  $('rmsg').textContent = 'Записываю…';
+  api('realization', { op: 'add', data: data }).then(function (r) {
     $('rsave').disabled = false;
-    if (!r.ok) { $('rmsg').textContent = r.error || 'Не сохранилось'; return; }
+    if (r.offline) { $('rmsg').textContent = 'Нет связи — не ясно, записалось ли. Нажмите «Записать» ещё раз, не меняя полей: повтор не создаст вторую запись'; return; }
+    if (!r.ok) { S.realUid = null; $('rmsg').textContent = r.error || 'Не сохранилось'; return; }
+    S.realUid = null;
     $('rdeliv').value = ''; $('rpaid').value = ''; $('rret').value = ''; $('rnote').value = '';
     $('rmsg').textContent = 'Записано';
     loadRealization();
-  });
+  }).catch(function () { $('rsave').disabled = false; });
 }
 
 function recalc() {
@@ -749,9 +977,11 @@ function recalc() {
   else if (pod > 0) checks.push(['ok', 'Подотчёт подтверждён чеками']);
 
   // Сверка ассортимента с деньгами — до сохранения, чтобы кассир увидел сразу.
-  var byItems = S.mode === 'position' ? salesTotal() : (S.mode === 'takeout' ? takeoutTotal() : 0);
-  var label = S.mode === 'position' ? 'позициям' : 'заборному листу';
-  if (S.mode === 'position' || S.mode === 'takeout') {
+  // Загруженный лист продаж сверяется так же, как набранные позиции: потерянная строка файла видна сразу.
+  var bySales = S.mode === 'position' || S.mode === 'import';
+  var byItems = bySales ? salesTotal() : (S.mode === 'takeout' ? takeoutTotal() : 0);
+  var label = bySales ? 'позициям' : 'заборному листу';
+  if (bySales || S.mode === 'takeout') {
     if (byItems === 0) {
       checks.push(['wait', 'По ' + label + ' пока ничего не внесено']);
     } else if (total === 0) {
@@ -776,26 +1006,103 @@ function recalc() {
   }
 }
 
-function saveReport() {
-  var p = {
-    date: $('date').value,
-    shift_by: $('shift_by').value,
-    cash: num($('cash').value), kaspi_qr: num($('kaspi_qr').value), transfer: num($('transfer').value),
-    card: num($('card').value),
-    qr_statement: $('qr_statement').value, tr_statement: $('tr_statement').value,
-    cash_open: num($('cash_open').value), cash_handed: num($('cash_handed').value),
-    cash_counted: $('cash_counted').value,
-    comment: $('comment').value,
-    expenses: S.expenses, takeout: S.takeout, sales: S.sales
+/* Отчёт для отправки: все числа — уже числа (пробелы и запятая разобраны), пустые выписки и
+   пересчёт — null («не заполнено», а не ноль), пустые строки расходов, заборного листа и продаж
+   не отправляются. Мусор в числе — ошибка с названием поля, а не 500 от сервера. */
+var MONEY_TITLES = { cash: 'Наличные', kaspi_qr: 'Kaspi QR', transfer: 'Перевод на счёт', card: 'Карта через терминал',
+  qr_statement: 'QR по выписке', tr_statement: 'Переводы по выписке', cash_open: 'Остаток на начало',
+  cash_handed: 'Сдано / инкассация', cash_counted: 'Фактически пересчитано' };
+function buildReport(date, fields, expenses, takeout, sales) {
+  var bad = null;
+  var n = function (v, title, nullable) {
+    var x = numOrNull(v);
+    if (x !== null && isNaN(x)) { if (!bad) bad = 'Неверное число в поле «' + title + '»: ' + String(v).trim(); return 0; }
+    return x === null && !nullable ? 0 : x;
   };
+  var p = {
+    date: date, shift_by: String(fields.shift_by || '').trim(), comment: fields.comment || '',
+    cash: n(fields.cash, MONEY_TITLES.cash), kaspi_qr: n(fields.kaspi_qr, MONEY_TITLES.kaspi_qr),
+    transfer: n(fields.transfer, MONEY_TITLES.transfer), card: n(fields.card, MONEY_TITLES.card),
+    qr_statement: n(fields.qr_statement, MONEY_TITLES.qr_statement, true),
+    tr_statement: n(fields.tr_statement, MONEY_TITLES.tr_statement, true),
+    cash_open: n(fields.cash_open, MONEY_TITLES.cash_open), cash_handed: n(fields.cash_handed, MONEY_TITLES.cash_handed),
+    cash_counted: n(fields.cash_counted, MONEY_TITLES.cash_counted, true),
+    expenses: [], takeout: [], sales: []
+  };
+  expenses.forEach(function (e, i) {
+    var purpose = String(e.purpose || '').trim(), receipt = String(e.receipt_no || '').trim();
+    var amount = n(e.amount, 'Сумма расхода в строке ' + (i + 1));
+    if (!purpose && !receipt && !amount) return;   // пустая добавленная строка
+    if (!(amount > 0) && !bad) bad = 'В строке расхода ' + (i + 1) + (purpose ? ' («' + purpose + '»)' : '') + ' укажите сумму или удалите строку';
+    p.expenses.push({ purpose: purpose, amount: amount, receipt_no: receipt });
+  });
+  takeout.forEach(function (t) {
+    var issued = n(t.issued, 'Выдано — ' + t.item_name), returned = n(t.returned, 'Остаток — ' + t.item_name);
+    if (!t.item_code && !t.item_name) return;
+    if (!issued && !returned) return;   // позиция короткого листа, которую сегодня не выдавали
+    p.takeout.push({ item_code: t.item_code || '', item_name: t.item_name || '', unit: t.unit || 'шт',
+      issued: issued, returned: returned, price: n(t.price, 'Цена — ' + t.item_name, true) });
+  });
+  sales.forEach(function (s) {
+    var qty = n(s.qty, 'Количество — ' + s.item_name);
+    if (!qty) return;   // стёртое или нулевое количество
+    p.sales.push({ item_code: s.item_code || '', item_name: s.item_name || '', qty: qty,
+      price: n(s.price, 'Цена — ' + s.item_name, true), price_list: n(s.price_list, 'Цена по прайсу — ' + s.item_name, true) });
+  });
+  return { p: p, error: bad };
+}
+
+function saveReport() {
+  if (!S.ready || S.saving) return;
+  var date = $('date').value;
+  if (!date) { say('Укажите дату отчёта', true); return; }
+  if (S.mode === 'checks') {
+    var pend = kassaPending(date);
+    drawKassaQueue();   // непринятые (bad) остаются предупреждением над формой и закрыть не мешают
+    if (pend.wait) { say(kassaPendingText(pend), true); return; }
+  }
+  var fields = {};
+  ['shift_by', 'comment'].concat(MONEY_FIELDS).forEach(function (id) { fields[id] = $(id).value; });
+  var b = buildReport(date, fields, S.expenses, S.takeout, S.sales);
+  if (b.error) { say(b.error, true); return; }
+  var before = num($('cash').value) + num($('kaspi_qr').value) + num($('transfer').value) + num($('card').value);
+  // Ответ привязан к этому входу: после выхода (и входа в другую точку или заново в эту) он не
+  // трогает ни форму, ни черновик, ни кнопку — иначе суммы точки A легли бы в форму точки B,
+  // черновик B был бы удалён, а на экране стояло бы ложное «Отчёт сохранён».
+  var sseq = ++S.saveSeq, point = S.point;
+  var stale = function () { return sseq !== S.saveSeq || S.point !== point; };
+  S.saving = true;
   $('savebtn').disabled = true;
-  $('savemsg').textContent = 'Сохраняю…';
-  api('save_report', p).then(function (r) {
-    $('savebtn').disabled = false;
-    if (!r.ok) { $('savemsg').textContent = 'Ошибка: ' + (r.error || 'не сохранилось'); return; }
-    clearDraft();
-    $('savemsg').textContent = (S.mode === 'checks' ? 'Смена закрыта ' : 'Отчёт сохранён ') + new Date().toLocaleTimeString('ru-RU');
-    $('saved').textContent = 'Отчёт за этот день уже был сохранён — можно поправить';
+  say('Сохраняю…');
+  api('save_report', b.p).then(function (r) {
+    if (stale()) return;
+    S.saving = false;
+    $('savebtn').disabled = !S.ready;
+    if (!r.ok) {
+      say(r.offline ? 'Нет связи — неизвестно, сохранился ли отчёт. Черновик на телефоне, нажмите «' +
+        $('savebtn').textContent + '» ещё раз' : 'Ошибка: ' + (r.error || 'не сохранилось'), true);
+      return;
+    }
+    if ($('date').value !== date || !S.ready) return;   // пока сохранялось, открыли другой день
+    var msg = (S.mode === 'checks' ? 'Смена закрыта ' : 'Отчёт сохранён ') + new Date().toLocaleTimeString('ru-RU');
+    var changed = false;
+    // Показываем то, что сервер сохранил, а не то, что было в форме: у кассы деньги пересобраны
+    // из чеков, и чек, дошедший пока форма была открыта, меняет «должно в кассе».
+    if (r.report) {
+      fillMoney(r.report);
+      var after = num(r.report.revenue_total);
+      changed = S.mode === 'checks' && Math.abs(after - before) >= 0.01;
+      if (changed) msg += '. Выручка по чекам изменилась: было ' + fmt(before) + ' ₸, стало ' + fmt(after) + ' ₸ — проверьте пересчёт кассы';
+    }
+    $('saved').textContent = S.mode === 'checks' ? 'Смена за этот день уже закрыта — можно поправить и закрыть заново'
+      : 'Отчёт за этот день уже был сохранён — можно поправить';
+    recalc();
+    clearDraft();   // отчёт на сервере; recalc только что записал черновик заново
+    say(msg, changed);
+  }).catch(function (e) {
+    if (stale()) return;
+    S.saving = false; $('savebtn').disabled = !S.ready;
+    say('Ошибка на странице: ' + e.message, true);
   });
 }
 
@@ -805,14 +1112,15 @@ function showDash() {
   setPeriod('week');
 }
 
-/* Быстрые периоды: сегодня, вчера, неделя, месяц. Произвольный — через поля С/По. */
+/* Быстрые периоды: сегодня, вчера, неделя, месяц. Произвольный — через поля С/По.
+   Даты — по часам устройства: toISOString до 05:00 по Алматы давал «сегодня» вчерашним числом. */
 function setPeriod(per) {
   var to = new Date(), from = new Date();
   if (per === 'yesterday') { from.setDate(from.getDate() - 1); to = new Date(from); }
   if (per === 'week') from.setDate(from.getDate() - 6);
   if (per === 'month') from.setDate(from.getDate() - 29);
-  $('dfrom').value = from.toISOString().slice(0, 10);
-  $('dto').value = to.toISOString().slice(0, 10);
+  $('dfrom').value = isoDate(from);
+  $('dto').value = isoDate(to);
   markPeriod(per);
   loadDash();
 }
@@ -820,15 +1128,65 @@ function markPeriod(per) {
   var bs = document.querySelectorAll('.dper');
   for (var i = 0; i < bs.length; i++) bs[i].classList.toggle('on', bs[i].dataset.per === per);
 }
+
+/* Всё, что пришло с сервера, выводится через esc(): названия позиций, расходы, комментарии
+   и имена вводит точка, и разметка из них не должна исполняться на экране собственника. */
+var PAY_TITLES = { cash: 'наличные', kaspi_qr: 'Kaspi QR', transfer: 'перевод', card: 'карта' };
+function hhmm(at) {
+  var d = at ? new Date(at) : null;
+  return d && !isNaN(d) ? d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }) : '';
+}
+function dayTime(at) {
+  var d = at ? new Date(at) : null;
+  return d && !isNaN(d) ? d.toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '';
+}
+var payTitle = function (k) { return PAY_TITLES[k] || k || ''; };
+// edited_diff (v_daily) — на сколько исправления изменили выручку: сумма first_total − total по исправленным
+// активным чекам. Плюс — исправили вниз (выручка меньше, чем пробили сначала), показываем «−».
+function editDiff(ed) {
+  ed = num(ed);
+  return Math.abs(ed) >= 0.01 ? ' (' + (ed > 0 ? '−' : '+') + fmt(Math.abs(ed)) + ' ₸)' : '';
+}
+// Значок отчёта кассы: «отмены: N на X ₸, исправлено: M (−Z ₸)» (колонки v_daily void_count, void_sum —
+// по первой сумме чека, edited_count, edited_diff; на старом сервере без edited_diff — без скобок).
+function voidBadge(x) {
+  var vc = num(x.void_count), ec = num(x.edited_count), parts = [];
+  if (vc) parts.push('отмены: ' + vc + ' на ' + fmt(x.void_sum) + ' ₸');
+  if (ec) parts.push('исправлено: ' + ec + editDiff(x.edited_diff));
+  return parts.join(', ');
+}
+/* «Было → стало» по отменённому или исправленному чеку: first_total/first_pay_kind — сумма и способ оплаты
+   при первом сохранении, total/pay_kind — последние (у отменённого — перед отменой). Правка вниз перед
+   отменой и смена наличных на перевод так видны собственнику. Старый сервер first_* не отдаёт — только итог. */
+function wasNow(v) {
+  var ft = v.first_total, fp = v.first_pay_kind;
+  var sumCh = ft !== null && ft !== undefined && ft !== '' && Math.abs(num(ft) - num(v.total)) >= 0.01;
+  var payCh = !!fp && !!v.pay_kind && fp !== v.pay_kind;
+  return {
+    sum: sumCh ? 'было ' + fmt(ft) + ' → стало ' + fmt(v.total) + ' ₸' + (v.kind === 'void' ? ' перед отменой' : '')
+      : fmt(v.total) + ' ₸',
+    pay: payCh ? 'было ' + payTitle(fp) + ' → стало ' + payTitle(v.pay_kind) : payTitle(v.pay_kind)
+  };
+}
+
+// Возвращает обещание: true — сводка перерисована этим запросом (по нему раскрывается отчёт после
+// «Открыть смену для исправления»), false — не обновилась или устарела.
 function loadDash() {
-  api('dashboard', { from: $('dfrom').value, to: $('dto').value }).then(function (r) {
-    if (!r.ok) { $('dbody').innerHTML = '<tr><td colspan="10">' + (r.error || 'нет доступа') + '</td></tr>'; return; }
+  var seq = ++S.dashSeq;
+  return api('dashboard', { from: $('dfrom').value, to: $('dto').value }).then(function (r) {
+    if (seq !== S.dashSeq) return false;   // пока грузилось, выбрали другой период
+    if (!r.ok) {
+      $('derr').textContent = 'Сводка не обновилась: ' + (r.error || 'нет доступа') + (S.dash ? '. Ниже — данные прошлого запроса' : '');
+      if (!S.dash) $('dbody').innerHTML = '<tr><td colspan="10" class="empty">' + esc(r.error || 'нет доступа') + '</td></tr>';
+      return false;
+    }
+    $('derr').textContent = '';
     S.dash = r;
     var rows = r.rows || [];
     var byPoint = {}, tot = 0, totPod = 0, flags = 0;
-    // Сколько дней в периоде — чтобы посчитать несданные отчёты по каждой точке
-    var dFrom = new Date($('dfrom').value), dTo = new Date($('dto').value);
-    var periodDays = Math.max(1, Math.round((Math.min(dTo, new Date()) - dFrom) / 86400000) + 1);
+    // Сколько дней в периоде — чтобы посчитать несданные отчёты по каждой точке (даты местные)
+    var dFrom = parseDate($('dfrom').value), dTo = parseDate($('dto').value), dNow = parseDate(today());
+    var periodDays = Math.max(1, Math.round((Math.min(dTo, dNow) - dFrom) / 86400000) + 1);
     for (var i = 0; i < rows.length; i++) {
       var x = rows[i];
       tot += num(x.revenue_total); totPod += num(x.podotchet);
@@ -858,7 +1216,7 @@ function loadDash() {
       var p = byPoint[names[n]];
       var missed = Math.max(0, periodDays - p.days);
       var tr2 = document.createElement('tr');
-      tr2.innerHTML = '<td>' + names[n] + '</td><td class="n b">' + fmt(p.rev) + '</td>' +
+      tr2.innerHTML = '<td>' + esc(names[n]) + '</td><td class="n b">' + fmt(p.rev) + '</td>' +
         '<td class="n">' + p.days + '</td>' +
         '<td class="n">' + (missed ? '<span style="color:var(--bad);font-weight:700">' + missed + '</span>' : '0') + '</td>' +
         '<td class="n">' + fmt(p.days ? p.rev / p.days : 0) + '</td>' +
@@ -875,7 +1233,7 @@ function loadDash() {
       var s = document.createElement('span');
       s.className = 'pill ' + (x.count >= 10 ? 'bad' : 'warn');
       s.style.margin = '0 6px 6px 0';
-      s.textContent = x.name + ': ' + x.count + ', последняя в ' + new Date(x.last).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+      s.textContent = x.name + ': ' + x.count + ', последняя в ' + hhmm(x.last);
       $('dpins').appendChild(s);
     });
 
@@ -884,9 +1242,30 @@ function loadDash() {
     $('dmissing-card').hidden = !mis.length;
     if (mis.length) {
       $('dmissing').innerHTML = mis.map(function (m) {
-        return '<span class="pill bad" style="margin:0 6px 6px 0">' + m.name + '</span>';
+        return '<span class="pill bad" style="margin:0 6px 6px 0">' + esc(m.name) + '</span>';
       }).join('');
     }
+
+    // ── Отмены и исправления чеков за период ──
+    // Касса уменьшает выручку отменой чека — собственник должен видеть каждую отмену с причиной.
+    var voids = r.voids || [], vc = 0, vs = 0, ec = 0, ed = 0;
+    rows.forEach(function (x) { vc += num(x.void_count); vs += num(x.void_sum); ec += num(x.edited_count); ed += num(x.edited_diff); });
+    var hasKassa = (r.points || []).some(function (p) { return p.mode === 'checks'; });
+    $('dvoids-card').hidden = !(voids.length || vc || ec || hasKassa);
+    $('dvoids-sum').textContent = (vc || ec || voids.length)
+      ? 'Отменено чеков: ' + vc + ' на ' + fmt(vs) + ' ₸ · исправлено: ' + ec + editDiff(ed) + (voids.length >= 300 ? ' · в списке последние 300' : '')
+      : 'За период чеки не отменяли и не исправляли';
+    var vb = $('dvoids'); vb.innerHTML = '';
+    voids.forEach(function (v) {
+      var tr = document.createElement('tr'), wn = wasNow(v);
+      tr.innerHTML = '<td>' + esc(v.date) + ' ' + esc(hhmm(v.at)) + '</td><td>' + esc(v.point_name) + '</td>' +
+        '<td>' + (v.kind === 'void' ? '<span class="pill bad">отменён</span>' : '<span class="pill warn">исправлен</span>') + '</td>' +
+        '<td class="n">' + (v.no === null || v.no === undefined ? '—' : '№ ' + esc(v.no)) + '</td>' +
+        '<td class="n b">' + esc(wn.sum) + '</td><td>' + esc(wn.pay) + '</td>' +
+        '<td>' + esc(v.reason || (v.kind === 'void' ? 'не указана' : '—')) + '</td><td>' + esc(v.seller || '—') + '</td>';
+      vb.appendChild(tr);
+    });
+    $('dvoids-table').hidden = !voids.length;
 
     // ── Каналы и юрлица ──
     var ch = r.channels || {};
@@ -897,7 +1276,7 @@ function loadDash() {
       chHtml += '<div class="rrow"><span>' + c[0] + '</span><b>' + fmt(c[1]) + ' ₸ · ' + share + ' %</b></div>';
     });
     (r.by_legal || []).forEach(function (l) {
-      chHtml += '<div class="rrow"><span style="color:var(--muted)">' + l.legal + '</span><b>' + fmt(l.revenue) + ' ₸</b></div>';
+      chHtml += '<div class="rrow"><span style="color:var(--muted)">' + esc(l.legal) + '</span><b>' + fmt(l.revenue) + ' ₸</b></div>';
     });
     $('dchannels').innerHTML = chHtml || '<div class="empty">Отчётов за период нет</div>';
 
@@ -905,7 +1284,7 @@ function loadDash() {
     var tb = $('dtop'); tb.innerHTML = '';
     (r.top_items || []).forEach(function (t) {
       var tr = document.createElement('tr');
-      tr.innerHTML = '<td>' + t.name + '</td><td class="n">' + fmt(t.qty) + '</td>' +
+      tr.innerHTML = '<td>' + esc(t.name) + '</td><td class="n">' + fmt(t.qty) + '</td>' +
         '<td class="n b">' + fmt(t.amount) + '</td>' +
         '<td class="n">' + (num(t.discount) > 0 ? '<span style="color:var(--warn)">' + fmt(t.discount) + '</span>' : '—') + '</td>';
       tb.appendChild(tr);
@@ -915,44 +1294,49 @@ function loadDash() {
     // ── Расход сырья ──
     $('draw').innerHTML = (r.raw_usage || []).length
       ? r.raw_usage.map(function (u) {
-          return '<div class="rrow"><span>' + u.name + '</span><b>' + fmt(u.amount) + ' кг</b></div>';
+          return '<div class="rrow"><span>' + esc(u.name) + '</span><b>' + fmt(u.amount) + ' кг</b></div>';
         }).join('')
       : '<div class="empty">Продаж с техкартами за период нет</div>';
 
     // ── Долги по реализации ──
     $('ddebts').innerHTML = (r.realization || []).length
       ? r.realization.map(function (d) {
-          return '<div class="rrow"><span>' + d.name + '</span><b style="' +
+          return '<div class="rrow"><span>' + esc(d.name) + '</span><b style="' +
             (num(d.debt) > 100000 ? 'color:var(--bad)' : 'color:var(--warn)') + '">' + fmt(d.debt) + ' ₸</b></div>';
         }).join('')
       : '<div class="empty">Долгов нет</div>';
 
     var b = $('dbody'); b.innerHTML = '';
-    if (!rows.length) { b.innerHTML = '<tr><td colspan="10" class="empty">Отчётов за период нет</td></tr>'; return; }
+    if (!rows.length) { b.innerHTML = '<tr><td colspan="10" class="empty">Отчётов за период нет</td></tr>'; return true; }
     for (var j = 0; j < rows.length; j++) {
       var y = rows[j];
       var issues = [];
       if (y.diff_qr !== null && num(y.diff_qr) !== 0) issues.push('QR ' + fmt(y.diff_qr));
       if (y.diff_transfer !== null && num(y.diff_transfer) !== 0) issues.push('перевод ' + fmt(y.diff_transfer));
       if (y.diff_cash !== null && num(y.diff_cash) !== 0) issues.push('касса ' + fmt(y.diff_cash));
-      if (num(y.expenses_no_receipt) > 0) issues.push('без чека: ' + y.expenses_no_receipt);
+      if (num(y.expenses_no_receipt) > 0) issues.push('без чека: ' + num(y.expenses_no_receipt));
       if (y.qr_statement === null && y.tr_statement === null) issues.push('нет сверки');
+      var vbadge = voidBadge(y);
       var trr = document.createElement('tr');
       trr.style.cursor = 'pointer';
-      trr.innerHTML = '<td>' + y.report_date + '</td><td>' + y.point_name + '</td>' +
+      trr.dataset.key = y.point_id + '|' + y.report_date;
+      trr.innerHTML = '<td>' + esc(y.report_date) + '</td><td>' + esc(y.point_name) + '</td>' +
         '<td class="n">' + fmt(y.cash) + '</td><td class="n">' + fmt(y.kaspi_qr) + '</td>' +
         '<td class="n">' + fmt(y.transfer) + '</td><td class="n">' + fmt(y.card) + '</td><td class="n b">' + fmt(y.revenue_total) + '</td>' +
         '<td class="n">' + fmt(y.cash_handed) + '</td><td class="n">' + fmt(y.podotchet) + '</td>' +
-        '<td>' + (issues.length ? '<span class="pill bad">' + issues.join(' · ') + '</span>' : '<span class="pill ok">ОК</span>') + '</td>';
+        '<td>' + (issues.length ? '<span class="pill bad">' + esc(issues.join(' · ')) + '</span>' : '<span class="pill ok">ОК</span>') +
+        (vbadge ? ' <span class="pill warn">' + esc(vbadge) + '</span>' : '') + '</td>';
       (function (row, tr) { tr.onclick = function () { toggleReportDetail(tr, row); }; })(y, trr);
       b.appendChild(trr);
     }
-  });
+    return true;
+  }).catch(function (e) { $('derr').textContent = 'Ошибка на странице: ' + e.message; return false; });
 }
 
 /* Раскрытие отчёта прямо в сводке: собственник видит весь день точки,
-   не выходя из дашборда, — позиции, заборный лист, расходы, комментарий. */
-function toggleReportDetail(tr, row) {
+   не выходя из дашборда, — позиции, заборный лист, расходы, отмены чеков, комментарий.
+   note — строка сверху раскрытого отчёта (итог «Открыть смену для исправления»). */
+function toggleReportDetail(tr, row, note) {
   var next = tr.nextElementSibling;
   if (next && next.className === 'detail-row') { next.remove(); return; }
   var open = tr.parentNode.querySelector('.detail-row');
@@ -963,22 +1347,25 @@ function toggleReportDetail(tr, row) {
   dtr.innerHTML = '<td colspan="10" style="background:#F7F9FC;padding:14px 16px">Загружаю отчёт…</td>';
   tr.parentNode.insertBefore(dtr, tr.nextSibling);
 
-  fetch(API, {
-    method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ action: 'get_report', payload: { pin: S.pin, point_id: row.point_id, date: row.report_date } })
-  }).then(function (r) { return r.json(); }).then(function (d) {
+  var H = function (t) { return '<b style="font-size:12px;text-transform:uppercase;color:var(--muted)">' + t + '</b>'; };
+  post('get_report', { pin: S.pin, point_id: row.point_id, date: row.report_date }).then(function (d) {
+    if (!d.ok) {
+      dtr.innerHTML = '<td colspan="10" style="padding:14px 16px;color:var(--bad)">Не удалось загрузить отчёт: ' + esc(d.error || 'ошибка сервера') + '</td>';
+      return;
+    }
     var html = '<td colspan="10" style="background:#F7F9FC;padding:14px 16px">';
-    var sl = d.sales || [], tk = d.takeout || [], ex = d.expenses || [];
+    if (note) html += '<div class="msg" style="text-align:left;margin:0 0 12px">' + esc(note) + '</div>';
+    var sl = d.sales || [], tk = d.takeout || [], ex = d.expenses || [], vl = d.voids || [];
 
     if (sl.length) {
-      html += '<b style="font-size:12px;text-transform:uppercase;color:var(--muted)">Продажи по позициям (' + sl.length + ')</b>';
+      html += H('Продажи по позициям (' + sl.length + ')');
       var sTot = 0, sDisc = 0;
       html += '<div style="margin:6px 0 12px">';
       sl.forEach(function (x) {
         var line = num(x.qty) * num(x.price); sTot += line;
         var disc = num(x.price_list) > num(x.price) ? num(x.qty) * (num(x.price_list) - num(x.price)) : 0;
         sDisc += disc;
-        html += '<div class="rrow"><span>' + x.item_name + ' × ' + fmt(x.qty) +
+        html += '<div class="rrow"><span>' + esc(x.item_name) + ' × ' + fmt(x.qty) +
           (disc ? ' <span style="color:var(--warn)">(скидка ' + fmt(disc) + ')</span>' : '') +
           '</span><b>' + fmt(line) + ' ₸</b></div>';
       });
@@ -986,42 +1373,109 @@ function toggleReportDetail(tr, row) {
         (sDisc ? ' · скидок на ' + fmt(sDisc) + ' ₸' : '') + '</span><b>' + fmt(sTot) + ' ₸</b></div></div>';
     }
     if (tk.length) {
-      html += '<b style="font-size:12px;text-transform:uppercase;color:var(--muted)">Заборный лист (' + tk.length + ')</b>';
+      html += H('Заборный лист (' + tk.length + ')');
       var tTot = 0;
       html += '<div style="margin:6px 0 12px">';
       tk.forEach(function (x) {
         var sold = num(x.issued) - num(x.returned);
         var line = sold * num(x.price); tTot += line;
-        html += '<div class="rrow"><span>' + x.item_name + ': выдано ' + fmt(x.issued) +
+        html += '<div class="rrow"><span>' + esc(x.item_name) + ': выдано ' + fmt(x.issued) +
           ', остаток ' + fmt(x.returned) + ' → продано ' + fmt(sold) + '</span><b>' + fmt(line) + ' ₸</b></div>';
       });
       html += '<div class="rrow"><span><b>Итого по листу</b></span><b>' + fmt(tTot) + ' ₸</b></div></div>';
     }
     if (ex.length) {
-      html += '<b style="font-size:12px;text-transform:uppercase;color:var(--muted)">Расходы под отчёт</b>';
+      html += H('Расходы под отчёт');
       html += '<div style="margin:6px 0 12px">';
       ex.forEach(function (x) {
-        html += '<div class="rrow"><span>' + (x.purpose || '—') +
-          (x.receipt_no ? ' · чек № ' + x.receipt_no : ' · <span style="color:var(--bad)">без чека</span>') +
+        html += '<div class="rrow"><span>' + esc(x.purpose || '—') +
+          (x.receipt_no ? ' · чек № ' + esc(x.receipt_no) : ' · <span style="color:var(--bad)">без чека</span>') +
           '</span><b>' + fmt(x.amount) + ' ₸</b></div>';
       });
       html += '</div>';
     }
+    // Отмены и исправления чеков этого дня: что, когда, кто и почему.
+    if (vl.length) {
+      html += H('Отмены и исправления чеков (' + vl.length + ')');
+      html += '<div style="margin:6px 0 12px">';
+      vl.forEach(function (v) {
+        var isVoid = v.kind === 'void', wn = wasNow(v);
+        html += '<div class="rrow"><span>' +
+          (isVoid ? '<b style="color:var(--bad)">Отменён</b>' : '<b style="color:var(--warn)">Исправлен</b>') +
+          ' чек' + (v.no === null || v.no === undefined ? '' : ' № ' + esc(v.no)) +
+          (hhmm(v.at) ? ' · ' + esc(hhmm(v.at)) : '') +
+          ' · ' + esc(v.seller || 'продавец не указан') +
+          (isVoid ? ' · причина: ' + esc(v.reason || 'не указана') : (v.reason ? ' · ' + esc(v.reason) : '')) +
+          (wn.pay ? ' · ' + esc(wn.pay) : '') +
+          '</span><b>' + esc(wn.sum) + '</b></div>';
+      });
+      html += '</div>';
+    }
     var rep = d.report || {};
-    html += '<b style="font-size:12px;text-transform:uppercase;color:var(--muted)">Деньги</b><div style="margin:6px 0 0">';
-    html += '<div class="rrow"><span>Сдал: ' + (rep.shift_by || '—') + '</span><span></span></div>';
+    var isKassa = (rep.mode || row.mode) === 'checks';
+    html += H('Деньги') + '<div style="margin:6px 0 0">';
+    html += '<div class="rrow"><span>Сдал: ' + esc(rep.shift_by || '—') + '</span><span></span></div>';
     html += '<div class="rrow"><span>Касса: должно ' + fmt(rep.cash_expected) + ' ₸, пересчитано ' +
       (rep.cash_counted === null || rep.cash_counted === undefined ? 'не пересчитана' : fmt(rep.cash_counted) + ' ₸') + '</span>' +
       (num(rep.diff_cash) !== 0 && rep.diff_cash !== null ? '<b style="color:var(--bad)">' + fmt(rep.diff_cash) + ' ₸</b>' : '<b style="color:var(--ok)">ок</b>') + '</div>';
-    if (rep.comment) html += '<div class="rrow"><span>Комментарий: ' + rep.comment + '</span><span></span></div>';
+    if (rep.comment) html += '<div class="rrow"><span>Комментарий: ' + esc(rep.comment) + '</span><span></span></div>';
     html += '</div>';
-    if (!sl.length && !tk.length && !ex.length) {
+    if (!sl.length && !tk.length && !ex.length && !isKassa) {
       html += '<div class="hint">Позиций в этом отчёте нет — точка сдала только суммы.</div>';
+    }
+    // Касса: закрытую смену собственник может открыть для исправления — после закрытия касса не принимает
+    // ни правок, ни отмен чеков этого дня («Смена закрыта — чек уже не изменить. Обратитесь в офис»).
+    if (isKassa) {
+      html += '<div style="margin-top:12px">' + (rep.closed_at
+        ? '<div class="hint" style="margin:0 0 8px">Смена закрыта ' + esc(dayTime(rep.closed_at)) + '. Если нужно исправить ' +
+          'или отменить чек этого дня, откройте смену: касса снова примет правки, потом точка закроет смену заново.</div>' +
+          '<button class="small ghost" type="button" data-act="reopen">Открыть смену для исправления</button>'
+        : '<div class="hint" style="margin:0">Смена ещё не закрыта: точка закроет её на экране отчёта.</div>') +
+        '<div class="hint" data-msg="reopen" style="margin-top:6px"></div></div>';
     }
     html += '</td>';
     dtr.innerHTML = html;
+    var rb = dtr.querySelector('[data-act="reopen"]');
+    if (rb) rb.onclick = function () { reopenShift(row, rb, dtr.querySelector('[data-msg="reopen"]')); };
   }).catch(function () {
-    dtr.innerHTML = '<td colspan="10" style="padding:14px 16px;color:var(--bad)">Не удалось загрузить отчёт</td>';
+    dtr.innerHTML = '<td colspan="10" style="padding:14px 16px;color:var(--bad)">Не удалось показать отчёт</td>';
+  });
+}
+
+/* «Открыть смену для исправления» (tandem_api reopen_shift, только код собственника): снимает закрытие
+   с отчёта кассы за этот день — касса снова принимает правки и отмены чеков, точка потом закрывает смену
+   заново. После ответа сводка перечитывается (день снова не сдан, значки отмен) и отчёт раскрывается обновлённым. */
+function reopenShift(row, btn, msg) {
+  var day = String(row.report_date || '').split('-').reverse().join('.');
+  if (!window.confirm('Открыть смену «' + (row.point_name || '') + '» за ' + day + ' для исправления?\n\n' +
+      'Касса снова сможет исправлять и отменять чеки этого дня. Потом точка должна закрыть смену заново — ' +
+      'до этого день считается несданным.')) return;
+  var seq = S.dashSeq;
+  btn.disabled = true;
+  msg.className = 'hint'; msg.textContent = 'Открываю смену…';
+  post('reopen_shift', { pin: S.pin, point_id: row.point_id, date: row.report_date }).then(function (r) {
+    if (S.role !== 'owner' || seq !== S.dashSeq) return;   // пока ждали, вышли или перестроили сводку
+    if (!r.ok) {
+      btn.disabled = false; msg.className = 'err';
+      msg.textContent = r.offline ? 'Нет связи — не ясно, открылась ли смена. Нажмите «Показать» и проверьте'
+        : 'Смена не открылась: ' + (r.error || 'ошибка сервера');
+      return;
+    }
+    msg.className = 'hint'; msg.textContent = 'Смена открыта. Обновляю сводку…';
+    var key = row.point_id + '|' + row.report_date;
+    loadDash().then(function (ok) {
+      if (!ok) { msg.textContent = 'Смена открыта, но сводка не обновилась — нажмите «Показать»'; return; }
+      var trs = $('dbody').children, rows = (S.dash && S.dash.rows) || [];
+      for (var i = 0; i < trs.length; i++) {
+        if (!trs[i].dataset || trs[i].dataset.key !== key) continue;
+        for (var j = 0; j < rows.length; j++) {
+          if (rows[j].point_id + '|' + rows[j].report_date !== key) continue;
+          toggleReportDetail(trs[i], rows[j], 'Смена открыта для исправления: касса снова принимает правки и отмены ' +
+            'чеков этого дня. После исправления точка закроет смену заново.');
+          return;
+        }
+      }
+    });
   });
 }
 
@@ -1052,6 +1506,10 @@ window.addEventListener('DOMContentLoaded', function () {
   $('date').onchange = loadReport;
   $('addexp').onclick = addExp;
   $('savebtn').onclick = saveReport;
+  $('reloadbtn').onclick = reloadForm;
+  // Касса в соседней вкладке досылает чеки — предупреждение о неотправленных обновляется само.
+  window.addEventListener('storage', function (e) { if (e.key && e.key.indexOf('tandem_kassa_queue_') === 0) drawKassaQueue(); });
+  window.addEventListener('focus', drawKassaQueue);
   $('logout').onclick = logout;
   $('logout2').onclick = logout;
   $('logout3').onclick = logout;

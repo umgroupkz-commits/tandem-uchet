@@ -1,5 +1,5 @@
-import { api, session } from "./api.js?v=19";
-import { el, fmt, toast, debounce, modal, confirmDlg, today, isoDate } from "./ui.js?v=19";
+import { api, session, LONG_MS } from "./api.js?v=20";
+import { el, fmt, toast, debounce, modal, confirmDlg, today, isoDate, errText, uid } from "./ui.js?v=20";
 
 const TYPES = { invoice_in: "Приход", transfer: "Перемещение", writeoff: "Списание", production: "Производство", inventory: "Инвентаризация", sale: "Продажа" };
 // Продажу заводит отчёт точки, а не человек: в «+ Новый документ» её нет.
@@ -19,14 +19,36 @@ const opts = (list) => Object.fromEntries(list.map((s) => [s.id, s.name]));
 // не предлагаем то, что он отклонит.
 let myIds = [];
 const mine = (list) => myIds.length ? list.filter((s) => myIds.includes(s.id)) : list;
+// Номер последнего запроса по вкладке: ответ, обогнанный более новым, не рисуется — иначе при
+// быстрой смене фильтра на экране складывались таблицы всех запросов, в том числе устаревших.
+const seqs = {};
+const nextSeq = (k) => (seqs[k] = (seqs[k] || 0) + 1);
+// Вкладка отчёта: строка фильтров строится один раз при открытии вкладки (build), дальше
+// обновляется только область результата .out — пересозданное поле теряло фокус посреди ввода.
+function tabOut(id, build) {
+  const host = document.getElementById(id); if (!host) return null;
+  if (!host.firstChild) host.append(...build(), el("div", { class: "out" }));
+  return host.querySelector(":scope > .out");
+}
 
 export async function mount(r) {
   root = r; state.page = 1;
   stores = (await api("stores_list", {})).stores || [];
+  salePoints = null;
   const me = await api("me", {});
   myIds = (me.ok && me.user && me.user.store_ids) || [];
   drawShell();
-  await loadDocs();
+  // Вкладка помнится между заходами в раздел: грузим её, а не журнал документов (раньше при
+  // возврате в «Склад» на вкладке «Остатки» или «Заявки» она оставалась пустой).
+  await (LOADERS[state.tab] || loadDocs)();
+}
+const LOADERS = { docs: loadDocs, bal: loadBalances, sales: loadSales, turn: loadTurnover, ord: loadOrders, c1: loadC1, rep: loadReports, ready: loadReady };
+// После проведения, отмены или удаления документа обновляется открытая вкладка. Документ плана
+// заявок (source_kind='orders') ставит или снимает строки «готовым со склада» и может оставить
+// помеченные к пересчёту продажи — их добирает тот же цикл, что и после ручной правки.
+function afterDocChange(d) {
+  (LOADERS[state.tab] || loadDocs)();
+  if (d && d.source_kind === "orders" && perms().includes("stock:edit")) srResync({ quiet: true });
 }
 
 function drawShell() {
@@ -60,9 +82,9 @@ function drawShell() {
       sel({ "": "все типы", ...TYPES }, state.doc_type, (v) => { state.doc_type = v; state.page = 1; loadDocs(); }),
       sel({ "": "все склады", ...opts(active()) }, state.store_id, (v) => { state.store_id = v; state.page = 1; loadDocs(); }),
       sel({ "": "все", draft: "черновики", posted: "проведённые" }, state.status, (v) => { state.status = v; state.page = 1; loadDocs(); }),
-      el("input", { type: "date", title: "с", value: state.date_from, onchange: (e) => { state.date_from = e.target.value; state.page = 1; loadDocs(); } }),
+      el("input", { type: "date", title: "с", value: state.date_from, onchange: debounce((e) => { state.date_from = e.target.value; state.page = 1; loadDocs(); }, 400) }),
       el("span", { class: "dim" }, "—"),
-      el("input", { type: "date", title: "по", value: state.date_to, onchange: (e) => { state.date_to = e.target.value; state.page = 1; loadDocs(); } }),
+      el("input", { type: "date", title: "по", value: state.date_to, onchange: debounce((e) => { state.date_to = e.target.value; state.page = 1; loadDocs(); }, 400) }),
       newBtn),
     el("div", { class: "card", style: "padding:0;overflow:auto" }, table), pager);
 }
@@ -73,8 +95,10 @@ function sel(opts, value, onchange, disabled = false) {
 }
 
 async function loadDocs() {
+  const n = nextSeq("docs");
   const r = await api("docs_list", { doc_type: state.doc_type || null, store_id: state.store_id || null, status: state.status || null, q: state.q, date_from: state.date_from || null, date_to: state.date_to || null, page: state.page });
-  if (!r.ok) { toast(r.message, "bad"); return; }
+  if (n !== seqs.docs) return;
+  if (!r.ok) { toast(errText(r), "bad"); return; }
   table.innerHTML = "";
   table.append(el("tr", {}, ...["Номер", "Тип", "Дата", "Склады / поставщик", "Сумма", "Статус"].map((h, i) => el("th", { class: i === 4 ? "num" : "" }, h))));
   for (const d of r.rows) {
@@ -96,11 +120,12 @@ async function loadDocs() {
 // ---------- форма документа ----------
 async function editDoc(id, newType) {
   let doc = { doc_type: newType, doc_date: today(), status: "draft", lines: [], consume: [] };
-  if (id) { const r = await api("doc_get", { id }); if (!r.ok) { toast(r.message, "bad"); return; } doc = r.doc; }
+  if (id) { const r = await api("doc_get", { id }); if (!r.ok) { toast(errText(r), "bad"); return; } doc = r.doc; }
   const type = doc.doc_type, posted = doc.status === "posted";
   const isSale = type === "sale";
   const ro = posted || !canDoc(type) || isSale;
-  const m = modal(`${TYPES[type]} ${doc.number || ""}`); m.root.style.maxWidth = "960px";
+  // Форма с вводом по фону не закрывается; «Отмена» при изменениях переспрашивает.
+  const m = modal(`${TYPES[type]} ${doc.number || ""}`, { keep: !ro }); m.root.style.maxWidth = "960px";
   // В новом документе выбирать можно только действующие склады; в уже заведённом
   // список полный, иначе выключенный позже склад пропал бы из карточки вместе с именем.
   // «Свой» склад документа (приход — получатель, прочие — источник) — только из закреплённых;
@@ -158,7 +183,10 @@ async function editDoc(id, newType) {
     }
     tot.innerHTML = ""; tot.append(el("span", {}, posted ? (isSale ? "Себестоимость проданного" : "Сумма документа") : (isIn ? "Сумма" : "Строк")), el("span", {}, posted || isIn ? fmt(posted ? doc.total_sum : sum) + " ₸" : String(lines.length)));
   }
+  // Любая перерисовка после первой — добавление или удаление строк: форма изменена.
+  let drawn = false;
   function drawLines() {
+    if (drawn) m.dirty = true; drawn = true;
     const ae = document.activeElement; const keep = ae && ae.dataset && ae.dataset.li != null ? { li: ae.dataset.li, key: ae.dataset.key } : null;
     tbl.innerHTML = ""; sumCells = [];
     const cols = ["Позиция", "Ед.", isInv ? "Факт" : "Кол-во"]; if (isInv && posted) cols.push("Расчёт", "Разница"); if (isIn) cols.push("Цена", "Сумма"); if (posted && !isIn && !isInv) cols.push(isSale ? "Цена продажи" : "Себест.", isSale ? "Выручка" : "Сумма"); if (isInv && posted) cols.push("Сумма"); cols.push("");
@@ -187,7 +215,7 @@ async function editDoc(id, newType) {
     let page = 1, pages = 1;
     do {
       const b = await api("stock_balances", { store_id: st, only_nonzero: true, page });
-      if (!b.ok) { toast(b.message, "bad"); return; }
+      if (!b.ok) { toast(errText(b), "bad"); return; }
       for (const x of (b.rows || [])) if (!lines.some((l) => l.item_code === x.item_code)) lines.push({ item_code: x.item_code, name: x.name, unit_id: x.unit_id, fact_qty: "", current_qty: x.qty });
       pages = b.pages || 1; page++;
     } while (page <= pages);
@@ -220,7 +248,7 @@ async function editDoc(id, newType) {
     for (let from = 0; from < rows.length; from += 1000) {
       const chunk = rows.slice(from, from + 1000);
       const r = await api("items_lookup_list", { keys: chunk.map((x) => ({ code: x.code || null, name: x.name || null })) });
-      if (!r.ok) { err.textContent = r.message; return; }
+      if (!r.ok) { err.textContent = errText(r); return; }
       for (const x of (r.rows || [])) found.set(from + x.i, x);
     }
     // Одна позиция может прийти файлом несколькими строками (разные группы отчёта) — складываем.
@@ -307,7 +335,7 @@ async function editDoc(id, newType) {
   }
 
   if (!ro) {
-    const search = el("input", { placeholder: "Добавить позицию: название или код" }); const res = el("div", { class: "sres" });
+    const search = el("input", { placeholder: "Добавить позицию: название или код", "data-nodirty": "" }); const res = el("div", { class: "sres" });
     search.addEventListener("input", debounce(async () => {
       res.innerHTML = ""; const q = search.value.trim(); if (q.length < 2) return;
       const s = await api("items_search", { q, active: true, page: 1 });
@@ -337,104 +365,171 @@ async function editDoc(id, newType) {
     m.root.append(el("h2", { style: "margin-top:14px" }, isSale ? "Списано со склада (по техкартам и как есть)" : "Списано по техкартам"), ct);
   }
   const err = el("div", { class: "err" }); const actions = el("div", { class: "actions" });
-  const payload = () => ({ id: doc.id, doc_type: type, doc_date: f.date.value, store_from: f.from.value || null, store_to: f.to.value || null,
+  // Ключ повтора нового документа (контракт п. 8) — один на открытую форму: если ответ на первое
+  // сохранение потерялся и человек нажал ещё раз, сервер узнает документ по ключу и не заведёт второй.
+  const clientKey = doc.id ? undefined : uid();
+  const payload = () => ({ id: doc.id, client_key: clientKey, doc_type: type, doc_date: f.date.value, store_from: f.from.value || null, store_to: f.to.value || null,
     counteragent_id: f.caId, reason: f.reason.value || null, comment: f.comment.value,
     ext_number: f.ext.value.trim() || null, ext_date: f.extd.value || null,
     lines: lines.map((l) => ({ item_code: l.item_code, qty: l.qty === "" ? null : l.qty, fact_qty: l.fact_qty === "" ? null : l.fact_qty, price: l.price === "" ? null : l.price })) });
-  async function save() { const r = await api("doc_save", payload()); if (!r.ok) { err.textContent = r.message; return null; } doc.id = r.id; doc.number = r.number; return r.id; }
-  async function post() {
-    const id = await save(); if (!id) return;
-    const pv = await api("doc_preview", { id }); if (!pv.ok) { err.textContent = pv.message; return; }
-    const box = el("div", {});
-    if (pv.consume.length) box.append(el("div", { class: "dim" }, "Будет списано: " + pv.consume.map((c) => `${c.name} ${fmt(c.qty)} ${c.unit_id}`).join(", ")));
-    if (pv.warnings.length) box.append(el("div", { class: "warnbox" }, "Уйдут в минус: " + pv.warnings.map((w) => `${w.name} (${w.store_name}) → ${fmt(w.balance_after)}`).join("; ")));
-    const cm = modal("Провести документ?"); cm.root.append(box, el("div", { class: "actions" },
-      el("button", { onclick: async () => { cm.close(); const r = await api("doc_post", { id }); if (!r.ok) { err.textContent = r.message; return; } toast("Проведено" + (r.warnings.length ? " — есть минусы" : "")); m.close(); loadDocs(); } }, "Провести"),
-      el("button", { class: "ghost", onclick: cm.close }, "Отмена")));
+  // Один запрос сохранения за раз: повторное нажатие (двойной щелчок, медленная связь) ждёт уже
+  // идущий и получает тот же id, а не создаёт второй документ. Кнопки на время запроса выключены.
+  let saving = null;
+  function save() {
+    if (!saving) saving = (async () => {
+      err.textContent = "";
+      const r = await api("doc_save", payload());
+      if (!r.ok) { err.textContent = errText(r); return null; }
+      doc.id = r.id; doc.number = r.number; return r.id;
+    })().finally(() => { saving = null; });
+    return saving;
   }
-  if (!ro) actions.append(el("button", { class: "ghost", onclick: async () => { if (await save()) { toast("Черновик сохранён"); m.close(); loadDocs(); } } }, "Сохранить черновик"), el("button", { onclick: post }, "Провести"));
-  if (posted && canDoc(type) && !isSale) actions.append(el("button", { class: "ghost", onclick: async () => {
+  const draftBtn = el("button", { class: "ghost" }, "Сохранить черновик"), postBtn = el("button", {}, "Провести");
+  const busy = (on) => { draftBtn.disabled = postBtn.disabled = on; };
+  async function post() {
+    busy(true);
+    try {
+      const id = await save(); if (!id) return;
+      const pv = await api("doc_preview", { id }); if (!pv.ok) { err.textContent = errText(pv); return; }
+      const box = el("div", {});
+      if (pv.consume.length) box.append(el("div", { class: "dim" }, "Будет списано: " + pv.consume.map((c) => `${c.name} ${fmt(c.qty)} ${c.unit_id}`).join(", ")));
+      if (pv.warnings.length) box.append(el("div", { class: "warnbox" }, "Уйдут в минус: " + pv.warnings.map((w) => `${w.name} (${w.store_name}) → ${fmt(w.balance_after)}`).join("; ")));
+      const cm = modal("Провести документ?"); cm.root.append(box, el("div", { class: "actions" },
+        el("button", { onclick: async () => {
+          cm.close(); busy(true);
+          const r = await api("doc_post", { id });
+          busy(false);
+          if (!r.ok) { err.textContent = errText(r); return; }
+          toast("Проведено" + (r.warnings.length ? " — есть минусы" : "")); m.close(); afterDocChange(doc);
+        } }, "Провести"),
+        el("button", { class: "ghost", onclick: cm.close }, "Отмена")));
+    } finally { busy(false); }
+  }
+  draftBtn.onclick = async () => { busy(true); const id = await save(); busy(false); if (id) { toast("Черновик сохранён"); m.close(); (LOADERS[state.tab] || loadDocs)(); } };
+  postBtn.onclick = post;
+  if (!ro) actions.append(draftBtn, postBtn);
+  if (posted && canDoc(type) && !isSale) actions.append(el("button", { class: "ghost", onclick: async (e) => {
     if (!confirmDlg("Отменить проведение?")) return;
-    const r = await api("doc_unpost", { id: doc.id }); if (!r.ok) { err.textContent = r.message; return; }
+    e.target.disabled = true;
+    const r = await api("doc_unpost", { id: doc.id });
+    e.target.disabled = false;
+    if (!r.ok) { err.textContent = errText(r); return; }
     const hasWarn = r.warnings && r.warnings.length;
     toast("Проведение отменено" + (hasWarn ? " — в минусе: " + r.warnings.map((w) => `${w.name} (${w.store_name}) ${fmt(w.balance_after)}`).join("; ") : ""), hasWarn ? "bad" : "ok");
-    m.close(); loadDocs();
+    m.close(); afterDocChange(doc);
   } }, "Отменить проведение"));
-  if (doc.id && !posted && canDoc(type) && !isSale) actions.append(el("button", { class: "ghost", onclick: async () => { if (!confirmDlg("Удалить черновик?")) return; const r = await api("doc_delete", { id: doc.id }); if (!r.ok) { err.textContent = r.message; return; } toast("Удалено"); m.close(); loadDocs(); } }, "Удалить"));
-  actions.append(el("button", { class: "ghost", onclick: m.close }, ro ? "Закрыть" : "Отмена"));
+  if (doc.id && !posted && canDoc(type) && !isSale) actions.append(el("button", { class: "ghost", onclick: async (e) => {
+    if (!confirmDlg("Удалить черновик?")) return;
+    e.target.disabled = true;
+    const r = await api("doc_delete", { id: doc.id });
+    e.target.disabled = false;
+    if (!r.ok) { err.textContent = errText(r); return; } toast("Удалено"); m.close(); afterDocChange(null); } }, "Удалить"));
+  actions.append(el("button", { class: "ghost", onclick: m.cancel }, ro ? "Закрыть" : "Отмена"));
   m.root.append(err, actions);
 }
 
 // ---------- остатки ----------
 let bal = { store_id: "", q: "", nonzero: true, page: 1 };
 async function loadBalances() {
-  const host = document.getElementById("bal-root"); host.innerHTML = "";
+  const out = tabOut("bal-root", () => [el("div", { class: "tools" },
+    sel({ "": myIds.length ? "мои склады" : "все склады", ...opts(mine(stores)) }, bal.store_id, (v) => { bal.store_id = v; bal.page = 1; loadBalances(); }),
+    el("input", { placeholder: "Поиск позиции", value: bal.q, oninput: debounce((e) => { bal.q = e.target.value; bal.page = 1; loadBalances(); }, 300) }),
+    el("label", { style: "margin:0" }, el("input", { type: "checkbox", checked: bal.nonzero, onchange: (e) => { bal.nonzero = e.target.checked; bal.page = 1; loadBalances(); } }), " только с остатком"),
+    el("span", { class: "dim bal-sum" }),
+    el("button", { class: "ghost", onclick: async (e) => {
+      // CSV считается сервером отдельным запросом (export:true) по тем же фильтрам, а не по уже
+      // загруженной странице — office_stock_balances отдаёт csv только когда его явно просят.
+      e.target.disabled = true;
+      const rex = await api("stock_balances", { store_id: bal.store_id || null, q: bal.q, only_nonzero: bal.nonzero, export: true });
+      e.target.disabled = false;
+      if (!rex.ok) { toast(errText(rex), "bad"); return; }
+      const b = new Blob(["﻿" + rex.csv], { type: "text/csv;charset=utf-8" });
+      const a = document.createElement("a"); a.href = URL.createObjectURL(b); a.download = "ostatki.csv"; a.click(); URL.revokeObjectURL(a.href);
+    } }, "CSV"))]);
+  if (!out) return;
+  const n = nextSeq("bal");
   const r = await api("stock_balances", { store_id: bal.store_id || null, q: bal.q, only_nonzero: bal.nonzero, page: bal.page });
-  if (!r.ok) { toast(r.message, "bad"); return; }
+  if (n !== seqs.bal) return;
+  if (!r.ok) { toast(errText(r), "bad"); return; }
+  out.parentNode.querySelector(".bal-sum").textContent = `итого ${fmt(r.total_sum)} ₸`;
   const t = el("table"); t.append(el("tr", {}, ...["Склад", "Позиция", "Ед.", "Кол-во", "Средняя", "Сумма"].map((h, i) => el("th", { class: i >= 3 ? "num" : "" }, h))));
   for (const x of r.rows) t.append(el("tr", { class: "row", onclick: () => showMoves(x) }, el("td", { class: "dim" }, x.store_name), el("td", {}, x.name), el("td", {}, x.unit_id),
     el("td", { class: "num" + (Number(x.qty) < 0 ? " bad" : "") }, fmt(x.qty)), el("td", { class: "num" }, fmt(x.avg_cost)), el("td", { class: "num" }, fmt(x.sum))));
   if (!r.rows.length) t.append(el("tr", {}, el("td", { colspan: 6, class: "dim" }, "Остатков нет — проведите первую инвентаризацию или приход")));
-  host.append(el("div", { class: "tools" },
-      sel({ "": myIds.length ? "мои склады" : "все склады", ...opts(mine(stores)) }, bal.store_id, (v) => { bal.store_id = v; bal.page = 1; loadBalances(); }),
-      el("input", { placeholder: "Поиск позиции", value: bal.q, oninput: debounce((e) => { bal.q = e.target.value; bal.page = 1; loadBalances(); }, 300) }),
-      el("label", { style: "margin:0" }, el("input", { type: "checkbox", checked: bal.nonzero, onchange: (e) => { bal.nonzero = e.target.checked; loadBalances(); } }), " только с остатком"),
-      el("span", { class: "dim" }, `итого ${fmt(r.total_sum)} ₸`),
-      el("button", { class: "ghost", onclick: async () => {
-        // CSV считается сервером отдельным запросом (export:true) по тем же фильтрам, а не по уже
-        // загруженной странице — office_stock_balances отдаёт csv только когда его явно просят.
-        const rex = await api("stock_balances", { store_id: bal.store_id || null, q: bal.q, only_nonzero: bal.nonzero, export: true });
-        if (!rex.ok) { toast(rex.message, "bad"); return; }
-        const b = new Blob(["﻿" + rex.csv], { type: "text/csv;charset=utf-8" });
-        const a = document.createElement("a"); a.href = URL.createObjectURL(b); a.download = "ostatki.csv"; a.click(); URL.revokeObjectURL(a.href);
-      } }, "CSV")),
-    el("div", { class: "card", style: "padding:0;overflow:auto" }, t),
+  out.innerHTML = "";
+  out.append(el("div", { class: "card", style: "padding:0;overflow:auto" }, t),
     el("div", { class: "pager" }, `всего ${r.total} · стр. ${r.page} из ${r.pages}`,
       el("button", { class: "ghost", disabled: r.page <= 1, onclick: () => { bal.page--; loadBalances(); } }, "←"),
       el("button", { class: "ghost", disabled: r.page >= r.pages, onclick: () => { bal.page++; loadBalances(); } }, "→")));
 }
 async function showMoves(x) {
   const r = await api("stock_moves", { store_id: x.store_id, item_code: x.item_code, page: 1 });
-  if (!r.ok) { toast(r.message, "bad"); return; }
+  if (!r.ok) { toast(errText(r), "bad"); return; }
   const m = modal(`${x.name} · ${x.store_name}`);
   const t = el("table"); t.append(el("tr", {}, ...["Дата", "Документ", "Кол-во", "Себест.", "Сумма"].map((h, i) => el("th", { class: i >= 2 ? "num" : "" }, h))));
-  for (const mv of (r.rows || [])) t.append(el("tr", { class: "row", onclick: () => { m.close(); editDoc(mv.document_id); } }, el("td", {}, mv.move_date), el("td", {}, `${TYPES[mv.doc_type] || mv.doc_type} ${mv.number}`),
-    el("td", { class: "num" + (Number(mv.qty) < 0 ? " bad" : "") }, fmt(mv.qty)), el("td", { class: "num" }, fmt(mv.unit_cost)), el("td", { class: "num" }, fmt(mv.sum))));
-  m.root.append(t, el("div", { class: "actions" }, el("button", { class: "ghost", onclick: m.close }, "Закрыть")));
+  // Строка без количества (qty = 0) — переоценка: приход на склад, ушедший в минус, переоценил
+  // недостающее по своей цене; её сумма — поправка стоимости остатка (adj).
+  let reval = false;
+  for (const mv of (r.rows || [])) {
+    const isReval = Number(mv.qty) === 0; reval = reval || isReval;
+    t.append(el("tr", { class: "row", onclick: () => { m.close(); editDoc(mv.document_id); } }, el("td", {}, mv.move_date), el("td", {}, `${TYPES[mv.doc_type] || mv.doc_type} ${mv.number}`),
+      isReval ? el("td", { class: "num dim" }, "переоценка") : el("td", { class: "num" + (Number(mv.qty) < 0 ? " bad" : "") }, fmt(mv.qty)),
+      el("td", { class: "num" }, isReval ? "" : fmt(mv.unit_cost)), el("td", { class: "num" }, fmt(isReval && mv.adj != null ? mv.adj : mv.sum))));
+  }
+  m.root.append(t, reval ? el("div", { class: "dim", style: "margin-top:8px" }, "«Переоценка» — поправка стоимости без количества: приход на склад, ушедший в минус, пересчитал недостающее по цене прихода.") : null,
+    el("div", { class: "actions" }, el("button", { class: "ghost", onclick: m.close }, "Закрыть")));
 }
 
 // ---------- разбор файла остатков ----------
 // ---------- продажи: отчёты точек и их складские документы ----------
 const iso = isoDate;
-const sales = { date_from: iso(new Date(Date.now() - 7 * 864e5)), date_to: iso(new Date()), point_id: "" };
+// Даты по умолчанию («последняя неделя», «с начала месяца», «завтра») считаются при открытии
+// вкладки, а не при загрузке модуля, — пока человек их не менял (auto): вкладка, открытая
+// вчера утром, иначе показывала бы вчерашние «сегодня» и «завтра».
+const monthStart = () => iso(new Date(new Date().getFullYear(), new Date().getMonth(), 1, 12));
+const tomorrow = () => iso(new Date(Date.now() + 86400e3));
+const sales = { date_from: "", date_to: "", auto: true, point_id: "" };
+// Точки фильтра — из справочника точек, а не из строк ответа: раньше после пустого периода в
+// списке оставалось только «все точки», а фильтром по-прежнему уходила выбранная точка (и
+// «Провести продажи за период» шла только по ней). Справочник читается раз на заход в раздел.
+let salePoints = null;
 const SALE_STATE = {
   posted: ["проведена", "ok"], none: ["нет продаж с кодом", ""], no_store: ["у точки нет склада", "bad"],
   locked: ["изменён после инвентаризации", "bad"], draft: ["не проведена", "bad"],
   pending: ["не проведена — нажмите «Провести продажи за период»", "bad"], stale: ["устарела — проведите заново", "bad"],
 };
 async function loadSales() {
-  const host = document.getElementById("sales-root"); if (!host) return;
-  host.innerHTML = "";
-  const r = await api("doc_sales_list", { date_from: sales.date_from, date_to: sales.date_to, point_id: sales.point_id || null });
-  if (!r.ok) { host.append(el("div", { class: "err" }, r.message)); return; }
-  const points = {}; for (const x of r.rows) points[x.point_id] = x.point_name;
-  const canSync = perms().includes("doc:sale:edit");
-  const syncBtn = canSync ? el("button", { onclick: async (e) => {
-    e.target.disabled = true;
-    const s = await api("doc_sales_sync", { date_from: sales.date_from, date_to: sales.date_to, point_id: sales.point_id || null });
-    e.target.disabled = false;
-    if (!s.ok) { toast(s.message, "bad"); return; }
-    const c = s.counts || {};
-    toast(`Проведено ${c.posted || 0}, без изменений ${c.unchanged || 0}, без продаж ${c.empty || 0}, без склада ${c.no_store || 0}, заблокировано ${c.locked || 0}`
-      + (c.error ? `, ошибок ${c.error}` : ""), c.error || c.locked ? "bad" : undefined);
-    loadSales();
-  } }, "Провести продажи за период") : null;
-  host.append(el("div", { class: "tools" },
-    el("input", { type: "date", title: "с", value: sales.date_from, onchange: (e) => { sales.date_from = e.target.value; loadSales(); } }),
-    el("span", { class: "dim" }, "—"),
-    el("input", { type: "date", title: "по", value: sales.date_to, onchange: (e) => { sales.date_to = e.target.value; loadSales(); } }),
-    sel({ "": "все точки", ...points }, sales.point_id, (v) => { sales.point_id = v; loadSales(); }),
-    syncBtn));
+  if (!document.getElementById("sales-root")) return;
+  if (!salePoints) { const p = await api("store_points_list", {}); salePoints = p.ok ? p.points : []; }
+  if (sales.point_id && !salePoints.some((x) => x.id === sales.point_id)) sales.point_id = "";
+  const out = tabOut("sales-root", () => {
+    if (sales.auto) { sales.date_from = iso(new Date(Date.now() - 7 * 864e5)); sales.date_to = today(); }
+    const canSync = perms().includes("doc:sale:edit");
+    const syncBtn = canSync ? el("button", { onclick: async (e) => {
+      e.target.disabled = true;
+      const s = await api("doc_sales_sync", { date_from: sales.date_from, date_to: sales.date_to, point_id: sales.point_id || null }, { timeout: LONG_MS });
+      e.target.disabled = false;
+      // обрыв: часть продаж могла провестись — перечитываем список
+      if (!s.ok) { toast(errText(s), "bad"); if (s.error === "network") loadSales(); return; }
+      const c = s.counts || {};
+      toast(`Проведено ${c.posted || 0}, без изменений ${c.unchanged || 0}, без продаж ${c.empty || 0}, без склада ${c.no_store || 0}, заблокировано ${c.locked || 0}`
+        + (c.error ? `, ошибок ${c.error}` : ""), c.error || c.locked ? "bad" : undefined);
+      loadSales();
+    } }, "Провести продажи за период") : null;
+    return [el("div", { class: "tools" },
+      el("input", { type: "date", title: "с", value: sales.date_from, onchange: debounce((e) => { sales.date_from = e.target.value; sales.auto = false; loadSales(); }, 400) }),
+      el("span", { class: "dim" }, "—"),
+      el("input", { type: "date", title: "по", value: sales.date_to, onchange: debounce((e) => { sales.date_to = e.target.value; sales.auto = false; loadSales(); }, 400) }),
+      sel({ "": "все точки", ...Object.fromEntries(salePoints.map((x) => [x.id, x.name + (x.active ? "" : " (выключена)")])) }, sales.point_id, (v) => { sales.point_id = v; loadSales(); }),
+      syncBtn)];
+  });
+  if (!out) return;
+  const n = nextSeq("sales");
+  const period = { date_from: sales.date_from, date_to: sales.date_to, point_id: sales.point_id || null };
+  const r = await api("doc_sales_list", period);
+  if (n !== seqs.sales) return;
+  out.innerHTML = "";
+  if (!r.ok) { out.append(el("div", { class: "err" }, errText(r))); return; }
   const t = el("table");
   t.append(el("tr", {}, ...["Дата", "Точка", "Склад", "Строк", "Деньги в отчёте", "Продано", "Себестоимость", "Документ", "Состояние"]
     .map((h, i) => el("th", { class: i >= 3 && i <= 6 ? "num" : "" }, h))));
@@ -449,7 +544,8 @@ async function loadSales() {
   }
   if (!r.rows.length) t.append(el("tr", {}, el("td", { colspan: 9, class: "dim" }, "За период отчётов точек нет")));
   // Итоги по проведённым продажам: выручка, себестоимость, валовая прибыль, фудкост.
-  const sum = await api("doc_sales_report", { date_from: sales.date_from, date_to: sales.date_to, point_id: sales.point_id || null });
+  const sum = await api("doc_sales_report", period);
+  if (n !== seqs.sales) return;
   if (sum.ok && sum.points.length) {
     const pct = (v) => v == null ? "" : fmt(v) + " %";
     const pt = el("table");
@@ -461,13 +557,13 @@ async function loadSales() {
     for (const x of sum.items.slice(0, 30)) it.append(el("tr", {}, el("td", {}, x.name), el("td", { class: "num" }, fmt(x.qty) + " " + (x.unit_id || "")),
       el("td", { class: "num" }, fmt(x.revenue)), el("td", { class: "num" }, fmt(x.cost)), el("td", { class: "num" }, fmt(x.margin)),
       el("td", { class: "num" }, x.foodcost_pct == null ? "" : el("span", { class: "tag " + (x.foodcost_pct > 35 ? "bad" : "ok") }, pct(x.foodcost_pct)))));
-    host.append(el("h2", { style: "margin-top:4px" }, "Итоги по проведённым продажам"),
+    out.append(el("h2", { style: "margin-top:4px" }, "Итоги по проведённым продажам"),
       el("div", { class: "card", style: "padding:0;overflow:auto" }, pt),
       el("details", { style: "margin:8px 0 14px" }, el("summary", {}, `Позиции по выручке (${Math.min(sum.items.length, 30)} из ${sum.items.length})`),
         el("div", { class: "card", style: "padding:0;overflow:auto;margin-top:8px" }, it)),
       el("h2", {}, "Отчёты точек"));
   }
-  host.append(el("div", { class: "card", style: "padding:0;overflow:auto" }, t),
+  out.append(el("div", { class: "card", style: "padding:0;overflow:auto" }, t),
     el("div", { class: "dim", style: "margin-top:8px" },
       "Продажа проводится сама, когда точка сохраняет отчёт. «Провести продажи за период» нужна, если склад точке привязали позже или отчёт правили."));
 }
@@ -475,46 +571,58 @@ async function loadSales() {
 // ---------- оборотная ведомость склада ----------
 // Аналог «Расширенной оборотно-сальдовой ведомости» iiko: по позиции остаток на начало,
 // обороты по видам документов и остаток на конец. Нужна для сверки с iiko в параллельной работе.
-const turn = { store_id: "", date_from: iso(new Date(new Date().getFullYear(), new Date().getMonth(), 1, 12)), date_to: iso(new Date()), q: "" };
+const turn = { store_id: "", date_from: "", date_to: "", auto: true, q: "" };
 const TURN_COLS = [["start_qty", "Начало"], ["income", "Приход"], ["transfer_in", "Перемещ. +"], ["transfer_out", "Перемещ. −"],
   ["production_in", "Произв. +"], ["production_out", "Произв. −"], ["sales", "Продажи"], ["writeoff", "Списания"],
   ["inventory", "Инвент. ±"], ["end_qty", "Конец"], ["end_sum", "Сумма на конец"]];
 async function loadTurnover() {
-  const host = document.getElementById("turn-root"); if (!host) return;
-  host.innerHTML = "";
-  const storeSel = sel({ "": myIds.length ? "мои склады вместе" : "все склады вместе", ...opts(mine(stores)) }, turn.store_id, (v) => { turn.store_id = v; loadTurnover(); });
-  const csvBtn = el("button", { class: "ghost" }, "Скачать CSV");
-  host.append(el("div", { class: "tools" }, storeSel,
-    el("input", { type: "date", title: "с", value: turn.date_from, onchange: (e) => { turn.date_from = e.target.value; loadTurnover(); } }),
-    el("span", { class: "dim" }, "—"),
-    el("input", { type: "date", title: "по", value: turn.date_to, onchange: (e) => { turn.date_to = e.target.value; loadTurnover(); } }),
-    el("input", { placeholder: "Позиция или код", value: turn.q, oninput: debounce((e) => { turn.q = e.target.value; loadTurnover(); }, 400) }),
-    csvBtn));
-  const wait = el("div", { class: "dim" }, "Считаю…"); host.append(wait);
+  const out = tabOut("turn-root", () => {
+    if (turn.auto) { turn.date_from = monthStart(); turn.date_to = today(); }
+    return [el("div", { class: "tools" },
+      sel({ "": myIds.length ? "мои склады вместе" : "все склады вместе", ...opts(mine(stores)) }, turn.store_id, (v) => { turn.store_id = v; loadTurnover(); }),
+      el("input", { type: "date", title: "с", value: turn.date_from, onchange: debounce((e) => { turn.date_from = e.target.value; turn.auto = false; loadTurnover(); }, 400) }),
+      el("span", { class: "dim" }, "—"),
+      el("input", { type: "date", title: "по", value: turn.date_to, onchange: debounce((e) => { turn.date_to = e.target.value; turn.auto = false; loadTurnover(); }, 400) }),
+      el("input", { placeholder: "Позиция или код", value: turn.q, oninput: debounce((e) => { turn.q = e.target.value; loadTurnover(); }, 400) }),
+      el("button", { class: "ghost csv" }, "Скачать CSV"))];
+  });
+  if (!out) return;
+  const csvBtn = out.parentNode.querySelector(".csv"); csvBtn.onclick = null;
+  const n = nextSeq("turn");
+  out.innerHTML = ""; out.append(el("div", { class: "dim" }, "Считаю…"));
   const r = await api("stock_turnover_report", { store_id: turn.store_id || null, date_from: turn.date_from, date_to: turn.date_to, q: turn.q });
-  wait.remove();
-  if (!r.ok) { host.append(el("div", { class: "err" }, r.message)); return; }
+  if (n !== seqs.turn) return;
+  out.innerHTML = "";
+  if (!r.ok) { out.append(el("div", { class: "err" }, errText(r))); return; }
+  // Переоценка (reval_sum, ₸) — поправка стоимости без количества: приход на ушедший в минус остаток
+  // пересчитывает недостающее по своей цене. Колонка появляется, только если она где-то есть;
+  // суммы на начало и конец её уже включают.
+  const hasReval = r.rows.some((x) => Number(x.reval_sum || 0) !== 0);
+  const cols = hasReval ? [...TURN_COLS.slice(0, -1), ["reval_sum", "Переоценка, ₸"], TURN_COLS[TURN_COLS.length - 1]] : TURN_COLS;
   const t = el("table");
-  t.append(el("tr", {}, el("th", {}, "Позиция"), el("th", {}, "Ед."), ...TURN_COLS.map(([, h]) => el("th", { class: "num" }, h))));
-  let group = null; const tot = { start_sum: 0, income_sum: 0, sales_sum: 0, writeoff_sum: 0, inventory_sum: 0, end_sum: 0 };
+  t.append(el("tr", {}, el("th", {}, "Позиция"), el("th", {}, "Ед."), ...cols.map(([, h]) => el("th", { class: "num" }, h))));
+  let group = null; const tot = { start_sum: 0, income_sum: 0, sales_sum: 0, writeoff_sum: 0, inventory_sum: 0, reval_sum: 0, end_sum: 0 };
   for (const x of r.rows) {
-    if ((x.group_name || "") !== group) { group = x.group_name || ""; t.append(el("tr", {}, el("td", { colspan: 2 + TURN_COLS.length, class: "dim", style: "font-weight:700;padding-top:10px" }, group || "без группы"))); }
+    if ((x.group_name || "") !== group) { group = x.group_name || ""; t.append(el("tr", {}, el("td", { colspan: 2 + cols.length, class: "dim", style: "font-weight:700;padding-top:10px" }, group || "без группы"))); }
     for (const k of Object.keys(tot)) tot[k] += Number(x[k] || 0);
     t.append(el("tr", {}, el("td", {}, x.name), el("td", {}, x.unit_id || ""),
-      ...TURN_COLS.map(([k]) => { const v = Number(x[k] || 0); return el("td", { class: "num" + (k === "end_qty" && v < 0 ? " bad" : "") }, v ? fmt(v) : ""); })));
+      ...cols.map(([k]) => { const v = Number(x[k] || 0); return el("td", { class: "num" + (k === "end_qty" && v < 0 ? " bad" : "") }, v ? fmt(v) : ""); })));
   }
-  if (!r.rows.length) t.append(el("tr", {}, el("td", { colspan: 2 + TURN_COLS.length, class: "dim" }, "За период движений нет")));
-  host.append(el("div", { class: "card", style: "padding:0;overflow:auto" }, t),
-    el("div", { class: "tot" }, el("span", {}, `Позиций ${r.rows.length} · сумма на начало ${fmt(tot.start_sum)} · приход ${fmt(tot.income_sum)} · продажи ${fmt(tot.sales_sum)} · списания ${fmt(tot.writeoff_sum)} · инвентаризация ${fmt(tot.inventory_sum)}`),
+  if (!r.rows.length) t.append(el("tr", {}, el("td", { colspan: 2 + cols.length, class: "dim" }, "За период движений нет")));
+  out.append(el("div", { class: "card", style: "padding:0;overflow:auto" }, t),
+    el("div", { class: "tot" }, el("span", {}, `Позиций ${r.rows.length} · сумма на начало ${fmt(tot.start_sum)} · приход ${fmt(tot.income_sum)} · продажи ${fmt(tot.sales_sum)} · списания ${fmt(tot.writeoff_sum)} · инвентаризация ${fmt(tot.inventory_sum)}`
+      + (hasReval ? ` · переоценка ${fmt(tot.reval_sum)}` : "")),
       el("span", {}, `на конец ${fmt(tot.end_sum)} ₸`)),
-    el("div", { class: "dim", style: "margin-top:8px" }, "Суммы — по себестоимости движений, как «Сумма с/н» в оборотной ведомости iiko. Расход показан положительными числами."));
+    el("div", { class: "dim", style: "margin-top:8px" }, "Суммы — по себестоимости движений, как «Сумма с/н» в оборотной ведомости iiko. Расход показан положительными числами."
+      + (hasReval ? " «Переоценка» — поправка стоимости без количества: приход на склад, ушедший в минус, пересчитал недостающее по цене прихода; суммы на начало и конец её включают." : "")));
+  const period = { from: turn.date_from, to: turn.date_to };
   csvBtn.onclick = () => {
-    const head = ["Код", "Позиция", "Ед.", "Группа", ...TURN_COLS.map(([, h]) => h)];
-    const lines = [head, ...r.rows.map((x) => [x.item_code, x.name, x.unit_id || "", x.group_name || "", ...TURN_COLS.map(([k]) => String(x[k] ?? 0).replace(".", ","))])]
+    const head = ["Код", "Позиция", "Ед.", "Группа", ...cols.map(([, h]) => h)];
+    const lines = [head, ...r.rows.map((x) => [x.item_code, x.name, x.unit_id || "", x.group_name || "", ...cols.map(([k]) => String(x[k] ?? 0).replace(".", ","))])]
       .map((row) => row.map((v) => /[;"\n]/.test(String(v)) ? '"' + String(v).replace(/"/g, '""') + '"' : String(v)).join(";")).join("\r\n");
     const a = document.createElement("a");
-    a.href = URL.createObjectURL(new Blob(["\ufeff" + lines], { type: "text/csv;charset=utf-8" }));
-    a.download = `ведомость ${turn.date_from}—${turn.date_to}.csv`; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+    a.href = URL.createObjectURL(new Blob(["﻿" + lines], { type: "text/csv;charset=utf-8" }));
+    a.download = `ведомость ${period.from}—${period.to}.csv`; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
   };
 }
 
@@ -522,30 +630,44 @@ async function loadTurnover() {
 // Точки подают заявки на завтра со страницы order.html до отсечки. Здесь — сводный план дня: сколько
 // заказано по позициям и точкам, факт выпуска (отмечает пекарь), и одной кнопкой черновики акта
 // производства на склад кухни и перемещений на склады точек.
-const ord = { date: isoDate(new Date(Date.now() + 86400e3)) };
+const ord = { date: "", auto: true };
 async function loadOrders() {
-  const host = document.getElementById("ord-root"); if (!host) return;
-  host.innerHTML = "";
-  host.append(el("div", { class: "tools" },
-    el("input", { type: "date", value: ord.date, onchange: (e) => { ord.date = e.target.value; loadOrders(); } }),
-    el("button", { class: "ghost", onclick: () => { ord.date = isoDate(new Date(Date.now() + 86400e3)); loadOrders(); } }, "Завтра"),
-    el("button", { class: "ghost", onclick: () => window.print() }, "Печать плана"),
-    el("a", { class: "link", href: "order.html", target: "_blank" }, "Страница заявки для точек")));
-  const wait = el("div", { class: "dim" }, "Загружаю…"); host.append(wait);
+  const out = tabOut("ord-root", () => {
+    if (ord.auto) ord.date = tomorrow();
+    const d = el("input", { type: "date", value: ord.date, onchange: debounce((e) => { ord.date = e.target.value; ord.auto = false; loadOrders(); }, 400) });
+    return [el("div", { class: "tools" }, d,
+      el("button", { class: "ghost", onclick: () => { ord.auto = true; ord.date = tomorrow(); d.value = ord.date; loadOrders(); } }, "Завтра"),
+      el("button", { class: "ghost", onclick: () => window.print() }, "Печать плана"),
+      el("a", { class: "link", href: "order.html", target: "_blank" }, "Страница заявки для точек"))];
+  });
+  if (!out) return;
+  // Список «готовым» перечитывается при каждой загрузке плана: после «Создать производство и
+  // перемещения», проведения документов плана и смены дня в нём могли появиться или уйти строки.
+  if (!out.nextSibling) out.after(storeReadyBox());
+  loadStoreReady();
+  const n = nextSeq("ord");
+  out.innerHTML = ""; out.append(el("div", { class: "dim" }, "Загружаю…"));
   const r = await api("stock_orders_report", { for_date: ord.date });
-  wait.remove();
-  if (!r.ok) { host.append(el("div", { class: "err" }, r.message)); return; }
+  if (n !== seqs.ord) return;
+  out.innerHTML = "";
+  if (!r.ok) { out.append(el("div", { class: "err" }, errText(r))); return; }
+  // День, который показан, — из ответа: кнопки ниже сохраняют выпуск и создают документы именно
+  // на него, даже если поле даты успели сменить.
+  const day = r.for_date || ord.date;
+  // Заголовок с датой виден и на печати: поле даты в печать не идёт, и план уходил на кухню без дня.
+  const [y, mo, dd] = String(day).split("-");
+  out.append(el("h3", { style: "margin:0 0 8px" }, `План выпечки на ${dd}.${mo}.${y}` + (day === tomorrow() ? " (завтра)" : day === today() ? " (сегодня)" : "")));
   const kitchen = stores.find((s) => s.id === r.store_id);
   // Настройки: склад кухни и отсечка — только у тех, кто правит склады.
   if (perms().includes("stores:edit")) {
     const ks = sel({ "": "— склад кухни не выбран —", ...opts(active()) }, r.store_id || "", () => {});
     const cut = el("input", { value: r.cutoff, style: "width:80px", title: "Время отсечки заявок" });
-    host.append(el("details", { style: "margin-bottom:10px" }, el("summary", {}, `Настройки: склад кухни — ${kitchen ? kitchen.name : "не выбран"}, отсечка ${r.cutoff}`),
+    out.append(el("details", { style: "margin-bottom:10px" }, el("summary", {}, `Настройки: склад кухни — ${kitchen ? kitchen.name : "не выбран"}, отсечка ${r.cutoff}`),
       el("div", { class: "tools", style: "margin-top:8px" }, el("span", {}, "Склад кухни"), ks, el("span", {}, "Отсечка"), cut,
-        el("button", { onclick: async () => { const x = await api("stock_orders_settings_save", { store_id: ks.value, cutoff: cut.value.trim() });
-          if (!x.ok) { toast(x.message, "bad"); return; } toast("Сохранено"); loadOrders(); } }, "Сохранить"))));
+        el("button", { onclick: async (e) => { e.target.disabled = true; const x = await api("stock_orders_settings_save", { store_id: ks.value, cutoff: cut.value.trim() }); e.target.disabled = false;
+          if (!x.ok) { toast(errText(x), "bad"); return; } toast("Сохранено"); loadOrders(); } }, "Сохранить"))));
   }
-  host.append(el("div", { class: "dim", style: "margin-bottom:8px" },
+  out.append(el("div", { class: "dim", style: "margin-bottom:8px" },
     r.locked ? "План передан в производство: документы созданы, заявки этого дня закрыты для правок."
       : r.open ? `Приём заявок на этот день открыт до ${r.cutoff} накануне — план ещё может измениться.` : "Приём заявок на этот день закрыт — можно печатать план и отмечать выпуск."));
   const pts = r.orders.map((o) => o.point_id);
@@ -564,53 +686,203 @@ async function loadOrders() {
       ...pts.map((p) => el("td", { class: "num" }, x.by_point[p] != null ? fmt(x.by_point[p]) : ""))));
   }
   if (!r.plan.length) t.append(el("tr", {}, el("td", { colspan: 5, class: "dim" }, "На этот день заявок нет")));
-  host.append(el("div", { class: "card", style: "padding:0;overflow:auto" }, t));
+  out.append(el("div", { class: "card", style: "padding:0;overflow:auto" }, t));
+  const factRows = () => r.plan.map((p) => ({ item_code: p.item_code, fact: String(facts.get(p.item_code).value).replace(",", ".").trim() }));
   const acts = el("div", { class: "actions" });
   if (canFact && r.plan.length) acts.append(el("button", { class: "ghost", onclick: async (e) => {
     e.target.disabled = true;
-    const x = await api("stock_orders_fact_save", { for_date: ord.date, rows: r.plan.map((p) => ({ item_code: p.item_code, fact: String(facts.get(p.item_code).value).replace(",", ".").trim() })) });
+    const x = await api("stock_orders_fact_save", { for_date: day, rows: factRows() });
     e.target.disabled = false;
-    if (!x.ok) { toast(x.message, "bad"); return; } toast("Выпуск сохранён"); loadOrders(); } }, "Сохранить выпуск"));
+    if (!x.ok) { toast(errText(x), "bad"); return; } toast("Выпуск сохранён"); loadOrders(); } }, "Сохранить выпуск"));
   if (r.plan.length && perms().includes("doc:production:edit") && perms().includes("doc:transfer:edit")) acts.append(el("button", { onclick: async (e) => {
     if (!r.locked && !confirmDlg(r.open
       ? `Приём заявок на этот день ещё открыт до ${r.cutoff}. Если создать документы сейчас, точки больше не смогут поправить заявки. Создать всё равно?`
       : "Создать черновики акта производства и перемещений на точки? После этого заявки этого дня не изменить.")) return;
     e.target.disabled = true;
-    const x = await api("stock_orders_docs_save", { for_date: ord.date, force: r.open });
+    // Введённый, но не сохранённый «Выпуск» сначала сохраняется: документы строятся по сохранённому
+    // выпуску, и без этого шага акт и перемещения ушли бы по заявке, а введённые цифры пропали бы.
+    if (canFact) {
+      const fx = await api("stock_orders_fact_save", { for_date: day, rows: factRows() });
+      if (!fx.ok) { e.target.disabled = false; toast("Выпуск не сохранён, документы не созданы: " + errText(fx), "bad"); return; }
+    }
+    const x = await api("stock_orders_docs_save", { for_date: day, force: r.open }, { timeout: LONG_MS });
     e.target.disabled = false;
-    if (!x.ok) { toast(x.message, "bad"); return; }
+    // обрыв: документы могли создаться — показываем, что есть на самом деле
+    if (!x.ok) { toast(errText(x), "bad"); if (x.error === "network") loadOrders(); return; }
     toast(x.made ? `Создано документов: ${x.made}` : "Все документы уже созданы");
     if (x.skipped) toast("Без склада точки, перемещение не создано: " + x.skipped, "bad");
     loadOrders(); } }, r.locked ? "Досоздать документы" : "Создать производство и перемещения"));
-  host.append(acts);
-  host.append(el("div", { class: "dim", style: "margin-top:8px" }, "Выпуск раскладывается по точкам пропорционально заявкам. Сначала проводится акт производства, затем перемещения. Позиции, выпущенные по плану, на точках продаются готовыми: продажа списывает саму позицию, а не ингредиенты."));
-  if (r.docs.length) host.append(el("h3", { style: "margin:14px 0 6px" }, "Документы по плану"),
+  out.append(acts);
+  out.append(el("div", { class: "dim", style: "margin-top:8px" }, "Выпуск раскладывается по точкам пропорционально заявкам. Сначала проводится акт производства, затем перемещения. Когда документы плана проведены, позиции на складах точек продаются готовыми: продажа списывает саму позицию, а не ингредиенты (строки появятся в блоке «Что склады получают готовым» ниже)."));
+  if (r.docs.length) out.append(el("h3", { style: "margin:14px 0 6px" }, "Документы по плану"),
     el("div", {}, ...r.docs.map((d) => el("div", {}, el("a", { href: "#", onclick: (e) => { e.preventDefault(); editDoc(d.id); } }, `${TYPES[d.doc_type]} ${d.number}`),
       " — ", d.status === "draft" ? el("span", { class: "tag" }, "черновик") : el("span", { class: "tag ok" }, "проведён")))));
-  if (r.orders.length) host.append(el("h3", { style: "margin:14px 0 6px" }, "Кто подал"),
+  if (r.orders.length) out.append(el("h3", { style: "margin:14px 0 6px" }, "Кто подал"),
     el("div", {}, ...r.orders.map((o) => el("div", { class: "dim" }, `${o.point_name}: ${o.lines} поз., ${o.sent_by || "—"}, ${new Date(o.updated_at).toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}`,
       o.has_store ? null : el("span", { class: "tag bad" }, " у точки нет склада")))));
+}
+
+// ---------- что склады получают готовым (контракт п. 11, таблица store_ready) ----------
+// На складе с указанной даты позиция продаётся готовой: продажа списывает саму позицию (то, что
+// привезли с кухни), а не ингредиенты по техкарте. Строки «по плану» ставит проведение документов
+// плана (перемещение на точку, производство на склад кухни, который и есть склад точки) и снимает
+// отмена их проведения; здесь их видно и можно поправить руками.
+const SR_SOURCE = { manual: "вручную", office: "вручную", plan: "по плану", orders: "по плану", auto: "по плану" };
+const sr = { store_id: "" };
+let srSeq = 0;
+// Пересчёт продаж после правки идёт частями: сервер за один вызов пересобирает не больше 5 продаж
+// и отвечает, сколько осталось (remaining); остальные добирает stock_ready_resync, пока не станет 0.
+// Цикл один на страницу: правка, сделанная во время пересчёта, только добавляет ему работы.
+let srLoop = null;
+function srNote(...parts) {
+  const note = document.querySelector("#ord-root .sr-note"); if (!note) return;
+  note.innerHTML = ""; note.append(...parts);
+}
+function srResync(o = {}) {
+  if (srLoop) return srLoop;
+  srLoop = (async () => {
+    let total = o.done || 0, left = o.left || 0;
+    // quiet — проверка после проведения документа плана: если пересчитывать нечего, молчим
+    if (!o.quiet || left) srNote(left ? `Пересчитываю продажи: осталось ${left}` : "Пересчитываю продажи…");
+    for (;;) {
+      const r = await api("stock_ready_resync", {}, { timeout: LONG_MS });
+      if (!r.ok) {
+        if (o.quiet && !total) return;
+        // Обрыв или отказ: что успело пересчитаться, неизвестно — перечитываем список и даём продолжить.
+        srNote(`Пересчёт продаж прервался: ${errText(r)}. `, el("button", { class: "link", onclick: () => srResync() }, "Продолжить пересчёт"));
+        toast(errText(r), "bad");
+        loadStoreReady();
+        return;
+      }
+      total += Number(r.resynced) || 0;
+      left = Number(r.remaining) || 0;
+      if (!left) break;
+      // Ни одной за вызов — дальше не сдвинется (например, мешает инвентаризация): не крутимся впустую.
+      if (!Number(r.resynced)) {
+        srNote(`Пересчитано продаж: ${total}. Ещё ${left} сейчас не пересчитать — причина видна во вкладке «Продажи». `,
+          el("button", { class: "link", onclick: () => srResync() }, "Повторить"));
+        loadStoreReady();
+        return;
+      }
+      srNote(`Пересчитываю продажи: осталось ${left}`);
+    }
+    if (o.quiet && !total) return;
+    srNote(`Готово: пересчитано продаж — ${total}`);
+    toast(`Продажи пересчитаны: ${total}`);
+    loadStoreReady();
+  })().finally(() => { srLoop = null; });
+  return srLoop;
+}
+function storeReadyBox() {
+  const canEdit = perms().includes("stock:edit");
+  return el("div", { class: "card sr-box noprint", style: "margin-top:18px" },
+    el("h3", { style: "margin:0 0 4px" }, "Что склады получают готовым"),
+    el("div", { class: "dim", style: "margin-bottom:8px" },
+      "Если склад получает позицию готовой (выпечку с кухни), её продажа на этом складе списывает саму позицию, а не муку, масло и начинку по техкарте. "
+      + "Строки «по плану» появляются, когда проведены документы плана (производство и перемещения), и снимаются отменой их проведения; здесь строки можно добавить или убрать. "
+      + "После правки продажи склада с этой даты пересчитываются — частями, ход пересчёта виден здесь же. Если закрыть страницу раньше, остаток пересчитается при «Провести продажи за период»."),
+    el("div", { class: "tools" },
+      // Склады — только закреплённые за пользователем, как в «Остатках»: по чужим сервер откажет.
+      sel({ "": myIds.length ? "мои склады" : "все склады", ...opts(mine(stores)) }, sr.store_id, (v) => { sr.store_id = v; loadStoreReady(); }),
+      canEdit ? el("button", { class: "ghost", onclick: addStoreReady }, "+ Добавить позицию") : null),
+    el("div", { class: "dim sr-note" }),
+    el("div", { class: "sr-list" }));
+}
+async function loadStoreReady() {
+  const box = document.querySelector("#ord-root .sr-box"); if (!box) return;
+  const list = box.querySelector(".sr-list");
+  const n = ++srSeq;
+  const r = await api("stock_ready_list", { store_id: sr.store_id || null }, { timeout: LONG_MS });
+  if (n !== srSeq) return;
+  list.innerHTML = "";
+  if (!r.ok) { list.append(el("div", { class: "err" }, errText(r))); return; }
+  const canEdit = perms().includes("stock:edit");
+  const t = el("table");
+  t.append(el("tr", {}, ...["Склад", "Позиция", "Ед.", "Готовым с", "Откуда", ""].map((h) => el("th", {}, h))));
+  for (const x of r.rows) t.append(el("tr", {}, el("td", {}, x.store_name), el("td", {}, x.item_name), el("td", {}, x.unit_id || ""),
+    el("td", {}, x.date_from), el("td", { class: "dim" }, SR_SOURCE[x.source] || x.source || ""),
+    el("td", {}, canEdit ? el("button", { class: "x", title: "Убрать", onclick: (e) => delStoreReady(x, e.target) }, "×") : null)));
+  if (!r.rows.length) t.append(el("tr", {}, el("td", { colspan: 6, class: "dim" }, "Ни один склад пока не получает позиции готовыми")));
+  list.append(el("div", { style: "overflow:auto;max-height:420px" }, t));
+}
+// После правки сервер сразу пересчитывает до 5 продаж склада и говорит, сколько ещё осталось.
+function storeReadyDone(r) {
+  const done = Number(r.resynced) || 0, left = Number(r.remaining) || 0;
+  const text = `Сохранено. Пересчитано продаж: ${done}` + (left ? `, осталось ${left}` : "");
+  srNote(text);
+  toast(text);
+  loadStoreReady();
+  if (left > 0) srResync({ done, left });
+}
+async function delStoreReady(x, b) {
+  if (!confirmDlg(`Убрать «${x.item_name}» со склада «${x.store_name}»? Продажи этой позиции на складе снова будут списывать ингредиенты по техкарте.`)) return;
+  b.disabled = true;
+  const r = await api("stock_ready_delete", { store_id: x.store_id, item_code: x.item_code }, { timeout: LONG_MS });
+  b.disabled = false;
+  // Обрыв или «пересчёт уже идёт»: применилось ли удаление — видно только по свежему списку.
+  if (!r.ok) { toast(errText(r), "bad"); loadStoreReady(); return; }
+  storeReadyDone(r);
+}
+function addStoreReady() {
+  const m = modal("Склад получает позицию готовой", { keep: true });
+  let item = null;
+  const search = el("input", { placeholder: "Позиция: название или код" });
+  const res = el("div", { class: "sres" });
+  search.addEventListener("input", debounce(async () => {
+    item = null; res.innerHTML = ""; const q = search.value.trim(); if (q.length < 2) return;
+    const s = await api("items_search", { q, active: true, page: 1 });
+    for (const it of (s.rows || []).slice(0, 12)) {
+      if (!["dish", "prepared"].includes(it.item_type)) continue;   // товар и так продаётся как есть
+      res.append(el("button", { class: "sitem", onclick: () => { item = it; search.value = it.name; res.innerHTML = ""; } },
+        it.name, el("span", { class: "dim" }, ` · ${it.unit_id}`)));
+    }
+  }, 300));
+  const st = sel({ "": "— склад —", ...opts(mine(active())) }, sr.store_id, () => {});
+  const date = el("input", { type: "date", value: today() });
+  const err = el("div", { class: "err" });
+  const go = el("button", { onclick: async () => {
+    err.textContent = "";
+    if (!item) { err.textContent = "Выберите позицию из списка"; return; }
+    if (!st.value) { err.textContent = "Выберите склад"; return; }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date.value)) { err.textContent = "Выберите дату в календаре"; return; }
+    go.disabled = true;
+    const r = await api("stock_ready_save", { store_id: st.value, item_code: item.code, date_from: date.value }, { timeout: LONG_MS });
+    go.disabled = false;
+    // Строка склада и позиции одна (повтор её просто перезапишет), но применилась ли правка после
+    // обрыва — видно только по свежему списку под окном.
+    if (!r.ok) { err.textContent = errText(r); loadStoreReady(); return; }
+    m.close(); storeReadyDone(r);
+  } }, "Добавить");
+  m.root.append(el("div", { class: "dim" }, "С этой даты продажа позиции на складе списывает саму позицию, а не ингредиенты. Продажи склада с этой даты будут пересчитаны."),
+    el("div", { class: "sbox" }, el("label", {}, "Позиция"), search, res),
+    el("div", { class: "grid2" }, el("div", {}, el("label", {}, "Склад"), st), el("div", {}, el("label", {}, "Готовым с"), date)),
+    err, el("div", { class: "actions" }, go, el("button", { class: "ghost", onclick: m.cancel }, "Отмена")));
+  search.focus();
 }
 
 // ---------- расход для 1С: основа акта списания «на основании продаж» ----------
 // Бухгалтер списывает в 1С продукты, ушедшие на проданное. Номенклатура 1С своя, поэтому у позиции
 // учёта хранится код 1С и сколько единиц 1С в одной нашей (кофе 3в1: пакетик = 1/25 блока).
-const c1 = { store_id: "", date_from: turn.date_from, date_to: turn.date_to, catalog: null };
+const c1 = { store_id: "", date_from: "", date_to: "", auto: true, catalog: null };
 async function loadC1() {
-  const host = document.getElementById("c1-root"); if (!host) return;
-  host.innerHTML = "";
-  const storeSel = sel({ "": myIds.length ? "мои склады вместе" : "все склады вместе", ...opts(mine(stores)) }, c1.store_id, (v) => { c1.store_id = v; loadC1(); });
-  const csvBtn = el("button", { class: "ghost" }, "Скачать для 1С (CSV)");
-  host.append(el("div", { class: "tools" }, storeSel,
-    el("input", { type: "date", title: "с", value: c1.date_from, onchange: (e) => { c1.date_from = e.target.value; loadC1(); } }),
-    el("span", { class: "dim" }, "—"),
-    el("input", { type: "date", title: "по", value: c1.date_to, onchange: (e) => { c1.date_to = e.target.value; loadC1(); } }),
-    csvBtn));
-  const wait = el("div", { class: "dim" }, "Считаю…"); host.append(wait);
+  const out = tabOut("c1-root", () => {
+    if (c1.auto) { c1.date_from = monthStart(); c1.date_to = today(); }
+    return [el("div", { class: "tools" },
+      sel({ "": myIds.length ? "мои склады вместе" : "все склады вместе", ...opts(mine(stores)) }, c1.store_id, (v) => { c1.store_id = v; loadC1(); }),
+      el("input", { type: "date", title: "с", value: c1.date_from, onchange: debounce((e) => { c1.date_from = e.target.value; c1.auto = false; loadC1(); }, 400) }),
+      el("span", { class: "dim" }, "—"),
+      el("input", { type: "date", title: "по", value: c1.date_to, onchange: debounce((e) => { c1.date_to = e.target.value; c1.auto = false; loadC1(); }, 400) }),
+      el("button", { class: "ghost csv" }, "Скачать для 1С (CSV)"))];
+  });
+  if (!out) return;
+  const csvBtn = out.parentNode.querySelector(".csv"); csvBtn.onclick = null;
+  const n = nextSeq("c1");
+  out.innerHTML = ""; out.append(el("div", { class: "dim" }, "Считаю…"));
   const [r, cat] = await Promise.all([api("stock_1c_report", { store_id: c1.store_id || null, date_from: c1.date_from, date_to: c1.date_to }),
     c1.catalog ? { ok: true, rows: c1.catalog } : api("stock_1c_catalog_list", {})]);
-  wait.remove();
-  if (!r.ok) { host.append(el("div", { class: "err" }, r.message)); return; }
+  if (n !== seqs.c1) return;
+  out.innerHTML = "";
+  if (!r.ok) { out.append(el("div", { class: "err" }, errText(r))); return; }
   if (cat.ok) c1.catalog = cat.rows;
   const byCode = new Map();
   for (const x of r.rows.filter((x) => x.code_1c && x.qty_1c !== null)) {
@@ -633,7 +905,7 @@ async function loadC1() {
         ` ${fmt(x.qty)} ${x.unit_id || ""}`)))));
   }
   if (!groups.length) t.append(el("tr", {}, el("td", { colspan: 7, class: "dim" }, "За период расхода по позициям с кодом 1С нет")));
-  host.append(el("div", { class: "card", style: "padding:0;overflow:auto" }, t),
+  out.append(el("div", { class: "card", style: "padding:0;overflow:auto" }, t),
     el("div", { class: "tot" }, el("span", {}, `Позиций 1С: ${groups.length}`), el("span", {}, `${fmt(total)} ₸`)),
     el("div", { class: "dim", style: "margin-top:8px" }, "Расход проведённых продаж и актов производства, кроме полуфабрикатов и выпечки с кухни, проданной готовой: 1С знает сырьё, из которого они сделаны. Себестоимость — по нашему складу; в акте 1С сумму поставит сама 1С по своим ценам."));
   if (free.length) {
@@ -641,10 +913,11 @@ async function loadC1() {
     ft.append(el("tr", {}, el("th", {}, "Позиция учёта"), el("th", {}, "Ед."), el("th", { class: "num" }, "Расход"), el("th", { class: "num" }, "₸"), canEdit ? el("th", {}, "") : null));
     for (const x of free) ft.append(el("tr", {}, el("td", {}, x.name), el("td", {}, x.unit_id || ""), el("td", { class: "num" }, fmt(x.qty)), el("td", { class: "num" }, fmt(x.sum)),
       canEdit ? el("td", {}, el("button", { class: "ghost", onclick: () => linkC1(x) }, "Указать позицию 1С")) : null));
-    host.append(el("h3", { style: "margin-top:18px" }, `Без позиции 1С: ${free.length}`),
+    out.append(el("h3", { style: "margin-top:18px" }, `Без позиции 1С: ${free.length}`),
       el("div", { class: "dim" }, "Эти продукты расходовались, но не связаны с 1С — в список на списание не попали. Если такого товара в 1С нет (не было прихода по документам), списать его в 1С нельзя."),
       el("div", { class: "card", style: "padding:0;overflow:auto;margin-top:8px" }, ft));
   }
+  const period = { from: c1.date_from, to: c1.date_to };
   csvBtn.onclick = () => {
     const q = (v) => /[;"\n]/.test(String(v)) ? '"' + String(v).replace(/"/g, '""') + '"' : String(v);
     const lines = [["Код 1С", "Номенклатура 1С", "Счёт", "Ед.", "Количество", "Себестоимость учёта, ₸"],
@@ -652,11 +925,11 @@ async function loadC1() {
       .map((row) => row.map(q).join(";")).join("\r\n");
     const a = document.createElement("a");
     a.href = URL.createObjectURL(new Blob(["﻿" + lines], { type: "text/csv;charset=utf-8" }));
-    a.download = `расход для 1С ${c1.date_from}—${c1.date_to}.csv`; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+    a.download = `расход для 1С ${period.from}—${period.to}.csv`; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
   };
 }
 function linkC1(x) {
-  const m = modal("Позиция 1С для «" + x.name + "»");
+  const m = modal("Позиция 1С для «" + x.name + "»", { keep: true });
   const label = (c) => c.code + " · " + c.name + " · " + (c.unit || "");
   const list = el("datalist", { id: "c1-cat" }, ...(c1.catalog || []).map((c) => el("option", { value: label(c) })));
   const cur = (c1.catalog || []).find((c) => c.code === x.code_1c);
@@ -668,12 +941,12 @@ function linkC1(x) {
   m.root.append(list, el("label", {}, "Позиция 1С"), pick,
     el("label", {}, `Сколько единиц 1С в одной нашей (${x.unit_id || "ед."})`), k,
     el("div", { class: "dim" }, "Единицы совпадают — 1. Мы считаем пакетики кофе, а 1С — блоки по 25: 0,04. Мы в кг, а в 1С банки по 400 г: 2,5."),
-    err, el("div", { class: "actions" }, save, clear));
+    err, el("div", { class: "actions" }, save, clear, el("button", { class: "ghost", onclick: m.cancel }, "Отмена")));
   const send = async (code, kv) => {
-    save.disabled = true;
+    save.disabled = true; if (clear) clear.disabled = true;
     const r = await api("stock_1c_link_save", { item_code: x.item_code, code_1c: code, k_1c: kv });
-    save.disabled = false;
-    if (!r.ok) { err.textContent = r.message; return; }
+    save.disabled = false; if (clear) clear.disabled = false;
+    if (!r.ok) { err.textContent = errText(r); return; }
     m.close(); toast("Сохранено"); loadC1();
   };
   save.onclick = () => {
@@ -685,28 +958,32 @@ function linkC1(x) {
 }
 
 // ---------- отчёты как в iiko: прибыль по точкам, закупки, продажи по блюдам ----------
-const rep = { kind: "pnl", store_id: "", point_id: "", date_from: turn.date_from, date_to: turn.date_to };
-function csvDownload(name, head, rows) {
+const rep = { kind: "pnl", store_id: "", point_id: "", date_from: "", date_to: "", auto: true };
+function csvDownload(name, period, head, rows) {
   const q = (v) => /[;"\n]/.test(String(v ?? "")) ? '"' + String(v).replace(/"/g, '""') + '"' : String(v ?? "");
   const n = (v) => typeof v === "number" ? String(v).replace(".", ",") : v;
   const text = [head, ...rows].map((r) => r.map((v) => q(n(v))).join(";")).join("\r\n");
   const a = document.createElement("a");
   a.href = URL.createObjectURL(new Blob(["﻿" + text], { type: "text/csv;charset=utf-8" }));
-  a.download = `${name} ${rep.date_from}—${rep.date_to}.csv`; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  a.download = `${name} ${period.date_from}—${period.date_to}.csv`; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
 }
 async function loadReports() {
-  const host = document.getElementById("rep-root"); if (!host) return;
-  host.innerHTML = "";
   const KINDS = { pnl: "Прибыль по точкам", purchases: "Закупки", dishes: "Продажи по блюдам" };
-  const csvBtn = el("button", { class: "ghost" }, "Скачать CSV");
-  host.append(el("div", { class: "tools" },
-    sel(KINDS, rep.kind, (v) => { rep.kind = v; loadReports(); }),
-    rep.kind === "purchases" ? sel({ "": myIds.length ? "мои склады" : "все склады", ...opts(mine(stores)) }, rep.store_id, (v) => { rep.store_id = v; loadReports(); }) : null,
-    el("input", { type: "date", title: "с", value: rep.date_from, onchange: (e) => { rep.date_from = e.target.value; loadReports(); } }),
-    el("span", { class: "dim" }, "—"),
-    el("input", { type: "date", title: "по", value: rep.date_to, onchange: (e) => { rep.date_to = e.target.value; loadReports(); } }),
-    csvBtn));
-  const wait = el("div", { class: "dim" }, "Считаю…"); host.append(wait);
+  const out = tabOut("rep-root", () => {
+    if (rep.auto) { rep.date_from = monthStart(); rep.date_to = today(); }
+    return [el("div", { class: "tools" },
+      // Вид отчёта меняет и строку фильтров (склад есть только у закупок) — её строим заново.
+      sel(KINDS, rep.kind, (v) => { rep.kind = v; const h = document.getElementById("rep-root"); if (h) h.innerHTML = ""; loadReports(); }),
+      rep.kind === "purchases" ? sel({ "": myIds.length ? "мои склады" : "все склады", ...opts(mine(stores)) }, rep.store_id, (v) => { rep.store_id = v; loadReports(); }) : null,
+      el("input", { type: "date", title: "с", value: rep.date_from, onchange: debounce((e) => { rep.date_from = e.target.value; rep.auto = false; loadReports(); }, 400) }),
+      el("span", { class: "dim" }, "—"),
+      el("input", { type: "date", title: "по", value: rep.date_to, onchange: debounce((e) => { rep.date_to = e.target.value; rep.auto = false; loadReports(); }, 400) }),
+      el("button", { class: "ghost csv" }, "Скачать CSV"))];
+  });
+  if (!out) return;
+  const csvBtn = out.parentNode.querySelector(".csv"); csvBtn.onclick = null;
+  const n = nextSeq("rep");
+  out.innerHTML = ""; out.append(el("div", { class: "dim" }, "Считаю…"));
   const period = { date_from: rep.date_from, date_to: rep.date_to };
   const th = (h, i) => el("th", { class: i ? "num" : "" }, h);
   const t = el("table");
@@ -715,33 +992,44 @@ async function loadReports() {
     const d1 = new Date(rep.date_from + "T12:00:00"), d2 = new Date(rep.date_to + "T12:00:00");
     const len = Math.round((d2 - d1) / 86400e3) + 1;
     const prev = { date_from: isoDate(new Date(d1.getTime() - len * 86400e3)), date_to: isoDate(new Date(d1.getTime() - 86400e3)) };
-    const [r, rp] = await Promise.all([api("stock_pnl_report", period), api("stock_pnl_report", prev)]); wait.remove();
+    const [r, rp] = await Promise.all([api("stock_pnl_report", period), api("stock_pnl_report", prev)]);
+    if (n !== seqs.rep) return;
+    out.innerHTML = "";
     const pv = new Map(((rp.ok && rp.rows) || []).map((x) => [x.point_id ?? "", x]));
     const delta = (now, was) => { if (!was) return ""; const p = Math.round((now - was) / Math.abs(was) * 100); return (p > 0 ? "+" : "") + p + " %"; };
-    if (!r.ok) { host.append(el("div", { class: "err" }, r.message)); return; }
+    if (!r.ok) { out.append(el("div", { class: "err" }, errText(r))); return; }
     t.append(el("tr", {}, ...["Точка", "Выручка", "Себестоимость проданного", "Валовая прибыль", "Фудкост", "Списания", "Инвентаризация ±", "Итог по продуктам", "Выручка к прошлому периоду"].map(th)));
-    const tot = { revenue: 0, cost: 0, writeoff: 0, inventory: 0 };
+    const tot = { revenue: 0, cost: 0, writeoff: 0, inventory: 0, reval: 0 };
     const res = (x) => x.revenue - x.cost - x.writeoff + x.inventory;
+    // reval — переоценка проданного в минус (−сумма поправок стоимости по складам точки за период):
+    // она уже входит в себестоимость, ячейку помечаем звёздочкой и поясняем под таблицей.
+    const rv = (x) => Number(x.reval || 0);
+    const costCell = (x) => rv(x) ? el("td", { class: "num", title: "в том числе переоценка " + fmt(rv(x)) + " ₸" }, fmt(x.cost) + " *") : el("td", { class: "num" }, fmt(x.cost));
     for (const x of r.rows) {
-      for (const k of Object.keys(tot)) tot[k] += Number(x[k]);
-      t.append(el("tr", {}, el("td", {}, x.point_name), el("td", { class: "num" }, fmt(x.revenue)), el("td", { class: "num" }, fmt(x.cost)),
+      for (const k of Object.keys(tot)) tot[k] += Number(x[k] || 0);
+      t.append(el("tr", {}, el("td", {}, x.point_name), el("td", { class: "num" }, fmt(x.revenue)), costCell(x),
         el("td", { class: "num" }, fmt(x.revenue - x.cost)), el("td", { class: "num" }, x.revenue ? fmt(Math.round(x.cost / x.revenue * 1000) / 10) + " %" : ""),
         el("td", { class: "num" }, fmt(x.writeoff)), el("td", { class: "num" + (x.inventory < 0 ? " bad" : "") }, fmt(x.inventory)),
         el("td", { class: "num", style: "font-weight:700" }, fmt(res(x))),
         el("td", { class: "num", title: "Прошлый период: " + prev.date_from + " — " + prev.date_to }, delta(Number(x.revenue), pv.has(x.point_id ?? "") ? Number(pv.get(x.point_id ?? "").revenue) : 0))));
     }
     if (!r.rows.length) t.append(el("tr", {}, el("td", { colspan: 9, class: "dim" }, "За период проведённых продаж, списаний и инвентаризаций нет")));
-    else t.append(el("tr", { style: "font-weight:700" }, el("td", {}, "Итого"), el("td", { class: "num" }, fmt(tot.revenue)), el("td", { class: "num" }, fmt(tot.cost)),
+    else t.append(el("tr", { style: "font-weight:700" }, el("td", {}, "Итого"), el("td", { class: "num" }, fmt(tot.revenue)), costCell(tot),
       el("td", { class: "num" }, fmt(tot.revenue - tot.cost)), el("td", { class: "num" }, tot.revenue ? fmt(Math.round(tot.cost / tot.revenue * 1000) / 10) + " %" : ""),
       el("td", { class: "num" }, fmt(tot.writeoff)), el("td", { class: "num" }, fmt(tot.inventory)), el("td", { class: "num" }, fmt(res(tot))),
       el("td", { class: "num" }, delta(tot.revenue, [...pv.values()].reduce((a, x) => a + Number(x.revenue), 0)))));
-    host.append(el("div", { class: "card", style: "padding:0;overflow:auto" }, t),
+    const revalPts = r.rows.filter((x) => rv(x));
+    out.append(el("div", { class: "card", style: "padding:0;overflow:auto" }, t),
+      revalPts.length ? el("div", { class: "warnbox" }, "* Себестоимость включает переоценку проданного в минус: товар продали раньше, чем его оприходовали, и приход пересчитал недостающее по своей цене — "
+        + revalPts.map((x) => `${x.point_name} ${rv(x) > 0 ? "+" : ""}${fmt(rv(x))} ₸`).join(", ") + ". Чтобы такого не было, заносите приходы до продаж.") : null,
       el("div", { class: "dim", style: "margin-top:8px" }, "Только продукты: выручка и себестоимость проданного, списания (порча, проработка, питание персонала) и итог инвентаризаций со складов точки — недостача с минусом. Зарплата, аренда и прочие расходы появятся с разделом «Финансы»."));
-    csvBtn.onclick = () => csvDownload("прибыль по точкам", ["Точка", "Выручка", "Себестоимость", "Валовая прибыль", "Списания", "Инвентаризация", "Итог"],
-      r.rows.map((x) => [x.point_name, x.revenue, x.cost, x.revenue - x.cost, x.writeoff, x.inventory, res(x)]));
+    csvBtn.onclick = () => csvDownload("прибыль по точкам", period, ["Точка", "Выручка", "Себестоимость", ...(revalPts.length ? ["в т. ч. переоценка"] : []), "Валовая прибыль", "Списания", "Инвентаризация", "Итог"],
+      r.rows.map((x) => [x.point_name, x.revenue, x.cost, ...(revalPts.length ? [rv(x)] : []), x.revenue - x.cost, x.writeoff, x.inventory, res(x)]));
   } else if (rep.kind === "purchases") {
-    const r = await api("stock_purchases_report", { ...period, store_id: rep.store_id || null }); wait.remove();
-    if (!r.ok) { host.append(el("div", { class: "err" }, r.message)); return; }
+    const r = await api("stock_purchases_report", { ...period, store_id: rep.store_id || null });
+    if (n !== seqs.rep) return;
+    out.innerHTML = "";
+    if (!r.ok) { out.append(el("div", { class: "err" }, errText(r))); return; }
     const st = el("table");
     st.append(el("tr", {}, ...["Поставщик", "Приходов", "Товаров", "Сумма, ₸"].map(th)));
     for (const x of r.suppliers) st.append(el("tr", {}, el("td", {}, x.name), el("td", { class: "num" }, String(x.docs)), el("td", { class: "num" }, String(x.items)), el("td", { class: "num" }, fmt(x.sum))));
@@ -750,22 +1038,24 @@ async function loadReports() {
     for (const x of r.items) t.append(el("tr", {}, el("td", {}, x.name), el("td", {}, x.unit_id || ""), el("td", { class: "num" }, fmt(x.qty)), el("td", { class: "num" }, fmt(x.sum)),
       el("td", { class: "num" }, fmt(x.avg_price)), el("td", { class: "num" }, fmt(x.min_price)),
       el("td", { class: "num" + (x.max_price > x.min_price * 1.1 ? " bad" : "") }, fmt(x.max_price)), el("td", { class: "num" }, String(x.suppliers))));
-    host.append(el("h3", { style: "margin:0 0 8px" }, "По поставщикам"), el("div", { class: "card", style: "padding:0;overflow:auto" }, st),
+    out.append(el("h3", { style: "margin:0 0 8px" }, "По поставщикам"), el("div", { class: "card", style: "padding:0;overflow:auto" }, st),
       el("h3", { style: "margin:16px 0 8px" }, "По товарам"), el("div", { class: "card", style: "padding:0;overflow:auto" }, t),
       el("div", { class: "dim", style: "margin-top:8px" }, "Проведённые приходы за период. Красным — максимальная цена выше минимальной больше чем на 10 %: стоит спросить поставщика."));
-    csvBtn.onclick = () => csvDownload("закупки", ["Товар", "Ед.", "Количество", "Сумма", "Средняя цена", "Мин. цена", "Макс. цена", "Поставщиков"],
+    csvBtn.onclick = () => csvDownload("закупки", period, ["Товар", "Ед.", "Количество", "Сумма", "Средняя цена", "Мин. цена", "Макс. цена", "Поставщиков"],
       r.items.map((x) => [x.name, x.unit_id || "", x.qty, x.sum, x.avg_price, x.min_price, x.max_price, x.suppliers]));
   } else {
-    const r = await api("doc_sales_report", period); wait.remove();
-    if (!r.ok) { host.append(el("div", { class: "err" }, r.message)); return; }
+    const r = await api("doc_sales_report", period);
+    if (n !== seqs.rep) return;
+    out.innerHTML = "";
+    if (!r.ok) { out.append(el("div", { class: "err" }, errText(r))); return; }
     t.append(el("tr", {}, ...["Блюдо / товар", "Кол-во", "Выручка", "Себестоимость", "Прибыль", "Фудкост"].map(th)));
     for (const x of r.items) t.append(el("tr", {}, el("td", {}, x.name), el("td", { class: "num" }, fmt(x.qty) + " " + (x.unit_id || "")),
       el("td", { class: "num" }, fmt(x.revenue)), el("td", { class: "num" }, fmt(x.cost)), el("td", { class: "num" }, fmt(x.margin)),
       el("td", { class: "num" }, x.foodcost_pct == null ? "" : el("span", { class: "tag " + (x.foodcost_pct > 35 ? "bad" : "ok") }, fmt(x.foodcost_pct) + " %"))));
     if (!r.items.length) t.append(el("tr", {}, el("td", { colspan: 6, class: "dim" }, "За период проведённых продаж нет")));
-    host.append(el("div", { class: "card", style: "padding:0;overflow:auto" }, t),
+    out.append(el("div", { class: "card", style: "padding:0;overflow:auto" }, t),
       el("div", { class: "dim", style: "margin-top:8px" }, "Все проданные позиции по всем точкам за период, по выручке. Фудкост выше 35 % — красным."));
-    csvBtn.onclick = () => csvDownload("продажи по блюдам", ["Позиция", "Ед.", "Кол-во", "Выручка", "Себестоимость", "Прибыль", "Фудкост, %"],
+    csvBtn.onclick = () => csvDownload("продажи по блюдам", period, ["Позиция", "Ед.", "Кол-во", "Выручка", "Себестоимость", "Прибыль", "Фудкост, %"],
       r.items.map((x) => [x.name, x.unit_id || "", x.qty, x.revenue, x.cost, x.margin, x.foodcost_pct ?? ""]));
   }
 }
@@ -780,7 +1070,7 @@ async function loadReady() {
   host.innerHTML = ""; const wait = el("div", { class: "dim" }, "Проверяю…"); host.append(wait);
   const r = await api("stock_quality_report", {});
   wait.remove();
-  if (!r.ok) { host.append(el("div", { class: "err" }, r.message), el("button", { class: "ghost", onclick: loadReady }, "Повторить")); return; }
+  if (!r.ok) { host.append(el("div", { class: "err" }, errText(r)), el("button", { class: "ghost", onclick: loadReady }, "Повторить")); return; }
   const open = r.checks.filter((c) => c.count > 0);
   host.append(el("div", { class: "tot" },
     el("span", {}, open.length ? `Нужно внимание: ${open.length} из ${r.checks.length} проверок` : "Все проверки чистые"),

@@ -1,5 +1,5 @@
 import { ask, el, fmt, today, toast, itemPicker, linesTable, drafts, warningsText,
-  withBusy, saveDoc, draftHint, okNum, numOf } from "./common.js?v=19";
+  withBusy, saveDoc, postDoc, showPosted, newKey, draftHint, okNum, numOf } from "./common.js?v=20";
 
 // Списание с телефона: порча, проработка, питание персонала — то, что кладовщик видит
 // первым. Устроено как перемещение: черновик на телефоне, предпросмотр остатков, проведение.
@@ -8,9 +8,9 @@ const REASONS = { spoilage: "порча", tasting: "проработка", staff
 export async function mount(root, ctx) {
   root.innerHTML = "";
   const st = ctx.store;
-  const d = drafts.load(SCN, st.id) || { reason: "", comment: "", lines: [], server_id: null };
+  const d = drafts.load(SCN, st.id) || { reason: "", comment: "", lines: [], server_id: null, client_key: newKey() };
   const lines = d.lines;
-  const save = () => drafts.save(SCN, st.id, { reason: d.reason, comment: d.comment, lines, server_id: d.server_id || null });
+  const save = () => drafts.save(SCN, st.id, { reason: d.reason, comment: d.comment, lines, server_id: d.server_id || null, client_key: d.client_key });
   const reason = el("select", { id: "w_reason", onchange: (e) => { d.reason = e.target.value; save(); } }, el("option", { value: "" }, "— причина —"),
     ...Object.entries(REASONS).map(([v, t]) => el("option", { value: v, selected: v === d.reason }, t)));
   const comment = el("input", { id: "w_comment", value: d.comment || "", placeholder: "например: испортилось при хранении",
@@ -39,20 +39,22 @@ export async function mount(root, ctx) {
         s = await saveDoc(d, { doc_type: "writeoff", doc_date: today(), store_from: st.id,
           reason: d.reason, comment: d.comment || "",
           lines: lines.map((l) => ({ item_code: l.item_code, qty: numOf(l.qty) })) }, save);
+        if (s.already) return showPosted(ctx, SCN, st.id, s, () => mount(root, ctx), d);
         d.server_id = s.id; save();
         // Как в перемещении: без предпросмотра остатков проводить нельзя — минус человек не увидит.
         let pv;
         try { pv = await ask("doc_preview", { id: s.id }); }
-        catch (e) { err.textContent = "Не удалось проверить остатки: " + e.message + draftHint(s.number); return; }
+        catch (e) { err.textContent = "Не удалось проверить остатки: " + e.message + draftHint(s.number, e); return; }
         const wt = warningsText(pv.warnings);
         if (wt && !window.confirm(wt + "\nПровести всё равно?")) { toast("Черновик " + s.number + " сохранён в бэк-офисе"); return; }
-        const p = await ask("doc_post", { id: s.id });
+        const p = await postDoc(s.id);
+        if (p.already) return showPosted(ctx, SCN, st.id, p, () => mount(root, ctx), d);
         drafts.clear(SCN, st.id);
         ctx.result({ title: "Списание проведено: " + s.number,
           lines: [st.name + " · " + REASONS[d.reason], lines.length + " поз., себестоимость " + fmt(p.total_sum) + " ₸"],
           warnings: warningsText(p.warnings) ? [warningsText(p.warnings)] : [], again: () => mount(root, ctx) });
       } catch (e) {
-        err.textContent = e.message + draftHint(s && s.number);
+        err.textContent = e.message + draftHint(s && s.number, e);
       }
     });
   }

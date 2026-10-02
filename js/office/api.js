@@ -1,7 +1,11 @@
 // Вызовы бэк-офиса: токен сессии в payload, хранение сессии в localStorage.
-export const BUILD = 19;
+export const BUILD = 20;
 const API = (typeof window !== "undefined" && window.TANDEM_API_URL) || "https://qeehxcnnuzuwskznhdyg.supabase.co/functions/v1/uchet";   // адрес меняется в config.js
 const KEY = "tandem_office";
+const TIMEOUT_MS = 20000;
+// Долгие действия (пересчёт продаж «готовым со склада», «Провести продажи за период», документы
+// по плану) сервер может считать дольше 20 с: им вызывающий передаёт {timeout: LONG_MS}.
+export const LONG_MS = 120000;
 let S = null;
 
 export function session() {
@@ -18,16 +22,31 @@ export function can(section, action) {
   return !!(s && s.permissions && s.permissions.includes(section + ":" + action));
 }
 
-export async function api(action, payload) {
+// api() не бросает исключений: обрыв связи и таймаут (20 с, или opts.timeout мс у долгих действий)
+// возвращаются ответом {ok:false, error:'network'} — его, как и любой отказ сервера, экраны
+// показывают текстом. Раньше fetch падал исключением, кнопки молча ничего не делали, и было
+// непонятно, сохранилось ли.
+// Протухшая сессия (unauthorized) больше не перезагружает страницу: api() шлёт событие
+// tandem:unauthorized, бэк-офис показывает поверх окно входа, а введённое в формах остаётся.
+export async function api(action, payload, opts) {
   const body = { action: "office_" + action, payload: { ...(payload || {}) } };
   const s = session();
   if (s && s.token && !body.payload.token) body.payload.token = s.token;
-  const r = await fetch(API, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
-  const j = await r.json().catch(() => ({ ok: false, error: "bad_json", message: "Сервер ответил не JSON" }));
-  if (!j.ok && j.error === "unauthorized" && action !== "login") {
-    setSession(null);
-    location.reload();
-    throw new Error(j.message || "Сессия истекла");
+  const ms = opts && Number(opts.timeout) > 0 ? Number(opts.timeout) : TIMEOUT_MS;
+  const ctl = typeof AbortController !== "undefined" ? new AbortController() : null;
+  const timer = ctl ? setTimeout(() => ctl.abort(), ms) : null;
+  const network = { ok: false, error: "network", message: "Нет связи с сервером. Данные могли не сохраниться — проверьте и повторите" };
+  let j;
+  try {
+    const r = await fetch(API, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal: ctl ? ctl.signal : undefined });
+    try { j = await r.json(); } catch { j = null; }
+    // Таймаут посреди чтения ответа — тоже обрыв, а не «сервер ответил не JSON».
+    if ((!j || typeof j !== "object") && !(ctl && ctl.signal.aborted)) j = { ok: false, error: "bad_json", message: "Сервер ответил не JSON" };
+  } catch { j = null; }
+  finally { clearTimeout(timer); }
+  if (!j || typeof j !== "object") return network;
+  if (!j.ok && j.error === "unauthorized" && action !== "login" && typeof window !== "undefined" && window.dispatchEvent) {
+    window.dispatchEvent(new CustomEvent("tandem:unauthorized", { detail: { message: j.message } }));
   }
   return j;
 }

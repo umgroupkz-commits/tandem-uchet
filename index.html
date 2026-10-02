@@ -100,6 +100,8 @@
     font-weight:700;margin-top:12px}
   .err{color:var(--bad);font-size:13.5px;margin-top:10px;font-weight:600}
   .msg{color:var(--ok);font-size:13.5px;margin-top:10px;font-weight:600;text-align:center}
+  .msg.bad{color:var(--bad)}
+  .iright{display:flex;align-items:center;justify-content:space-between;gap:6px}
   .hint{font-size:12.5px;color:var(--muted);margin-top:8px;line-height:1.45}
   .rule{background:var(--warnbg);border-left:4px solid #B4801F;padding:11px 13px;
     border-radius:0 8px 8px 0;font-size:13px;color:#5C4715;margin-bottom:14px}
@@ -136,7 +138,7 @@ input[readonly]{background:#EEF2F8;color:var(--ink2)}
   <header>
     <div>
       <h1>Тандем KZ · дневной отчёт</h1>
-      <div class="sub">Заполняется в конце смены · сборка 19</div>
+      <div class="sub">Заполняется в конце смены · сборка 20</div>
     </div>
   </header>
 
@@ -178,6 +180,7 @@ input[readonly]{background:#EEF2F8;color:var(--ink2)}
     <h2>Закрытие смены кассы</h2>
     <div class="hint" style="margin:0 0 12px">Продажи и деньги по каналам уже собраны из чеков. Осталось пересчитать наличные, внести расходы под отчёт и сохранить.</div>
     <div class="rrow"><span>Чеков за день</span><b id="kcount">—</b></div>
+    <div class="chk bad" id="kqueue" hidden></div>
     <a class="kassalink" href="kassa.html">← Вернуться в кассу</a>
   </div>
 
@@ -283,6 +286,7 @@ input[readonly]{background:#EEF2F8;color:var(--ink2)}
 
   <button id="savebtn">Сохранить отчёт</button>
   <div class="msg" id="savemsg"></div>
+  <div style="text-align:center"><button class="link" id="reloadbtn" type="button" hidden>Загрузить отчёт заново</button></div>
 </div>
 
 <div class="wrap wide" id="screen-dash" hidden>
@@ -306,6 +310,7 @@ input[readonly]{background:#EEF2F8;color:var(--ink2)}
     <button class="small" id="dreload" type="button">Показать</button>
     <button class="ghost small" id="dcsv" type="button">Выгрузить CSV</button>
   </div>
+  <div class="err" id="derr" style="margin:-4px 0 14px"></div>
 
   <div class="kpis">
     <div class="kpi"><div class="kl">Выручка за период</div><div class="kv" id="k1">—</div></div>
@@ -323,6 +328,21 @@ input[readonly]{background:#EEF2F8;color:var(--ink2)}
   <div class="card" id="dmissing-card" hidden>
     <h2>Не сдали отчёт за вчера</h2>
     <div id="dmissing"></div>
+  </div>
+
+  <div class="card" id="dvoids-card" hidden>
+    <h2>Отмены и исправления чеков</h2>
+    <div class="hint" id="dvoids-sum" style="margin:0 0 10px"></div>
+    <div class="scroll" id="dvoids-table" hidden>
+      <table>
+        <thead><tr><th>Когда</th><th>Точка</th><th>Что</th><th style="text-align:right">Чек</th><th style="text-align:right">Сумма</th>
+          <th>Оплата</th><th>Причина</th><th>Продавец</th></tr></thead>
+        <tbody id="dvoids"></tbody>
+      </table>
+    </div>
+    <div class="hint">Отмена уменьшает выручку дня. Отмена без внятной причины или много отмен у одного продавца — повод разобраться.
+      «Было → стало» — сумма и способ оплаты при первом сохранении чека и после исправления; отмены считаются по первой сумме.
+      Закрытую смену кассы можно открыть для исправления в раскрытом отчёте ниже.</div>
   </div>
 
   <div class="card">
@@ -367,7 +387,7 @@ input[readonly]{background:#EEF2F8;color:var(--ink2)}
 
   <div class="card">
     <h2>Все отчёты</h2>
-    <div class="hint" style="margin:0 0 10px">Нажмите на строку — раскроется весь отчёт: позиции, расходы, комментарий.</div>
+    <div class="hint" style="margin:0 0 10px">Нажмите на строку — раскроется весь отчёт: позиции, расходы, отмены чеков, комментарий.</div>
     <div class="scroll">
       <table>
         <thead><tr><th>Дата</th><th>Точка</th><th style="text-align:right">Нал.</th><th style="text-align:right">QR</th>
@@ -424,7 +444,7 @@ input[readonly]{background:#EEF2F8;color:var(--ink2)}
   </div>
 </div>
 
-<script src="config.js?v=19"></script>
-<script src="app.js?v=19"></script>
+<script src="config.js?v=20"></script>
+<script src="app.js?v=20"></script>
 </body>
 </html>
