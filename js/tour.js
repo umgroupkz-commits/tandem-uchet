@@ -311,7 +311,10 @@
       }
       if (s.action === "next" || s.optional || (cur && cur.lost)) {
         const b = mk("button", s.action === "next" || (cur && cur.absent) ? "tt-main" : null, s.action === "next" ? (s.button || "Дальше") : "Пропустить шаг");
-        b.onclick = () => go(s.optional ? skipNext(i, s) : i + 1); btns.append(b);
+        // «Дальше» у шага-объяснения ведёт на следующий шаг; пропуск (или объяснение, которого нет на экране) —
+        // мимо зависимых шагов (skipAlso).
+        const skip = s.optional && (s.action !== "next" || (cur && cur.absent));
+        b.onclick = () => go(skip ? skipNext(i, s) : i + 1); btns.append(b);
       }
       c.append(btns);
     }
@@ -369,7 +372,9 @@
     render(i, s, target);
     if (target && !cur.scrolled) { cur.scrolled = true; try { target.scrollIntoView({ block: "center", inline: "nearest" }); } catch (e) { /* */ } }
     // Автопрогон: действие за человека через полсекунды после появления цели.
-    if (st.autoplay && !cur.played && (target || (!s.target && s.action !== "fill")) && Date.now() - cur.since > (s.delay || 500)) {
+    // Выключенную кнопку (экран ещё загружает данные) автопрогон не нажимает — ждёт, пока включится.
+    if (st.autoplay && !cur.played && (target || (!s.target && s.action !== "fill")) && !(s.action === "click" && target && target.disabled)
+        && Date.now() - cur.since > (s.delay || 500)) {
       cur.played = true;
       if (s.action === "next") { log("ok " + (i + 1)); go(i + 1); return; }
       act(s, target);

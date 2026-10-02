@@ -103,6 +103,12 @@ for (const id of ids) {
     bad++;
     console.log(`FAIL ${id}: ${res || "не закончился за 4 мин"}; пройдено шагов ${okSteps} из ${info.n}`);
     for (const e of events.filter((x) => x.startsWith("[error]"))) console.log("     " + e);
+    // что экран сказал человеку (сообщения об ошибке, всплывающие), — чтобы понять причину без снимка
+    try {
+      const said = await js(`return [...document.querySelectorAll(".msg, .err, .bad, .toast, .warn, [role=alert]")].filter((n) => n.offsetParent && !n.closest(".tt-ui"))
+        .map((n) => n.textContent.trim().replace(/\\s+/g, " ").slice(0, 200)).filter(Boolean).slice(0, 5)`);
+      for (const t of said || []) console.log("     на экране: " + t);
+    } catch {}
     if (process.env.TOUR_SHOTS) {
       const sh = await send("Page.captureScreenshot", { format: "png" });
       fs.mkdirSync(process.env.TOUR_SHOTS, { recursive: true });

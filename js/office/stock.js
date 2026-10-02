@@ -451,7 +451,7 @@ async function editDoc(id, newType, preset) {
         onInput: (t) => { l[key] = t; if (o.onInput) o.onInput(t); refreshSums(); },
         onEnter: isInv ? downCol(key) : rowNav });
       const tds = [el("td", { class: "dim" }, String(idx + 1)),
-        el("td", {}, l.name, isInv && !posted && l.current_qty != null ? el("i", { class: "dim", style: "display:block;font-style:normal;font-size:11px" }, "расчёт: " + fmt(l.current_qty)) : null),
+        el("td", {}, l.name, isInv && !posted && l.current_qty != null ? el("i", { class: "dim", style: "display:block;font-style:normal;font-size:11px" }, "расчёт: " + Number(l.current_qty).toLocaleString("ru-RU", { maximumFractionDigits: 3 })) : null),
         el("td", {}, l.unit_id || "")];
       if (ro) {
         tds.push(el("td", { class: "num" }, fmt(l[qkey])));
