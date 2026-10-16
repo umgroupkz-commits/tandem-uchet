@@ -220,8 +220,11 @@
     const l = lessons[id]; if (!l) { log("FAIL нет урока " + id); return false; }
     // Урок начинается «с чистого листа»: выходим из учёток, под которыми были раньше (их ключи урок называет
     // сам в reset), иначе бэк-офис открылся бы под чужим логином и шаг «Войдите» не нашёл бы формы.
+    // После урока прежний вход НЕ возвращается: человек остаётся во входе урока и делает «Теперь сами» под
+    // той же ролью (10.10: после урока технолога бэк-офис вернулся к кладовщику, и техкарта не правилась).
+    // Возвращаются только ключи keep — вход рабочего планшета кассы и телефона точки.
     const saved = ls.get("tandem_tour_saved") || {};
-    for (const k of [...new Set([...(l.keep || []), ...(l.reset || [])])]) {
+    for (const k of l.keep || []) {
       try { if (!(k in saved)) saved[k] = localStorage.getItem(k); } catch (e) { /* */ }
     }
     ls.set("tandem_tour_saved", saved);
@@ -232,9 +235,14 @@
     if (target !== pageName() || (opts && opts.reload)) { location.href = target + (l.hash || ""); return true; }
     run(); return true;
   }
-  function restoreSaved() {
+  // Возвращаются только ключи keep этого урока: прежние версии обучалки сохраняли и вход бэк-офиса — такой
+  // старый ключ в браузере не должен вернуть человека в чужую роль.
+  function restoreSaved(keys) {
     const saved = ls.get("tandem_tour_saved"); if (!saved) return;
-    for (const [k, v] of Object.entries(saved)) { try { v == null ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch (e) { /* */ } }
+    for (const [k, v] of Object.entries(saved)) {
+      if (!(keys || []).includes(k)) continue;
+      try { v == null ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch (e) { /* */ }
+    }
     ls.set("tandem_tour_saved", null);
   }
   function stop(done) {
@@ -243,7 +251,7 @@
     st = null; save(); cur = null; clearInterval(timer); timer = null; dropUi();
     // Вернуть то, что было до обучения (вход точки, сессия бэк-офиса), — только когда урок закончился или
     // прерван, а не между уроками (следующий урок сам сотрёт, что ему нужно).
-    restoreSaved();
+    restoreSaved(l && l.keep);
   }
   function go(i) {
     const n = steps().length;
@@ -362,6 +370,20 @@
     }
     cur.onOtherPage = false;
     const target = targetOf(s);
+    // Шаг поиска перед «Выберите из подсказки»: человек может искать своими словами и сам выбрать из подсказки,
+    // не дожидаясь следующего шага (10.10 урок «Перемещение» на этом встал). Запоминаем, что было в поле и
+    // была ли цель через шаг (строка позиции), — по ним видно, что выбор уже сделан.
+    const nx = l.steps[i + 1], nx2 = l.steps[i + 2];
+    const pickPair = s.action === "type" && !!s.until && !!nx && nx.action === "click" && !!nx.target;
+    if (s.action === "type" && target && cur.startVal === undefined) cur.startVal = String(target.value || "");
+    if (pickPair && cur.after2 === undefined) cur.after2 = !!(nx2 && nx2.target && find(nx2.target));
+    if (pickPair && cond(s.until)) cur.untilSeen = true;
+    // Нажатие могло быть клавиатурой (↓ Enter в подсказке, Enter в форме): цель была и исчезла, а цель
+    // следующего шага, которой в начале не было, появилась — действие сделано.
+    if (s.action === "click" && !s.navigates && nx && nx.target) {
+      if (cur.nextAtStart === undefined) cur.nextAtStart = !!find(nx.target);
+      if (target) cur.seenTarget = true;
+    }
     // Цель ищется до 10 с (экраны дорисовываются по ответу сервера); дольше — «не вижу» и выход вперёд/назад.
     // Необязательный шаг без цели (например, неразобранных замечаний нет) — не «не вижу», а «пропускаем»:
     // через 4 с карточка объясняет (missing), автопрогон пропускает его и skipAlso следующих за ним шагов.
@@ -382,11 +404,24 @@
     // Условие перехода. click — переход после нажатия на цель (и, если задано, когда выполнилось until);
     // type/select/fill — когда значение совпало; wait — когда выполнилось until; next — только кнопкой.
     let ready = false;
-    if (s.action === "click") ready = ((!!cur.clicked && Date.now() - cur.clicked > 250) || (s.match === false && !!s.until)) && cond(s.until);
-    else if (s.action === "type" || s.action === "select") ready = (s.match === false ? !!s.until : cur.changed || matches(target, s.value)) && cond(s.until);
+    if (s.action === "click") ready = ((!!cur.clicked && Date.now() - cur.clicked > 250) || (s.match === false && !!s.until)
+        || (!st.autoplay && cur.seenTarget && !target && cur.nextAtStart === false && !!find(nx.target))) && cond(s.until);
+    else if (s.action === "type") {
+      // С until (подсказка, проверка суммы) годится любой свой ввод: проверяет until, а не буквы в поле.
+      const typed = !!target && String(target.value || "").trim() !== "" && String(target.value || "") !== cur.startVal;
+      ready = (s.match === false ? !!s.until : cur.changed || matches(target, s.value) || (!!s.until && typed)) && cond(s.until);
+    }
+    else if (s.action === "select") ready = (s.match === false ? !!s.until : cur.changed || matches(target, s.value)) && cond(s.until);
     else if (s.action === "fill") ready = fieldsOk(s) && cond(s.until);
     else if (s.action === "wait") ready = cond(s.until);
     if (ready) { if (st.autoplay) log("ok " + (i + 1)); go(i + 1); return; }
+    // Человек сам выбрал из подсказки: нажатие пришлось на цель следующего шага, или подсказка была, исчезла,
+    // а цель через шаг (строка позиции) появилась. Оба шага сделаны — к шагу после выбора.
+    if (pickPair && !st.autoplay) {
+      const picked = (cur.pickedAhead && Date.now() - cur.pickedAhead > 250 && cond(nx.until))
+        || (cur.untilSeen && !find(nx.target) && !cur.after2 && !!nx2 && !!nx2.target && !!find(nx2.target));
+      if (picked) { go(i + 2); return; }
+    }
     // Список (точки, склады) мог ещё не загрузиться с сервера, когда автопрогон выбирал, — выбрать ещё раз.
     if (st.autoplay && cur.played && (s.action === "fill" || s.action === "select") && Date.now() - cur.playedAt > 2500) {
       cur.playedAt = Date.now(); act(s, target);
@@ -394,6 +429,18 @@
     if (st.autoplay && Date.now() - cur.since > (s.timeout || 20000)) { log("FAIL " + (i + 1) + ": шаг не завершился за " + ((s.timeout || 20000) / 1000) + " с"); stop(false); }
   }
   // Нажатие на цель ловим на всплытии до обработчиков экрана (capture): экран мог тут же перерисоваться.
+  // Выбор из подсказки прямо на шаге поиска (цель следующего шага): ловим и нажатие, и его начало —
+  // подсказка может исчезнуть ещё до click.
+  function pickAhead(e) {
+    if (!st || !cur || cur.step.action !== "type") return;
+    if (e.target.closest && e.target.closest(".tt-ui")) return;
+    const nx = steps()[cur.i + 1];
+    if (!nx || nx.action !== "click" || !nx.target) return;
+    const t2 = find(nx.target);
+    if (t2 && (t2 === e.target || t2.contains(e.target))) cur.pickedAhead = Date.now();
+  }
+  document.addEventListener("pointerdown", pickAhead, true);
+  document.addEventListener("click", pickAhead, true);
   document.addEventListener("click", (e) => {
     if (!st || !cur || cur.step.action !== "click" || !cur.step.target) return;
     if (e.target.closest && e.target.closest(".tt-ui")) return;
