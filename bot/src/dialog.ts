@@ -2,9 +2,9 @@
 // хода клиента, цикл инструментов. История только дописывается (preserved thinking Sonnet 5.5).
 import type { Uchet } from "./uchet.ts";
 import type { Store } from "./store.ts";
-import type { DialogState } from "./types.ts";
+import type { DialogState, Menu } from "./types.ts";
 import { localNow, menuText, rulesText } from "./menu.ts";
-import { runTool, TOOLS } from "./tools.ts";
+import { runTool, type ToolCtx, TOOLS } from "./tools.ts";
 import { handoffText } from "./templates.ts";
 
 export type Block = { type: string; [k: string]: unknown };
@@ -24,31 +24,73 @@ export const SYSTEM_RULES = `Ты — помощник «Енешки» (Тем�
 Жалоба, «позовите человека», правка уже принятого заказа, вопросы о скидках, оптовых закупках, работе, всё непонятное — handoff.
 Не обещай скидок, сроков вне правил и того, чего нет в правилах. Не спорь. Номер телефона клиента уже известен — не спрашивай.`;
 
+// Правила и меню — переменная часть системного текста. Сравнивается по отпечатку: поменялась — модель узнаёт
+// системным сообщением, а верхняя системная часть разговора остаётся прежней байт в байт.
+const contextText = (menu: Menu) => `# Правила\n${rulesText(menu)}\n\n# Меню\n${menuText(menu)}`;
+function fingerprint(s: string): string {   // FNV-1a, 32 бита: отличить «то же» от «другое»
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
+  return h.toString(16).padStart(8, "0") + ":" + s.length;
+}
+type Msg = { role: string; content: unknown };
+
 export async function handleTurn(deps: Deps, st: DialogState, clientText: string, clientAfterSummary: boolean): Promise<DialogState> {
   const menu = await deps.uchet.menu();
-  const system = [{ type: "text", text: `${SYSTEM_RULES}\n\n# Правила\n${rulesText(menu)}\n\n# Меню\n${menuText(menu)}`, cache_control: { type: "ephemeral" } }];
+  const ctxNow = contextText(menu);
+  // Системная часть замораживается на весь разговор: preserved thinking Sonnet 5.5 требует, чтобы она
+  // не менялась (иначе 400 на всю открытую историю), и на ней держится кэш.
+  if (!st.convo.length || !st.system_text) { st.system_text = `${SYSTEM_RULES}\n\n${ctxNow}`; st.menu_seen_hash = fingerprint(ctxNow); }
+  const system = [{ type: "text", text: st.system_text, cache_control: { type: "ephemeral" } }];
+  // Откат при сбое: история возвращается к виду до хода (последнее сообщение — его содержимым), иначе
+  // в ней останутся реплика без ответа или tool_use без результата, и следующий запрос API не примет.
+  const base = st.convo.length;
+  const trailing = base ? structuredClone(st.convo[base - 1]) : null;
+  const seenBefore = st.menu_seen_hash;
+  const rollback = async () => {
+    st.convo.length = base;
+    if (trailing) st.convo[base - 1] = trailing;
+    st.menu_seen_hash = seenBefore;
+    await giveUp(deps, st);
+    return st;
+  };
   // После итога или заказа ход кончился результатом инструмента (последний — user с tool_result): новая реплика
   // клиента дописывается в него же — два user подряд API не примет. Модель этот ход ещё не видела: это не правка истории.
-  const last = st.convo[st.convo.length - 1] as { role: string; content: unknown } | undefined;
+  const last = st.convo[st.convo.length - 1] as Msg | undefined;
   if (last && last.role === "user" && Array.isArray(last.content)) (last.content as unknown[]).push({ type: "text", text: clientText });
   else st.convo.push({ role: "user", content: clientText });
-  st.convo.push({ role: "system", content: `Сейчас ${localNow(deps.now())} (Темиртау). Клиент: ${st.name ?? "имя неизвестно"}. Корзина: ${JSON.stringify(st.cart)}. ` +
+  // Одно системное сообщение на ход (два подряд API не примет: за системным — только assistant): сначала,
+  // если меню или правила поменялись, их новый текст, затем время и корзина.
+  let update = "";
+  if (fingerprint(ctxNow) !== st.menu_seen_hash) {
+    update = `Меню и правила обновились — действуют эти:\n${ctxNow}\n\n`;
+    st.menu_seen_hash = fingerprint(ctxNow);
+  }
+  st.convo.push({ role: "system", content: update + `Сейчас ${localNow(deps.now())} (Темиртау). Клиент: ${st.name ?? "имя неизвестно"}. Корзина: ${JSON.stringify(st.cart)}. ` +
     `Получение: ${JSON.stringify(st.details)}. Этап: ${st.stage}${st.last_order_no ? `, последний заказ №${st.last_order_no}` : ""}.` });
   st.last_activity = deps.now().toISOString();
+  // ctx общий на ход: правка корзины, деталей или новый итог в этом же ходе снимают «клиент ответил после итога»
+  const ctx: ToolCtx = { clientAfterSummary };
   let reply = "";
   for (let i = 0; i < 6; i++) {
     let resp;
     try { resp = await callModel(deps, system, st.convo); }
-    catch { await giveUp(deps, st); return st; }
-    st.convo.push({ role: "assistant", content: resp.content });
-    if (resp.stop_reason === "refusal") { await giveUp(deps, st); return st; }
+    catch { return await rollback(); }
+    if (resp.stop_reason === "refusal") return await rollback();
     const uses = resp.content.filter((b) => b.type === "tool_use");
+    // оборванный ответ (max_tokens и т. п.) с tool_use без результата — в историю его не взять
+    if (uses.length && resp.stop_reason !== "tool_use") return await rollback();
+    if (!resp.content.length) {
+      // пустой ответ: пустое сообщение API не примет; после системного без assistant — тоже
+      if ((st.convo[st.convo.length - 1] as Msg).role === "system") return await rollback();
+      reply = ""; break;
+    }
+    st.convo.push({ role: "assistant", content: resp.content });
     reply = resp.content.filter((b) => b.type === "text").map((b) => String(b.text)).join("\n").trim();
-    if (resp.stop_reason !== "tool_use" || !uses.length) break;
+    if (!uses.length) break;
     const results: Record<string, unknown>[] = [];
     let stop = false;
     for (const u of uses) {
-      const r = await runTool(deps, st, menu, String(u.name), (u.input ?? {}) as Record<string, unknown>, { clientAfterSummary });
+      const r = await runTool(deps, st, menu, String(u.name), (u.input ?? {}) as Record<string, unknown>, ctx);
       results.push({ type: "tool_result", tool_use_id: u.id, content: r.result });
       stop = stop || !!r.stop;
     }
@@ -60,11 +102,19 @@ export async function handleTurn(deps: Deps, st: DialogState, clientText: string
   return st;
 }
 
+// Повтор — один и только там, где он может помочь: 429, 5xx, обрыв связи (ошибка без кода ответа).
+// 400/401/403/404/413 повтор не исправит. SDK сам не повторяет (maxRetries: 0 в model.ts).
+function retryable(e: unknown): boolean {
+  const s = (e as { status?: unknown } | null)?.status;
+  return typeof s !== "number" || s === 429 || s >= 500;
+}
+
 async function callModel(deps: Deps, system: unknown[], messages: unknown[]) {
   const p = { model: deps.modelName, max_tokens: 4000, system, tools: TOOLS, messages,
+    cache_control: { type: "ephemeral" },   // автоматический кэш растущей истории, вдобавок к метке на системной части
     output_config: { effort: "low" }, betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" };
   try { return await deps.model.create(p); }
-  catch { return await deps.model.create(p); }   // один повтор: перегрузка, обрыв
+  catch (e) { if (!retryable(e)) throw e; return await deps.model.create(p); }
 }
 
 async function giveUp(deps: Deps, st: DialogState) {

@@ -93,6 +93,7 @@ export class Inbound {
 
   private fresh(id: string, phone: string, name: string | null): DialogState {
     return { dialog_id: id, phone, name, lang: "ru", convo: [], cart: [], details: {}, quote: null, stage: "chat", summary_sent_at: null,
-      draft_uid: this.d.uuid(), last_order_no: null, last_client_msg_id: null, last_activity: this.d.now().toISOString() };
+      draft_uid: this.d.uuid(), last_order_no: null, last_client_msg_id: null, last_activity: this.d.now().toISOString(),
+      system_text: null, menu_seen_hash: null };
   }
 }

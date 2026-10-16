@@ -8,3 +8,7 @@ Deno.test("модель: идёт в beta.messages.create с бетой и fallb
   assertEquals(seen[0].fallbacks, "default");
   assertEquals(seen[0].betas, ["server-side-fallback-2026-07-01"]);
 });
+Deno.test("модель: SDK сам не повторяет (maxRetries 0) — повтор один, в dialog.ts", () => {
+  const m = new ClaudeModel("k");
+  assertEquals((m as unknown as { client: { maxRetries: number } }).client.maxRetries, 0);
+});

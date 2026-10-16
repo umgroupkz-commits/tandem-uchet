@@ -1,6 +1,6 @@
 import { assert, assertEquals } from "@std/assert";
 import { handleTurn } from "../src/dialog.ts";
-import { deps, newDialog, ScriptModel, text, tool } from "./fakes.ts";
+import { deps, MENU, newDialog, ScriptModel, text, tool } from "./fakes.ts";
 
 const details = { kind: "pickup", for_date: "2026-10-18", ready_by: "12:00", address: null, client_name: "Айгуль", point_id: null };
 
@@ -139,4 +139,139 @@ Deno.test("разговор: отказ модели (refusal) — переда�
   const d = deps(new ScriptModel([{ content: [], stop_reason: "refusal" }]));
   await handleTurn(d, newDialog(), "…", false);
   assertEquals(d.uzelF.handoffs.length, 1);
+});
+
+const ready = () => ({ ...newDialog(), cart: [{ item_code: "P1", qty: 1.5 }],
+  details: { kind: "pickup" as const, for_date: "2026-10-18", ready_by: "12:00", client_name: "Айгуль" } });
+const sysMsgs = (r: Record<string, unknown>) => (r.messages as { role: string; content: string }[]).filter((x) => x.role === "system");
+
+Deno.test("разговор: меню поменялось между ходами — системная часть та же байт в байт, новое меню системным сообщением, один раз", async () => {
+  const m = new ScriptModel([
+    { content: [text("Здравствуйте!")], stop_reason: "end_turn" },
+    { content: [text("Пирог с мясом теперь 4 800 ₸ за кг")], stop_reason: "end_turn" },
+    { content: [text("Записала")], stop_reason: "end_turn" },
+  ]);
+  const d = deps(m);
+  const st1 = await handleTurn(d, newDialog(), "привет", false);
+  d.uchetF.menuData = { ...MENU, items: MENU.items.map((x) => x.item_code === "P1" ? { ...x, price: 4800 } : x) };
+  const st2 = await handleTurn(d, st1, "сколько стоит пирог?", false);
+  await handleTurn(d, st2, "хорошо", false);
+  assertEquals(m.requests[1].system, m.requests[0].system);
+  assertEquals(m.requests[2].system, m.requests[0].system);
+  assert(JSON.stringify(m.requests[0].system).includes("4 550 ₸"));
+  const upd1 = sysMsgs(m.requests[1]).filter((x) => x.content.includes("Меню и правила обновились — действуют эти:"));
+  assertEquals(upd1.length, 1);
+  assert(upd1[0].content.includes("4 800 ₸"));
+  const upd2 = sysMsgs(m.requests[2]).filter((x) => x.content.includes("Меню и правила обновились"));
+  assertEquals(upd2.length, 1);   // то же сообщение из истории, нового не добавлено
+  // история второго запроса — продолжение первого байт в байт
+  assertEquals((m.requests[1].messages as unknown[]).slice(0, (m.requests[0].messages as unknown[]).length), m.requests[0].messages);
+});
+
+Deno.test("разговор: в запросе — автоматический кэш истории сверху и метка на системной части", async () => {
+  const m = new ScriptModel([{ content: [text("ок")], stop_reason: "end_turn" }]);
+  await handleTurn(deps(m), newDialog(), "привет", false);
+  const r = m.requests[0] as Record<string, any>;
+  assertEquals(r.cache_control, { type: "ephemeral" });
+  assertEquals(r.system[0].cache_control, { type: "ephemeral" });
+});
+
+Deno.test("разговор: «да, и добавьте 2 кг мантов» — правка, новый итог и order_submit в одном ответе — заказа нет, ушёл новый итог", async () => {
+  const m = new ScriptModel([
+    { content: [tool("t1", "cart_set", { item_code: "M1", qty: 2 }), tool("t2", "order_summary", {}), tool("t3", "order_submit", {})], stop_reason: "tool_use" },
+  ]);
+  const d = deps(m);
+  const st0 = { ...ready(), stage: "awaiting_yes" as const, summary_sent_at: "2026-10-17T04:59:00.000Z" };
+  const st = await handleTurn(d, st0, "да, и добавьте 2 кг мантов", true);
+  assertEquals(d.uchetF.creates.length, 0);
+  assertEquals(d.uzelF.sent.length, 1);
+  assert(d.uzelF.sent[0].text.includes("Манты с говядиной") && d.uzelF.sent[0].text.includes("Всё верно?"));
+  assertEquals(st.stage, "awaiting_yes");
+  assert(JSON.stringify(st.convo[st.convo.length - 1]).includes("Нельзя"));
+});
+
+Deno.test("разговор: итог не ушёл клиенту («Узел» отказал) — этап «чат», итог не считается отправленным, ошибка инструмента", async () => {
+  const m = new ScriptModel([{ content: [tool("t1", "order_summary", {})], stop_reason: "tool_use" }]);
+  const d = deps(m);
+  d.uzelF.paused = true;
+  const st = await handleTurn(d, ready(), "оформляйте", false);
+  assertEquals(st.stage, "chat");
+  assertEquals(st.summary_sent_at, null);
+  assertEquals(m.requests.length, 1);
+  assert(JSON.stringify(st.convo[st.convo.length - 1]).includes("error"));
+});
+
+Deno.test("разговор: модель упала — история как до хода, следующий ход — допустимый запрос", async () => {
+  const m = new ScriptModel([
+    { content: [text("Здравствуйте!")], stop_reason: "end_turn" },
+    { error: Object.assign(new Error("overloaded"), { status: 529 }) }, { error: Object.assign(new Error("overloaded"), { status: 529 }) },
+    { content: [text("Слушаю")], stop_reason: "end_turn" },
+  ]);
+  const d = deps(m);
+  const st1 = structuredClone(await handleTurn(d, newDialog(), "привет", false));
+  const st2 = await handleTurn(d, structuredClone(st1), "пирог хочу", false);
+  assertEquals(st2.convo, st1.convo);
+  assertEquals(d.storeM.dialogs.get("d1")!.convo, st1.convo);
+  assertEquals(d.uzelF.handoffs[0].reason, "бот не справился");
+  await handleTurn(d, st2, "алло", false);   // ScriptModel проверяет запрос
+  assertEquals(m.requests.length, 4);
+});
+
+Deno.test("разговор: сбой после итога — реплика клиента снята с результата инструмента", async () => {
+  const m = new ScriptModel([
+    { content: [tool("t1", "order_summary", {})], stop_reason: "tool_use" },
+    { error: new Error("connection reset") }, { error: new Error("connection reset") },
+    { content: [text("Ждём ваше «да»")], stop_reason: "end_turn" },
+  ]);
+  const d = deps(m);
+  const st1 = structuredClone(await handleTurn(d, ready(), "оформляйте", false));
+  const st2 = await handleTurn(d, structuredClone(st1), "а скидка будет?", true);
+  assertEquals(st2.convo, st1.convo);
+  await handleTurn(d, st2, "да", true);
+});
+
+Deno.test("разговор: ответ оборвался на max_tokens с неотвеченным tool_use — откат и передача человеку", async () => {
+  const m = new ScriptModel([
+    { content: [tool("t1", "cart_set", { item_code: "P1", qty: 1 })], stop_reason: "max_tokens" },
+    { content: [text("Слушаю")], stop_reason: "end_turn" },
+  ]);
+  const d = deps(m);
+  const st = await handleTurn(d, newDialog(), "пирог", false);
+  assertEquals(st.convo, []);
+  assertEquals(d.uzelF.handoffs.length, 1);
+  await handleTurn(d, st, "алло", false);
+});
+
+Deno.test("разговор: отказ модели — откат истории", async () => {
+  const m = new ScriptModel([
+    { content: [text("Здравствуйте!")], stop_reason: "end_turn" },
+    { content: [], stop_reason: "refusal" },
+    { content: [text("Слушаю")], stop_reason: "end_turn" },
+  ]);
+  const d = deps(m);
+  const st1 = structuredClone(await handleTurn(d, newDialog(), "привет", false));
+  const st2 = await handleTurn(d, structuredClone(st1), "…", false);
+  assertEquals(st2.convo, st1.convo);
+  await handleTurn(d, st2, "алло", false);
+});
+
+Deno.test("разговор: пустой ответ модели после хода клиента — в истории нет пустого сообщения", async () => {
+  const m = new ScriptModel([{ content: [], stop_reason: "end_turn" }, { content: [text("Слушаю")], stop_reason: "end_turn" }]);
+  const d = deps(m);
+  const st = await handleTurn(d, newDialog(), "привет", false);
+  await handleTurn(d, st, "алло", false);   // ScriptModel проверяет запрос
+});
+
+Deno.test("разговор: повтор вызова модели — только 429, 5xx и обрыв связи", async () => {
+  const run = async (err: unknown) => {
+    let n = 0;
+    const d = deps({ create: () => { n++; return Promise.reject(err); } });
+    await handleTurn(d, newDialog(), "привет", false);
+    return n;
+  };
+  assertEquals(await run(Object.assign(new Error("bad request"), { status: 400 })), 1);
+  assertEquals(await run(Object.assign(new Error("auth"), { status: 401 })), 1);
+  assertEquals(await run(Object.assign(new Error("rate"), { status: 429 })), 2);
+  assertEquals(await run(Object.assign(new Error("overloaded"), { status: 529 })), 2);
+  assertEquals(await run(new Error("Connection error.")), 2);
 });

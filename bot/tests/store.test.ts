@@ -7,7 +7,7 @@ export async function storeContract(s: Store) {
   assertEquals(await s.getDialog("d1"), null);
   const d = { dialog_id: "d1", phone: "77011234567", name: "Айгуль", lang: "ru" as const, convo: [{ role: "user", content: "привет" }],
     cart: [], details: {}, quote: null, stage: "chat" as const, summary_sent_at: null, draft_uid: "u1", last_order_no: null,
-    last_client_msg_id: null, last_activity: "2026-10-17T05:00:00.000Z" };
+    last_client_msg_id: null, last_activity: "2026-10-17T05:00:00.000Z", system_text: null, menu_seen_hash: null };
   await s.saveDialog(d);
   assertEquals((await s.getDialog("d1"))!.convo.length, 1);
   await s.setState("events_after", 15);

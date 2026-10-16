@@ -21,7 +21,10 @@ export const TOOLS = [
     input_schema: { type: "object", properties: { reason: { type: "string" }, kind: { type: "string", enum: ["complaint", "human", "failed"] } }, required: ["reason", "kind"], additionalProperties: false } },
 ];
 
-export async function runTool(deps: Deps, st: DialogState, menu: Menu, name: string, input: Record<string, unknown>, ctx: { clientAfterSummary: boolean }):
+// ctx — общий на весь ход: правка корзины или деталей и новый итог снимают clientAfterSummary, и order_submit
+// в том же ответе модели не пройдёт — клиент этот итог ещё не видел.
+export interface ToolCtx { clientAfterSummary: boolean }
+export async function runTool(deps: Deps, st: DialogState, menu: Menu, name: string, input: Record<string, unknown>, ctx: ToolCtx):
   Promise<{ result: string; stop?: boolean }> {
   if (name === "cart_set") {
     const it = findItem(menu, String(input.item_code));
@@ -33,7 +36,7 @@ export async function runTool(deps: Deps, st: DialogState, menu: Menu, name: str
       if (bad) return { result: JSON.stringify({ error: bad }) };
       st.cart = [...st.cart.filter((c) => c.item_code !== it.item_code), { item_code: it.item_code, qty }];
     }
-    st.stage = "chat"; st.quote = null;
+    st.stage = "chat"; st.quote = null; ctx.clientAfterSummary = false;
     return { result: JSON.stringify({ cart: st.cart.map((c) => ({ ...c, title: findItem(menu, c.item_code)!.title_ru })) }) };
   }
   if (name === "order_details") {
@@ -42,7 +45,7 @@ export async function runTool(deps: Deps, st: DialogState, menu: Menu, name: str
       if (typeof v === "string" && v.trim()) (st.details as Record<string, string>)[k] = v.trim();
     }
     if (st.details.client_name) st.name = st.details.client_name;
-    st.stage = "chat"; st.quote = null;
+    st.stage = "chat"; st.quote = null; ctx.clientAfterSummary = false;
     return { result: JSON.stringify({ details: st.details }) };
   }
   if (name === "order_summary") {
@@ -50,7 +53,12 @@ export async function runTool(deps: Deps, st: DialogState, menu: Menu, name: str
     const r = await deps.uchet.quote({ ...st.details, lines: st.cart });
     if (!r.ok) { st.stage = "chat"; return { result: JSON.stringify({ error: r.message ?? r.error }) }; }
     st.quote = r.quote;
-    await deps.uzel.send(st.dialog_id, summaryText(r.quote, st.lang, st.name));
+    ctx.clientAfterSummary = false;
+    const sent = await deps.uzel.send(st.dialog_id, summaryText(r.quote, st.lang, st.name));
+    if (!sent.ok) {   // итог не ушёл (диалог ведёт человек и т. п.) — «да» на него не бывает
+      st.stage = "chat"; st.summary_sent_at = null;
+      return { result: JSON.stringify({ error: `Итог клиенту не ушёл (${sent.code ?? "отказ «Узла»"}). Ничего не пиши.` }), stop: true };
+    }
     st.stage = "awaiting_yes"; st.summary_sent_at = deps.now().toISOString();
     return { result: JSON.stringify({ sent: true, note: "Итог отправлен клиенту. Ничего не добавляй, дождись ответа. После «да» — order_submit." }), stop: true };
   }

@@ -41,4 +41,6 @@ export interface DialogState {
   stage: "chat" | "awaiting_yes" | "submitted";
   summary_sent_at: string | null; draft_uid: string; last_order_no: number | null;
   last_client_msg_id: string | null; last_activity: string;
+  system_text: string | null;       // системная часть, замороженная на весь разговор (null — ещё не начат)
+  menu_seen_hash: string | null;    // отпечаток правил и меню, которые модель видела последними
 }
