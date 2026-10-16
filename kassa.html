@@ -38,6 +38,7 @@
     <nav class="tabs" aria-label="Разделы кассы">
       <button id="tab-sale" aria-selected="true">Продажа</button>
       <button id="tab-shift" aria-selected="false">Смена</button>
+      <button id="tab-orders" aria-selected="false">Заказы <span id="ordcount" class="badge" hidden></span></button>
     </nav>
     <div class="sync" id="sync" role="status"></div>
     <button class="link" id="fbbtn" title="Сообщить о проблеме или неудобстве">Замечание</button>
@@ -70,6 +71,8 @@
       </div>
     </aside>
   </main>
+
+  <main id="orders" class="orders" hidden></main>
 
   <main id="shift" class="shift" hidden></main>
 

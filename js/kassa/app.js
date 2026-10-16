@@ -3,6 +3,7 @@
 // чек сначала кладётся в очередь планшета (localStorage) и досылается в фоне; сервер узнаёт
 // повторную досылку по uid и второй чек не создаёт.
 import { el, fmt, toast, today, debounce } from "../office/ui.js?v=22";
+import { mountOrders, stopOrders } from "./orders.js?v=22";
 
 const API = window.TANDEM_API_URL || "https://qeehxcnnuzuwskznhdyg.supabase.co/functions/v1/uchet";
 const $ = (id) => document.getElementById(id);
@@ -127,6 +128,7 @@ function logout() {
   S.sess++; S.flushing = null; S.sending = null; clearTimeout(retryTimer); retryTimer = null;
   clearInterval(closedTimer); closedTimer = null;
   S.point = null; S.pin = ""; S.cart = []; S.editUid = null; S.editPay = null; S.queue = []; S.authFail = false; S.closed = null;
+  stopOrders();
   initLogin();
 }
 
@@ -140,12 +142,15 @@ function openShell() {
   S.queue = (store.get(qKey(), []) || []).map((q) => ({ ...q, ver: q.ver || nextVer(), point: q.point || S.point.id }));
   S.cart = []; S.editUid = null; S.editPay = null; S.cat = "__fav"; S.q = ""; $("q").value = ""; S.closed = null;
   showTab("sale"); drawCart(); drawSync(); loadItems(); flush();
+  mountOrders($("orders"), { call: (a, p) => call(a, p), seller: () => S.seller,
+    onCount: (n) => { const b = $("ordcount"); b.hidden = !n; b.textContent = String(n); } });
   refreshClosed(); clearInterval(closedTimer); closedTimer = setInterval(refreshClosed, CLOSED_POLL);
 }
 function showTab(name) {
-  $("sale").hidden = name !== "sale"; $("shift").hidden = name !== "shift";
+  $("sale").hidden = name !== "sale"; $("shift").hidden = name !== "shift"; $("orders").hidden = name !== "orders";
   $("tab-sale").setAttribute("aria-selected", String(name === "sale"));
   $("tab-shift").setAttribute("aria-selected", String(name === "shift"));
+  $("tab-orders").setAttribute("aria-selected", String(name === "orders"));
   $("cartbar").hidden = name !== "sale" || !S.cart.length;
   drawClosed();
   if (name === "shift") drawShift();
@@ -830,6 +835,7 @@ $("lseller").onkeydown = (e) => { if (e.key === "Enter") doLogin(); };
 $("logout").onclick = logout;
 $("tab-sale").onclick = () => showTab("sale");
 $("tab-shift").onclick = () => showTab("shift");
+$("tab-orders").onclick = () => showTab("orders");
 $("q").oninput = debounce((e) => { S.q = e.target.value.trim(); drawTiles(); }, 120);
 $("rclear").onclick = clearCart;
 $("rclose").onclick = () => sheet(false);
