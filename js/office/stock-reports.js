@@ -409,21 +409,44 @@ export async function loadOrders() {
       : r.open ? `Приём заявок на этот день открыт до ${r.cutoff} накануне — план ещё может измениться.` : "Приём заявок на этот день закрыт — можно печатать план и отмечать выпуск."));
   const pts = r.orders.map((o) => o.point_id);
   const t = el("table");
-  t.append(el("tr", {}, el("th", {}, "Позиция"), el("th", {}, "Ед."), el("th", { class: "num" }, "Заявлено"), el("th", { class: "num" }, "Выпуск"),
+  t.append(el("tr", {}, el("th", {}, "Позиция"), el("th", {}, "Ед."), el("th", { class: "num" }, "Заявлено"),
+    el("th", { class: "num", title: "Подтверждённые заказы клиентов на этот день" }, "Клиенты"), el("th", { class: "num" }, "Выпуск"),
     el("th", { class: "num" }, "Расхождение"), ...r.orders.map((o) => el("th", { class: "num" }, o.point_name))));
   const facts = new Map();
   const canFact = perms().includes("doc:production:edit") && !r.locked;
+  const cl = new Map((r.clients || []).map((c) => [c.item_code, c]));
   for (const x of r.plan) {
     const inp = el("input", { inputmode: "decimal", value: x.fact ?? "", disabled: !canFact, style: "width:80px;text-align:right" });
     facts.set(x.item_code, inp);
     const diff = x.fact == null ? "" : fmt(Number(x.fact) - Number(x.qty));
     t.append(el("tr", {}, el("td", {}, x.name, x.has_chart ? null : el("span", { class: "tag bad", title: "Без техкарты в акт производства не попадёт" }, " нет техкарты")),
-      el("td", {}, x.unit || ""), el("td", { class: "num", style: "font-weight:700" }, fmt(x.qty)), el("td", { class: "num" }, inp),
+      el("td", {}, x.unit || ""), el("td", { class: "num", style: "font-weight:700" }, fmt(x.qty)),
+      el("td", { class: "num" }, cl.has(x.item_code) ? fmt(cl.get(x.item_code).qty) : ""), el("td", { class: "num" }, inp),
       el("td", { class: "num" + (x.fact != null && Number(x.fact) < Number(x.qty) ? " bad" : "") }, diff),
       ...pts.map((p) => el("td", { class: "num" }, x.by_point[p] != null ? fmt(x.by_point[p]) : ""))));
   }
-  if (!r.plan.length) t.append(el("tr", {}, el("td", { colspan: 5, class: "dim" }, "На этот день заявок нет")));
+  if (!r.plan.length) t.append(el("tr", {}, el("td", { colspan: 6, class: "dim" }, "На этот день заявок нет")));
   out.append(el("div", { class: "card", style: "padding:0;overflow:auto" }, t));
+  if ((r.client_orders || []).length) {
+    const late = r.client_orders.filter((o) => !o.in_act);
+    const only = (r.clients || []).filter((c) => !r.plan.some((p) => p.item_code === c.item_code));
+    out.append(el("h3", { style: "margin:14px 0 6px" }, "Заказы клиентов"),
+      only.length ? el("div", { class: "dim" }, "Только в заказах клиентов: " + only.map((c) => `${c.name} — ${fmt(c.qty)} ${c.unit || ""}`).join(", ")) : null,
+      el("div", { class: "card", style: "padding:0;overflow:auto" }, el("table", {},
+        el("tr", {}, ...["К часу", "№", "Точка", "Состав", "Статус", ""].map((h) => el("th", {}, h))),
+        ...r.client_orders.map((o) => el("tr", {}, el("td", {}, o.ready_by), el("td", {}, String(o.no)),
+          el("td", {}, (o.kind === "delivery" ? "доставка, " : "самовывоз, ") + o.point_name),
+          el("td", {}, (o.lines || []).map((l) => `${l.title} ${fmt(l.qty)} ${l.unit}`).join("; ")),
+          el("td", {}, o.status_name), el("td", {}, o.in_act ? el("span", { class: "tag ok" }, "в акте") : el("span", { class: "tag bad" }, "после акта")))))));
+    if (late.length && perms().includes("doc:production:edit")) out.append(el("div", { class: "actions" }, el("button", { onclick: async (e) => {
+      e.target.disabled = true;
+      const x = await api("corder_docs_save", { for_date: day }, { timeout: LONG_MS });
+      e.target.disabled = false;
+      if (!x.ok) { toast(errText(x), "bad"); if (x.error === "network") loadOrders(); return; }
+      toast(x.made ? `Создано актов: ${x.made}` : "Новых позиций с техкартой нет — заказы отмечены");
+      if (x.skipped) toast("Без склада точки, акт не создан: " + x.skipped, "bad");
+      loadOrders(); } }, `Акт по заказам клиентов (${late.length})`)));
+  }
   const factRows = () => r.plan.map((p) => ({ item_code: p.item_code, fact: String(facts.get(p.item_code).value).replace(",", ".").trim() }));
   const acts = el("div", { class: "actions" });
   if (canFact && r.plan.length) acts.append(el("button", { class: "ghost", onclick: async (e) => {
