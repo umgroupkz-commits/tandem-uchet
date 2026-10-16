@@ -197,3 +197,13 @@ Deno.test("вход: законченные цепочки диалогов не
   await inb.handle(await signed(ev("e1"))); await inb.idle();
   assertEquals((inb as unknown as { chains: Map<string, unknown> }).chains.size, 0);
 });
+
+Deno.test("вход: скрытый адрес без contactPhone сейчас, но номер уже в сохранённом диалоге — разговор идёт, не передача", async () => {
+  const m = new ScriptModel([{ content: [text("Здравствуйте")], stop_reason: "end_turn" }]);
+  const { inb, d } = make(m, api({ chatId: "241802581950656", addressKind: "lid", contactPhone: null }));
+  d.storeM.dialogs.set("d1", { ...newDialog(), phone: "77015554433" });
+  await inb.handle(await signed(ev("e1"))); await inb.idle();
+  assertEquals(d.uzelF.handoffs, []);
+  assertEquals(d.uzelF.sent.map((x) => x.text), ["Здравствуйте"]);
+  assertEquals(d.storeM.dialogs.get("d1")!.phone, "77015554433");
+});

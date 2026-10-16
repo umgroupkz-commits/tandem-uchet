@@ -115,7 +115,9 @@ export class Cards {
     if (m.reply_to_message && !text.startsWith("/")) {
       // ответ принимается только от нажавшего кнопку; чужой ответ ожидание не снимает
       const a = await this.d.store.getAwait(m.chat.id, m.reply_to_message.message_id);
-      if (!a || !text || m.from.id !== a.by_id) return;
+      if (!a || !text) return;
+      // ожидание без владельца (by_id 0 — создано до миграции 002) принимает ответ любого члена команды
+      if (a.by_id === 0 ? !await this.who(m.from.id) : m.from.id !== a.by_id) return;
       if (!await this.d.store.takeAwait(m.chat.id, m.reply_to_message.message_id)) return;
       return this.move(a.order_id, a.to, a.by_name, a.kind === "courier" ? { courier: text } : { reason: text });
     }

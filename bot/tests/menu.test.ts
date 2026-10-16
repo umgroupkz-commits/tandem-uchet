@@ -50,3 +50,11 @@ Deno.test("menu: деньги и часы приёма", () => {
   assertEquals(inHours(MENU, new Date("2026-10-17T05:00:00Z")), true);   // 10:00 по UTC+5
   assertEquals(inHours(MENU, new Date("2026-10-17T15:00:00Z")), false);  // 20:00
 });
+
+Deno.test("menu: маска — только телефонные записи, дата со временем не трогается", () => {
+  assert(!maskPhonesIn("+7 701 123 45 67").includes("123 45 67"));
+  assert(!maskPhonesIn("87011234567").includes("87011234567"));
+  assert(!maskPhonesIn("7011234567").includes("7011234567"));   // 10 цифр с 7
+  assertEquals(maskPhonesIn("к 2026-10-18 12:00 на двоих"), "к 2026-10-18 12:00 на двоих");
+  assertEquals(maskPhonesIn("2026-10-18 12:00"), "2026-10-18 12:00");
+});

@@ -57,6 +57,8 @@ export async function runTool(deps: Deps, st: DialogState, menu: Menu, name: str
     const sent = await deps.uzel.send(st.dialog_id, summaryText(r.quote, st.lang, st.name));
     if (!sent.ok) {   // итог не ушёл (диалог ведёт человек и т. п.) — «да» на него не бывает
       st.stage = "chat"; st.summary_sent_at = null;
+      // пауза — диалог уже у человека; любой другой отказ (5xx, лимит «Узла») — клиент без итога, передаём человеку
+      if (sent.code !== "bot_paused") await deps.uzel.handoff(st.dialog_id, `итог не отправился: ${sent.code ?? "отказ"}`);
       return { result: JSON.stringify({ error: `Итог клиенту не ушёл (${sent.code ?? "отказ «Узла»"}). Ничего не пиши.` }), stop: true };
     }
     st.stage = "awaiting_yes"; st.summary_sent_at = deps.now().toISOString();

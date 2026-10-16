@@ -59,9 +59,11 @@ export function maskPhone(p: string): string {
   const d = p.replace(/\D/g, "");
   return d.length === 11 ? `+${d[0]} ${d.slice(1, 4)} *** ** ${d.slice(9)}` : "+***" + d.slice(-2);
 }
-// Любая запись из 10+ цифр (с пробелами, «+», «-», скобками) — маской, для журнала.
+// Телефонная запись (с пробелами, «+», «-», скобками): 11 цифр с 7 или 8, либо 10 цифр с 7 — маской, для журнала.
+// Дата со временем («2026-10-18 12:00») под этот вид не подходит и остаётся как есть.
+const PHONE_SHAPE = /^(?:[78]\d{10}|7\d{9})$/;
 export function maskPhonesIn(text: string): string {
-  return text.replace(/\+?\d[\d\s()+-]{8,}\d/g, (run) => run.replace(/\D/g, "").length >= 10 ? maskPhone(run) : run);
+  return text.replace(/\+?\d[\d\s()+-]{8,}\d/g, (run) => PHONE_SHAPE.test(run.replace(/[\s()+-]/g, "")) ? maskPhone(run) : run);
 }
 export function detectLang(text: string): Lang | null {
   if (/[әғқңөұүһі]/i.test(text)) return "kz";

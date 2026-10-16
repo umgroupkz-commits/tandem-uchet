@@ -71,8 +71,10 @@ export class Inbound {
   async process(id: string): Promise<void> {
     const dlg = await this.d.uzelApi.getDialog(id);
     const msgs: UzelMessage[] = (await this.d.uzelApi.messages(id, 30)).slice().sort((a, b) => at(a) - at(b));
-    const phone = phoneOf(dlg);
-    let st = await this.d.store.getDialog(id) ?? this.fresh(id, phone ?? "", dlg.contactName);
+    const stored = await this.d.store.getDialog(id);
+    // contactPhone у скрытого адреса может на время пропасть — номер, уже сохранённый в разговоре, остаётся в силе
+    const phone = phoneOf(dlg) ?? (stored?.phone || null);
+    let st = stored ?? this.fresh(id, phone ?? "", dlg.contactName);
     if (phone) st.phone = phone;
     // Новое от клиента — после курсора и после последнего ответа человека (то, на что ответил человек, уже
     // разобрано). Курсора нет в окне — только после последнего исходящего вообще. Ответ самого бота

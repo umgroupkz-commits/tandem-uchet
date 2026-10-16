@@ -82,7 +82,10 @@ export async function handleTurn(deps: Deps, st: DialogState, clientText: string
     if (!resp.content.length) {
       // пустой ответ: пустое сообщение API не примет; после системного без assistant — тоже
       if ((st.convo[st.convo.length - 1] as Msg).role === "system") return await rollback();
-      reply = ""; break;
+      // После результатов инструментов клиент остался бы без слова. История здесь допустима (кончается user с
+      // tool_result, а действия инструментов уже выполнены) — не откатываем и не усекаем, только передаём человеку.
+      await giveUp(deps, st);
+      return st;
     }
     st.convo.push({ role: "assistant", content: resp.content });
     reply = resp.content.filter((b) => b.type === "text").map((b) => String(b.text)).join("\n").trim();

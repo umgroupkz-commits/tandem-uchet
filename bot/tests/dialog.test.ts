@@ -275,3 +275,36 @@ Deno.test("разговор: повтор вызова модели — толь
   assertEquals(await run(Object.assign(new Error("overloaded"), { status: 529 })), 2);
   assertEquals(await run(new Error("Connection error.")), 2);
 });
+
+Deno.test("разговор: пустой ответ модели после результатов инструмента — передача человеку, история допустима для следующего хода", async () => {
+  const m = new ScriptModel([
+    { content: [tool("t1", "cart_set", { item_code: "P1", qty: 1.5 })], stop_reason: "tool_use" },
+    { content: [], stop_reason: "end_turn" },
+    { content: [text("Слушаю")], stop_reason: "end_turn" },
+  ]);
+  const d = deps(m);
+  const st = await handleTurn(d, newDialog(), "пирог 1,5 кг", false);
+  assertEquals(d.uzelF.handoffs, [{ dialogId: "d1", reason: "бот не справился" }]);
+  assert(d.uzelF.sent.length === 1 && d.uzelF.sent[0].text.length > 0);   // клиент не остался без слова
+  assertEquals(st.cart, [{ item_code: "P1", qty: 1.5 }]);   // история не усечена: корзина и tool_result на месте
+  await handleTurn(d, st, "алло", false);   // ScriptModel проверяет, что запрос допустим для API
+  assertEquals(m.requests.length, 3);
+});
+
+Deno.test("разговор: итог не ушёл не из-за паузы (5xx, лимит «Узла») — передача человеку, этап «чат»", async () => {
+  const m = new ScriptModel([{ content: [tool("t1", "order_summary", {})], stop_reason: "tool_use" }]);
+  const d = deps(m);
+  d.uzelF.send = () => Promise.resolve({ ok: false as const, code: "http_502" } as never);
+  const st = await handleTurn(d, ready(), "оформляйте", false);
+  assertEquals(st.stage, "chat");
+  assertEquals(st.summary_sent_at, null);
+  assertEquals(d.uzelF.handoffs, [{ dialogId: "d1", reason: "итог не отправился: http_502" }]);
+});
+
+Deno.test("разговор: итог не ушёл из-за паузы бота — без передачи (диалог уже у человека)", async () => {
+  const m = new ScriptModel([{ content: [tool("t1", "order_summary", {})], stop_reason: "tool_use" }]);
+  const d = deps(m);
+  d.uzelF.paused = true;
+  await handleTurn(d, ready(), "оформляйте", false);
+  assertEquals(d.uzelF.handoffs, []);
+});

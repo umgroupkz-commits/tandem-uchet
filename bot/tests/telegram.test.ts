@@ -129,3 +129,14 @@ Deno.test("карточка: Telegram «message is not modified» — это у�
   await s.cards.updateCard(order({ status: "confirmed" }));
   assertEquals((await s.store.getCard(7))!.status, "confirmed");
 });
+
+Deno.test("кнопки: ожидание со старой записью (by_id 0) — ответ принимается от любого члена команды, чужой — нет", async () => {
+  const s = setup(); await s.store.setState("tg_group", -100); await s.store.setState("team", [{ id: 5, name: "Мария" }]);
+  await s.store.setAwait({ chat_id: -100, prompt_id: 101, order_id: 7, kind: "reason", to: "rejected", by_name: "Мария", by_id: 0 });
+  await s.cards.onUpdate({ message: { message_id: 200, chat: { id: -100 }, from: { id: 99, first_name: "Чужой" }, text: "вмешался", reply_to_message: { message_id: 101 } } });
+  assertEquals(s.statuses.length, 0);
+  assert(await s.store.getAwait(-100, 101));   // ожидание не снято
+  await s.cards.onUpdate({ message: { message_id: 201, chat: { id: -100 }, from: { id: 5, first_name: "Мария" }, text: "нет начинки", reply_to_message: { message_id: 101 } } });
+  assertEquals(s.statuses[0].slice(0, 3), [7, "rejected", "Мария"]);
+  assertEquals((s.statuses[0][3] as { reason: string }).reason, "нет начинки");
+});
