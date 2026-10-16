@@ -1803,6 +1803,58 @@ SECTIONS.corders = async (ctx) => {
   ctx.corderItems = { pie, bel };
 };
 
+SECTIONS.corders_kitchen = async (ctx) => {
+  const t = ctx.token;
+  const pin = process.env.TANDEM_OWNER_PIN || "";
+  if (!pin) { console.log("  пропуск: нужен TANDEM_OWNER_PIN"); return; }
+  const near = (a, b, e = 0.001) => Math.abs(Number(a) - Number(b)) < e;
+  const iso = (k) => new Date(Date.now() + 5 * 3600e3 + k * 86400e3).toISOString().slice(0, 10);
+  let d = null;
+  for (let k = 3; k <= 9 && !d; k++) {
+    const x = await call("office_stock_orders_report", { token: t, for_date: iso(k) });
+    if (x.ok && !(x.docs || []).length && !(x.client_orders || []).some((o) => !String(o.point_id).startsWith("zz_"))) d = iso(k);
+  }
+  if (!d) { console.log("  пропуск: нет дня без настоящих документов плана"); return; }
+  let r = await call("office_store_save", { token: t, name: "ZZ_TEST_склад кассы кухни", point_id: "zz_kassa", is_default: true }); const S = r.id;
+  r = await call("office_item_save", { token: t, name: "ZZ_TEST_мука кухни", item_type: "goods", unit_id: "кг" }); const muka = r.code;
+  r = await call("office_item_save", { token: t, name: "ZZ_TEST_пирог кухни", item_type: "dish", unit_id: "кг", for_sale: true, price: 1600 }); const pie = r.code;
+  r = await call("office_chart_save", { token: t, code: pie, date_from: "2020-01-01", output_amount: 1, lines: [{ ingredient_code: muka, brutto: 0.5, netto: 0.5, output: 0.5 }] });
+  await call("office_cmenu_save", { token: t, item_code: pie, title_ru: "ZZ_TEST_Пирог кухни", unit_label: "кг", price: 4500, min_qty: 1, step: 0.5, ready_kind: "fresh" });
+  await call("office_cmenu_check", { token: t, item_code: pie, price: 4500 });
+  const menu = await call("bot_menu", {});
+  const from = (menu.settings || {}).client_hours_from || "09:00";
+  const ready = String(Number(from.slice(0, 2)) + 1).padStart(2, "0") + from.slice(2);
+  const mk = async (qty) => {
+    const x = await call("bot_order_create", { uid: crypto.randomUUID(), kind: "pickup", point_id: "zz_kassa", for_date: d, ready_by: ready,
+      client_phone: "77000000999", lines: [{ item_code: pie, qty }] });
+    await call("corder_status", { pin, point_id: "zz_kassa", seller: "ZZ_TEST_продавец", id: x.order.id, to: "confirmed" });
+    return x.order;
+  };
+  const o1 = await mk(2);
+  r = await call("office_stock_orders_report", { token: t, for_date: d });
+  const c = (r.clients || []).find((x) => x.item_code === pie) || {};
+  check("кухня: в плане колонка «Клиенты» — 2 кг пирога", r.ok && near(c.qty, 2) && near(c.in_act || 0, 0) && c.has_chart, c);
+  check("кухня: заказ в списке дня, ещё не в акте", (r.client_orders || []).some((o) => o.id === o1.id && o.in_act === false), r.client_orders);
+  r = await call("office_corder_docs_save", { token: t, for_date: d });
+  check("кухня: акт по заказам клиентов создан", r.ok && r.made === 1, r);
+  r = await call("office_stock_orders_report", { token: t, for_date: d });
+  check("кухня: акт виден в документах плана, заявки точек не заперты", r.ok && r.docs.some((x) => /\/clients-zz_kassa-1$/.test(x.source_id)) && r.locked === false, { docs: r.docs, locked: r.locked });
+  check("кухня: заказ отмечен «в акте»", (r.client_orders || []).some((o) => o.id === o1.id && o.in_act === true), null);
+  const o2 = await mk(1);
+  r = await call("office_stock_orders_report", { token: t, for_date: d });
+  check("кухня: поздний заказ — «после акта»", (r.client_orders || []).some((o) => o.id === o2.id && o.in_act === false), null);
+  r = await call("office_corder_docs_save", { token: t, for_date: d });
+  check("кухня: дополнительный акт только на поздний заказ", r.ok && r.made === 1, r);
+  r = await call("office_stock_orders_report", { token: t, for_date: d });
+  const act2 = r.docs.find((x) => /\/clients-zz_kassa-2$/.test(x.source_id));
+  const doc = act2 && await call("office_doc_get", { token: t, id: act2.id });
+  check("кухня: во втором акте 1 кг", doc && doc.ok && near((doc.doc.lines.find((l) => l.item_code === pie) || {}).qty, 1), doc && doc.doc && doc.doc.lines);
+  r = await call("office_corder_docs_save", { token: t, for_date: d });
+  check("кухня: повтор без новых заказов — актов не добавилось", r.ok && r.made === 0, r);
+  r = await call("corder_edit", { pin, point_id: "zz_kassa", seller: "ZZ_TEST_продавец", id: o2.id, lines: [{ item_code: pie, qty: 3 }] });
+  check("кухня: строки заказа в акте не правятся", r.ok === false && r.error === "validation", r);
+};
+
 // migrate и reimport требуют TANDEM_OWNER_PIN и в "all" входят только при его наличии;
 // любой раздел кроме auth/migrate сначала прогоняет auth — ему нужен токен.
 const NEEDS_OWNER = ["migrate", "reimport", "gate"];
