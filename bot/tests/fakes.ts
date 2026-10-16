@@ -1,4 +1,6 @@
-import type { Menu } from "../src/types.ts";
+import type { Deps, ModelClient } from "../src/dialog.ts";
+import { MemStore } from "../src/store.ts";
+import type { DialogState, Menu, Order, Quote } from "../src/types.ts";
 
 export const MENU: Menu = {
   now: "2026-10-17T10:00",
@@ -19,3 +21,43 @@ export const MENU: Menu = {
       unit_label: "сет", price: 19300, min_qty: 1, step: 1, section: "Сеты", ready_kind: "fresh", stopped: false, stop_until: null, sort_order: 4, active: true, checked: true },
   ],
 };
+
+export class FakeUzel {
+  sent: { dialogId: string; text: string }[] = []; handoffs: { dialogId: string; reason: string }[] = []; paused = false;
+  send(dialogId: string, text: string) { if (this.paused) return Promise.resolve({ ok: false as const, code: "bot_paused" });
+    this.sent.push({ dialogId, text }); return Promise.resolve({ ok: true as const, id: "m" + this.sent.length }); }
+  handoff(dialogId: string, reason: string) { this.handoffs.push({ dialogId, reason }); return Promise.resolve(true); }
+}
+export class FakeUchet {
+  quotes: Record<string, unknown>[] = []; creates: Record<string, unknown>[] = []; quoteAnswer: unknown = null; no = 11;
+  menu() { return Promise.resolve(MENU); }
+  quote(p: Record<string, unknown>) {
+    this.quotes.push(p);
+    if (this.quoteAnswer) return Promise.resolve(this.quoteAnswer as never);
+    const lines = (p.lines as { item_code: string; qty: number }[]).map((l) => { const it = MENU.items.find((x) => x.item_code === l.item_code)!;
+      return { item_code: l.item_code, title: it.title_ru, title_kz: it.title_kz, unit: it.unit_label, qty: l.qty, price: it.price, sum: l.qty * it.price }; });
+    const q: Quote = { point_id: "eneshka", point_name: MENU.points[0].name, kind: p.kind as "pickup", for_date: String(p.for_date), ready_by: String(p.ready_by),
+      address: (p.address as string) ?? null, lines, total: lines.reduce((s, l) => s + l.sum, 0), delivery_fee: 0, prepay_suggested: false };
+    return Promise.resolve({ ok: true as const, quote: q });
+  }
+  create(p: Record<string, unknown>) { this.creates.push(p); this.no++;
+    return Promise.resolve({ ok: true as const, order: { id: 100 + this.no, no: this.no, uid: p.uid } as unknown as Order }); }
+}
+// Модель по сценарию: каждый вызов отдаёт следующий заготовленный ответ и запоминает запрос.
+export class ScriptModel implements ModelClient {
+  requests: Record<string, unknown>[] = [];
+  constructor(private steps: { content: unknown[]; stop_reason: string }[]) {}
+  create(p: Record<string, unknown>) { this.requests.push(structuredClone(p)); const s = this.steps.shift();
+    if (!s) throw new Error("сценарий модели кончился"); return Promise.resolve(s as never); }
+}
+export const tool = (id: string, name: string, input: Record<string, unknown>) => ({ type: "tool_use", id, name, input });
+export const text = (t: string) => ({ type: "text", text: t });
+export function newDialog(): DialogState {
+  return { dialog_id: "d1", phone: "77011234567", name: "Айгуль", lang: "ru", convo: [], cart: [], details: {}, quote: null, stage: "chat",
+    summary_sent_at: null, draft_uid: "11111111-1111-4111-8111-111111111111", last_order_no: null, last_client_msg_id: null, last_activity: "2026-10-17T05:00:00.000Z" };
+}
+export function deps(model: ModelClient, uchet = new FakeUchet(), uzel = new FakeUzel()): Deps & { uchetF: FakeUchet; uzelF: FakeUzel; storeM: MemStore } {
+  const store = new MemStore();
+  return { uchet, uzel, store, model, modelName: "claude-sonnet-5-5", now: () => new Date("2026-10-17T05:00:00Z"),
+    uuid: () => crypto.randomUUID(), uchetF: uchet, uzelF: uzel, storeM: store };
+}
