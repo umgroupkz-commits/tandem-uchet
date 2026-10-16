@@ -1627,15 +1627,19 @@ SECTIONS.cmenu = async (ctx) => {
     check("ключ бота не открывает уборку теста", r.ok === false && r.error === "forbidden", r);
   }
   r = await call("office_cmenu_check", { token: t, item_code: pie });
+  check("меню: сверка без цены — conflict", r.ok === false && r.error === "conflict", r);
+  r = await call("office_cmenu_check", { token: t, item_code: pie, price: 4000 });
+  check("меню: сверка не той цены — conflict", r.ok === false && r.error === "conflict", r);
+  r = await call("office_cmenu_check", { token: t, item_code: pie, price: 4550 });
   check("меню: цена отмечена сверенной", r.ok && r.row.checked === true && r.row.price_checked_by, r);
   r = await call("bot_menu", {});
   const seen = (r.items || []).find((x) => x.item_code === pie);
   check("меню: после сверки бот видит позицию без цены кассы", seen && Number(seen.price) === 4550 && seen.kassa_price === undefined && seen.ready_kind === "fresh", seen);
   r = await call("office_cmenu_save", { token: t, item_code: pie, title_ru: "ZZ_TEST_Пирог с мясом", unit_label: "кг", price: 4600, min_qty: 1, step: 0.5, ready_kind: "fresh" });
   check("меню: смена цены снимает отметку «сверена»", r.ok && r.row.checked === false, r.row);
-  r = await call("office_cmenu_save", { token: t, item_code: pie, title_ru: "ZZ_TEST_Пирог с мясом", unit_label: "кг", price: 4600, min_qty: 1, step: 0.5, ready_kind: "fresh", section: "Татарские пироги" });
-  check("меню: та же цена отметку не трогает (её и не было)", r.ok && r.row.checked === false, r.row);
-  await call("office_cmenu_check", { token: t, item_code: pie });
+  await call("office_cmenu_check", { token: t, item_code: pie, price: 4600 });
+  r = await call("office_cmenu_save", { token: t, item_code: pie, title_ru: "ZZ_TEST_Пирог с мясом и луком", unit_label: "кг", price: 4600, min_qty: 1, step: 0.5, ready_kind: "fresh", section: "Татарские пироги" });
+  check("меню: правка без смены цены отметку «сверена» сохраняет", r.ok && r.row.checked === true, r.row);
   r = await call("office_cmenu_save", { token: t, item_code: pie, title_ru: "ZZ_TEST_Пирог с мясом", unit_label: "шт", price: 4600, min_qty: 0.5, step: 0.5, ready_kind: "fresh" });
   check("меню: у штучного дробный минимум — отказ", r.ok === false && r.error === "validation", r);
   const day = new Date(Date.now() + 5 * 3600e3).toISOString().slice(0, 10);

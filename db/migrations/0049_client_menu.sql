@@ -139,8 +139,14 @@ begin
   end if;
 
   if action = 'cmenu_check' then
-    update tandem.order_menu set price_checked_at = now(), price_checked_by = left(v_user.name, 100) where item_code = v_code;
-    if not found then return tandem.err('not_found', 'Позиции нет в меню заказов'); end if;
+    -- сверяют цену, которую человек видел: если её успели поменять, отметка не ставится
+    v_price := tandem.to_num(payload->>'price');
+    update tandem.order_menu set price_checked_at = now(), price_checked_by = left(v_user.name, 100)
+     where item_code = v_code and price = v_price;
+    if not found then
+      if exists (select 1 from tandem.order_menu where item_code = v_code) then
+        return tandem.err('conflict', 'Цена изменилась или не передана — обновите список и сверьте заново'); end if;
+      return tandem.err('not_found', 'Позиции нет в меню заказов'); end if;
     return jsonb_build_object('ok', true, 'row', (select tandem.cmenu_json(x) from tandem.order_menu x where x.item_code = v_code));
   end if;
 
@@ -208,7 +214,8 @@ begin
   execute n;
 end $mig$;
 
--- tandem_gate: служебное действие bot_menu (ключ бота — тот же служебный ключ settings.service_key_hash).
+-- tandem_gate: служебное действие bot_menu; ключ бота — settings.bot_key_hash (пусто — служебный ключ);
+-- верный ключ не упирается в счётчик чужих неверных попыток (иначе любой запер бы бота на 5 минут).
 do $mig$
 declare d text; n text;
 begin
@@ -223,6 +230,10 @@ begin
      where key = case when action like 'bot\_%' and coalesce((select value from tandem.settings where key = 'bot_key_hash'), '') <> ''
                       then 'bot_key_hash' else 'service_key_hash' end;$a$);
   if n = d then raise exception '0049: якорь выбора ключа tandem_gate не найден'; end if;
+  d := n;
+  n := replace(d, $a$  if (select count(*) from tandem.pin_failures f where f.key = v_key and f.at > now() - interval '5 minutes') >= 10 then$a$,
+    $a$  if not v_svc_ok and (select count(*) from tandem.pin_failures f where f.key = v_key and f.at > now() - interval '5 minutes') >= 10 then$a$);
+  if n = d then raise exception '0049: якорь счётчика по ключу tandem_gate не найден'; end if;
   d := n;
   n := replace(d, $a$coalesce(payload->'codes','[]'::jsonb))
     end;$a$, $a$coalesce(payload->'codes','[]'::jsonb))
