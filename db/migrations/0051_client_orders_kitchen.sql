@@ -1,6 +1,8 @@
 -- 0051: заказы клиентов на кухне. Подтверждённые заказы видны в плане «Склад → Заявки» колонкой
 -- «Клиенты» и списком дня; акт производства по ним создаётся на склад точки выдачи (оттуда же
 -- их пробивает касса), source_id «<дата>/clients-<точка>-<n>». Такие акты заявки точек не запирают.
+-- «В акте» — пока документ акта существует (production_doc; удаление черновика обнуляет ссылку, и заказ снова
+-- ждёт акта). act_at — только у заказов без позиций с техкартой: им акт не нужен, но «после акта» они не висят.
 
 alter table tandem.client_orders add column if not exists production_doc uuid references tandem.documents(id) on delete set null;
 alter table tandem.client_orders add column if not exists act_at timestamptz;
@@ -33,13 +35,13 @@ create or replace function tandem.orders_report(p_for_date date)
     -- 0051: заказы клиентов дня — по позициям (колонка «Клиенты») и списком
     'clients', (select coalesce(jsonb_agg(jsonb_build_object('item_code', x.item_code, 'name', i.name, 'unit', i.unit_id, 'qty', x.q,
         'in_act', x.q_act, 'has_chart', tandem.active_chart(x.item_code, p_for_date) is not null) order by i.name), '[]'::jsonb)
-      from (select l.item_code, sum(l.qty) q, coalesce(sum(l.qty) filter (where o.act_at is not null), 0) q_act
+      from (select l.item_code, sum(l.qty) q, coalesce(sum(l.qty) filter (where (o.production_doc is not null or o.act_at is not null)), 0) q_act
               from tandem.client_order_lines l join tandem.client_orders o on o.id = l.order_id
              where o.for_date = p_for_date and o.status = any(tandem.corder_kitchen()) group by l.item_code) x
       join tandem.items i on i.code = x.item_code),
     'client_orders', (select coalesce(jsonb_agg(jsonb_build_object('id', o.id, 'no', o.no, 'point_id', o.point_id, 'point_name', p.name,
         'kind', o.kind, 'ready_by', to_char(o.ready_by, 'HH24:MI'), 'status', o.status, 'status_name', tandem.corder_status_name(o.status),
-        'in_act', o.act_at is not null, 'client_name', o.client_name,
+        'in_act', (o.production_doc is not null or o.act_at is not null), 'client_name', o.client_name,
         'lines', (select jsonb_agg(jsonb_build_object('title', l.title, 'qty', l.qty, 'unit', l.unit) order by l.id)
                     from tandem.client_order_lines l where l.order_id = o.id)) order by o.ready_by, o.no), '[]'::jsonb)
       from tandem.client_orders o join tandem.points p on p.id = o.point_id
@@ -65,7 +67,7 @@ begin
   perform set_config('tandem.orders_docs', '1', true);
   for pt in select o.point_id, p.name, p.default_store_id, array_agg(o.id) ids
               from tandem.client_orders o join tandem.points p on p.id = o.point_id
-             where o.for_date = p_for_date and o.status = any(tandem.corder_kitchen()) and o.act_at is null
+             where o.for_date = p_for_date and o.status = any(tandem.corder_kitchen()) and o.production_doc is null and o.act_at is null
              group by o.point_id, p.name, p.default_store_id, p.sort_order order by p.sort_order loop
     if pt.default_store_id is null then
       v_skip := v_skip || case when v_skip = '' then '' else ', ' end || pt.name; continue; end if;
@@ -74,8 +76,11 @@ begin
              where l.order_id = any(pt.ids) and tandem.active_chart(l.item_code, p_for_date) is not null
              group by l.item_code) x;
     if jsonb_array_length(v_lines) > 0 then
-      select count(*) + 1 into v_n from tandem.documents
-       where source_kind = 'orders' and source_id like p_for_date::text || '/clients-' || pt.point_id || '-%';
+      -- следующий номер — за наибольшим (удалённый черновик не должен дать повтор номера: source_id уникален);
+      -- префикс сравнивается целиком, без like: «_» в коде точки — не подстановочный знак
+      select coalesce(max(substring(source_id from '-([0-9]+)$')::int), 0) + 1 into v_n from tandem.documents
+       where source_kind = 'orders' and left(source_id, length(p_for_date::text || '/clients-' || pt.point_id || '-'))
+                                        = p_for_date::text || '/clients-' || pt.point_id || '-';
       v_r := tandem.office_stock('doc_save', jsonb_build_object('doc_type', 'production', 'doc_date', p_for_date,
                'store_from', pt.default_store_id, 'comment', format('Заказы клиентов «%s» на %s', pt.name, to_char(p_for_date, 'DD.MM.YYYY')),
                'lines', v_lines), p_user);
@@ -83,10 +88,14 @@ begin
         raise exception using errcode = 'P0001', message = 'Акт по заказам клиентов не создан: ' || coalesce(v_r->>'message', v_r->>'error', 'ошибка'); end if;
       update tandem.documents set source_kind = 'orders', source_id = p_for_date::text || '/clients-' || pt.point_id || '-' || v_n
        where id = (v_r->>'id')::uuid;
-      update tandem.client_orders set production_doc = (v_r->>'id')::uuid where id = any(pt.ids);
+      update tandem.client_orders o set production_doc = (v_r->>'id')::uuid
+       where o.id = any(pt.ids) and exists (select 1 from tandem.client_order_lines l
+                                             where l.order_id = o.id and tandem.active_chart(l.item_code, p_for_date) is not null);
       v_made := v_made + 1;
     end if;
-    update tandem.client_orders set act_at = now() where id = any(pt.ids);
+    update tandem.client_orders o set act_at = now()
+     where o.id = any(pt.ids) and not exists (select 1 from tandem.client_order_lines l
+                                                where l.order_id = o.id and tandem.active_chart(l.item_code, p_for_date) is not null);
   end loop;
   perform set_config('tandem.orders_docs', '', true);
   return jsonb_build_object('ok', true, 'made', v_made, 'skipped', nullif(v_skip, ''));
@@ -97,7 +106,7 @@ do $mig$
 declare d text; n text;
 begin
   d := pg_get_functiondef('tandem.corder_json(bigint)'::regprocedure);
-  n := replace(d, $a$'in_act', false,$a$, $a$'in_act', o.act_at is not null,$a$);
+  n := replace(d, $a$'in_act', false,$a$, $a$'in_act', (o.production_doc is not null or o.act_at is not null),$a$);
   if n = d then raise exception '0051: якорь in_act в corder_json не найден'; end if;
   execute n;
 end $mig$;
@@ -107,9 +116,9 @@ do $mig$
 declare d text; n text;
 begin
   d := pg_get_functiondef('tandem.corder_edit(bigint,jsonb,text,text,text)'::regprocedure);
-  if position('act_at' in d) > 0 then raise notice '0051: corder_edit уже знает акт'; return; end if;
+  if position('production_doc' in d) > 0 then raise notice '0051: corder_edit уже знает акт'; return; end if;
   n := replace(d, $a$  if v_big then
-    v_q := tandem.corder_check($a$, $a$  if v_big and o.act_at is not null then
+    v_q := tandem.corder_check($a$, $a$  if v_big and (o.production_doc is not null or o.act_at is not null) then
     return tandem.err('validation', 'Заказ уже в акте производства — состав и время не правятся'); end if;
   if v_big then
     v_q := tandem.corder_check($a$);

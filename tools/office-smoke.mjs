@@ -1851,6 +1851,12 @@ SECTIONS.corders_kitchen = async (ctx) => {
   check("кухня: во втором акте 1 кг", doc && doc.ok && near((doc.doc.lines.find((l) => l.item_code === pie) || {}).qty, 1), doc && doc.doc && doc.doc.lines);
   r = await call("office_corder_docs_save", { token: t, for_date: d });
   check("кухня: повтор без новых заказов — актов не добавилось", r.ok && r.made === 0, r);
+  r = await call("office_doc_delete", { token: t, id: act2.id });
+  check("кухня: черновик второго акта удалён", r.ok, r);
+  r = await call("office_stock_orders_report", { token: t, for_date: d });
+  check("кухня: после удаления акта заказ снова «после акта»", (r.client_orders || []).some((o) => o.id === o2.id && o.in_act === false), r.client_orders);
+  r = await call("office_corder_docs_save", { token: t, for_date: d });
+  check("кухня: акт создаётся заново, номер не конфликтует", r.ok && r.made === 1, r);
   r = await call("corder_edit", { pin, point_id: "zz_kassa", seller: "ZZ_TEST_продавец", id: o2.id, lines: [{ item_code: pie, qty: 3 }] });
   check("кухня: строки заказа в акте не правятся", r.ok === false && r.error === "validation", r);
 };
