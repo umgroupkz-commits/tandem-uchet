@@ -1,7 +1,7 @@
 // Общее для экранов склада бэк-офиса: справочники документов, права, список складов пользователя
 // и мелкие помощники вкладок. Журнал и форма документа — stock.js, отчёты — stock-reports.js.
-import { session } from "./api.js?v=23";
-import { el } from "./ui.js?v=23";
+import { session } from "./api.js?v=24";
+import { el } from "./ui.js?v=24";
 
 export const TYPES = { invoice_in: "Приход", transfer: "Перемещение", writeoff: "Списание", production: "Производство", inventory: "Инвентаризация", sale: "Продажа" };
 // Продажу заводит отчёт точки, а не человек: в «+ Новый документ» её нет.

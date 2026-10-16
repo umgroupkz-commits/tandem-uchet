@@ -1,5 +1,5 @@
-import { api, session } from "./api.js?v=23";
-import { el, toast, modal, errText } from "./ui.js?v=23";
+import { api, session } from "./api.js?v=24";
+import { el, toast, modal, errText } from "./ui.js?v=24";
 
 const ROLES = { admin: "администратор", owner: "собственник", accountant: "бухгалтер", technologist: "технолог", storekeeper: "кладовщик" };
 // Склады — полным списком, с выключенными: склад, закреплённый за пользователем и потом
