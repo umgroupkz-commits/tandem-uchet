@@ -466,7 +466,8 @@ git commit -m "Учёт 0049: меню заказов клиентов — св�
   `tandem.corder_set_status(bigint, text, text, text, jsonb, text) → {ok, order}` (id, куда, by_kind, by_name, payload, точка или null);
   `tandem.corder_edit(bigint, jsonb, text, text, text) → {ok, order}`; `tandem.corder_events(bigint, int) → {ok, events[], last}`;
   `tandem.corder_list(text, date, date) → {ok, orders[]}`; `tandem.corder_history(text) → {ok, name, lang, addresses[]}`;
-  `tandem.corder_point(text, text, jsonb)`; `tandem.office_corders(text, jsonb, tandem.users)`; `tandem.corder_kitchen() → text[]`.
+  `tandem.corder_point(text, text, jsonb)`; `tandem.office_corders(text, jsonb, tandem.users)`; `tandem.corder_kitchen() → text[]`;
+  `tandem.corder_event(bigint, text, text, text, text, jsonb)` — единственный путь записи в журнал (номера по порядку фиксации).
 - Produces (служебные действия бота): `bot_order_quote`, `bot_order_create`, `bot_order_events {after, limit}`,
   `bot_order_get {id | uid}`, `bot_order_cancel {id, reason}`, `bot_card_status {order_id, to, by_name, reason?, courier?, pay_kind?}`,
   `bot_client_history {phone}`.
@@ -554,6 +555,12 @@ SECTIONS.corders = async (ctx) => {
   check("точка: видит свой новый заказ", r.ok && r.orders.some((o) => o.id === o1.id), null);
   r = await call("corder_get", { pin, point_id: "zz_test", id: o1.id });
   check("точка: чужой заказ не виден", r.ok === false && r.error === "not_found", r);
+  r = await call("corder_status", { pin, point_id: "zz_test", seller: "ZZ_TEST_чужой", id: o1.id, to: "confirmed" });
+  check("точка: чужой заказ не подтвердить", r.ok === false && r.error === "not_found", r);
+  r = await call("corder_edit", { pin, point_id: "zz_test", seller: "ZZ_TEST_чужой", id: o1.id, address: "x" });
+  check("точка: чужой заказ не править", r.ok === false && r.error === "not_found", r);
+  r = await call("corder_list", { pin, point_id: "zz_test" });
+  check("точка: в своём списке нет чужих заказов", r.ok && !r.orders.some((o) => o.id === o1.id), null);
   r = await P("corder_edit", { id: o1.id, lines: [{ item_code: pie, qty: 2 }, { item_code: bel, qty: 2 }] });
   check("точка: правка нового заказа пересчитала сумму (2 × 4500 + 1000)", r.ok && near(r.order.total, 10000), r);
   r = await P("corder_status", { id: o1.id, to: "confirmed" });
@@ -586,6 +593,10 @@ SECTIONS.corders = async (ctx) => {
   r = await call("bot_card_status", { order_id: o2.id, to: "awaiting_prepay", by_name: "ZZ_TEST_телеграм" });
   check("телеграм: подтверждение с предоплатой", r.ok && r.order.status === "awaiting_prepay" && r.order.prepay_required === true, r);
   r = await call("bot_card_status", { order_id: o2.id, to: "paid", by_name: "ZZ_TEST_телеграм" });
+  r = await call("bot_order_cancel", { id: o2.id, reason: "клиент передумал" });
+  check("бот не отменяет оплаченный", r.ok === false && r.error === "forbidden", r);
+  r = await P("corder_edit", { id: o2.id, lines: [{ item_code: pie, qty: 3 }] });
+  check("оплаченный: состав не правится", r.ok === false && r.error === "validation", r);
   r = await call("bot_card_status", { order_id: o2.id, to: "cooking", by_name: "ZZ_TEST_телеграм" });
   r = await call("bot_card_status", { order_id: o2.id, to: "assembled", by_name: "ZZ_TEST_телеграм" });
   r = await call("bot_card_status", { order_id: o2.id, to: "handed_to_courier", by_name: "ZZ_TEST_телеграм" });
@@ -597,6 +608,8 @@ SECTIONS.corders = async (ctx) => {
 
   r = await call("bot_order_create", { ...base, uid: uid(), client_phone: phone });
   const o3 = r.order;
+  r = await P("corder_status", { id: o3.id, to: "lost" });
+  check("неизвестный статус — validation", r.ok === false && r.error === "validation", r);
   r = await P("corder_status", { id: o3.id, to: "rejected" });
   check("отказ без причины — отказ", r.ok === false && r.error === "validation", r);
   r = await P("corder_status", { id: o3.id, to: "rejected", reason: "ZZ_TEST нет начинки" });
@@ -611,6 +624,8 @@ SECTIONS.corders = async (ctx) => {
   check("бэк-офис: список заказов точки на день", r.ok && r.orders.length >= 4, r.orders && r.orders.length);
   r = await call("office_corder_get", { token: t, id: o1.id });
   check("бэк-офис: карточка заказа с журналом", r.ok && r.order.id === o1.id && r.events.length >= 6, r.events && r.events.length);
+  check("журнал: правка записана «было → стало»", r.ok && r.events.some((e) => e.payload && e.payload.edited
+    && Number(e.payload.total_from) === 7750 && Number(e.payload.total_to) === 10000), r.events);
   ctx.corderItems = { pie, bel };
 };
 ```
@@ -793,7 +808,7 @@ begin
       return tandem.err('validation', 'Позиции нет в меню заказов: ' || coalesce(x->>'item_code', '—')); end if;
     if m.stop_until is not null and m.stop_until >= v_date then
       return tandem.err('stopped', format('«%s» на %s нет', m.title_ru, to_char(v_date, 'DD.MM'))); end if;
-    v_qty := tandem.to_num(x->>'qty');
+    v_qty := round(tandem.to_num(x->>'qty'), 3);   -- как хранится (numeric(10,3)): сумма считается от того же числа
     if v_qty is null or v_qty <= 0 then return tandem.err('validation', format('Количество «%s» — число больше нуля', m.title_ru)); end if;
     if m.unit_label <> 'кг' and v_qty <> trunc(v_qty) then return tandem.err('validation', format('«%s» — только целым числом', m.title_ru)); end if;
     if v_qty < m.min_qty then
@@ -834,6 +849,16 @@ begin
     'prepay_suggested', (v_rule = 'fresh' and v_fresh) or (v_rule like 'from\_sum:%' and v_total >= substr(v_rule, 10)::numeric)));
 end $$;
 
+-- Запись в журнал — только через эту функцию: блокировка держится до конца транзакции, поэтому номера
+-- событий выдаются в порядке фиксации, и бот, читающий «события после N», не пропустит ещё не зафиксированное.
+create or replace function tandem.corder_event(p_order bigint, p_from text, p_to text, p_kind text, p_by text, p_payload jsonb)
+returns void language plpgsql set search_path to 'tandem', 'public' as $$
+begin
+  perform pg_advisory_xact_lock(hashtext('tandem.client_order_events'));
+  insert into tandem.client_order_events (order_id, status_from, status_to, by_kind, by_name, payload)
+    values (p_order, p_from, p_to, p_kind, p_by, coalesce(p_payload, '{}'::jsonb));
+end $$;
+
 create or replace function tandem.corder_json(p_id bigint)
 returns jsonb language sql stable set search_path to 'tandem', 'public' as $$
   select jsonb_build_object('id', o.id, 'uid', o.uid, 'no', o.no, 'no_date', o.no_date, 'point_id', o.point_id,
@@ -864,13 +889,14 @@ declare
 begin
   begin v_uid := (payload->>'uid')::uuid; exception when others then v_uid := null; end;
   if v_uid is null then return tandem.err('validation', 'Нужен uid заказа'); end if;
+  -- одна блокировка на создание: повтор бота с тем же uid ждёт первый вызов и получает тот же заказ, а номер дня не двоится
+  perform pg_advisory_xact_lock(hashtext('tandem.client_orders:create'));
   select id into v_id from tandem.client_orders where uid = v_uid;
   if v_id is not null then return jsonb_build_object('ok', true, 'repeat', true, 'order', tandem.corder_json(v_id)); end if;
   if length(v_phone) < 10 or length(v_phone) > 15 then return tandem.err('validation', 'Нужен телефон клиента'); end if;
   v_q := tandem.corder_check(payload);
   if not coalesce((v_q->>'ok')::boolean, false) then return v_q; end if;
   v_q := v_q->'quote';
-  perform pg_advisory_xact_lock(hashtext('tandem.client_orders:' || v_day::text));
   select coalesce(max(no), 0) + 1 into v_no from tandem.client_orders where no_date = v_day;
   insert into tandem.client_orders (uid, no, no_date, point_id, uzel_dialog_id, client_phone, client_name, lang, kind, address,
                                     comment, for_date, ready_by, total, prepay_suggested)
@@ -883,7 +909,7 @@ begin
   insert into tandem.client_order_lines (order_id, item_code, title, unit, qty, price, sum)
     select v_id, l->>'item_code', l->>'title', l->>'unit', (l->>'qty')::numeric, (l->>'price')::numeric, (l->>'sum')::numeric
       from jsonb_array_elements(v_q->'lines') l;
-  insert into tandem.client_order_events (order_id, status_from, status_to, by_kind, by_name) values (v_id, null, 'new', 'bot', 'Бот');
+  perform tandem.corder_event(v_id, null, 'new', 'bot', 'Бот', null);
   return jsonb_build_object('ok', true, 'order', tandem.corder_json(v_id));
 end $$;
 
@@ -902,6 +928,8 @@ begin
   select * into o from tandem.client_orders where id = p_id for update;
   if o.id is null or (p_point is not null and o.point_id <> p_point) then return tandem.err('not_found', 'Заказ не найден'); end if;
   if v_by is null then return tandem.err('validation', 'Кто меняет статус — имя обязательно'); end if;
+  if p_to is null or not exists (select 1 from tandem.client_order_moves where status_to = p_to) then
+    return tandem.err('validation', 'Неизвестный статус: ' || coalesce(p_to, '—')); end if;
   select * into t from tandem.client_order_moves where status_from = o.status and status_to = p_to;
   if t.status_to is null then
     return jsonb_build_object('ok', false, 'error', 'conflict',
@@ -932,8 +960,7 @@ begin
          confirmed_by = case when p_to in ('confirmed', 'awaiting_prepay') then v_by else confirmed_by end,
          confirmed_at = case when p_to in ('confirmed', 'awaiting_prepay') then now() else confirmed_at end
    where id = o.id;
-  insert into tandem.client_order_events (order_id, status_from, status_to, by_kind, by_name, payload)
-    values (o.id, o.status, p_to, p_kind, v_by, jsonb_strip_nulls(jsonb_build_object('reason', v_reason, 'courier', v_cour, 'pay_kind', v_pay)));
+  perform tandem.corder_event(o.id, o.status, p_to, p_kind, v_by, jsonb_strip_nulls(jsonb_build_object('reason', v_reason, 'courier', v_cour, 'pay_kind', v_pay)));
   return jsonb_build_object('ok', true, 'order', tandem.corder_json(o.id));
 end $$;
 
@@ -946,12 +973,17 @@ declare
   v_q   jsonb;
   v_by  text := left(nullif(btrim(coalesce(p_by, '')), ''), 100);
   v_big boolean := payload ? 'lines' or payload ? 'for_date' or payload ? 'ready_by' or payload ? 'kind';
+  v_old jsonb;
 begin
   select * into o from tandem.client_orders where id = p_id for update;
   if o.id is null or (p_point is not null and o.point_id <> p_point) then return tandem.err('not_found', 'Заказ не найден'); end if;
   if v_by is null then return tandem.err('validation', 'Кто правит — имя обязательно'); end if;
   if o.status not in ('new', 'awaiting_prepay', 'paid', 'confirmed') then
     return tandem.err('validation', 'Заказ уже готовится — правка только словами с кухней'); end if;
+  -- сумма, о которой клиенту написали реквизиты или которую он уже оплатил, не меняется: только адрес и комментарий
+  if v_big and o.status in ('awaiting_prepay', 'paid') then
+    return tandem.err('validation', 'Заказ с предоплатой: состав, дату и время не правим — отмените и оформите заново'); end if;
+  v_old := (select jsonb_agg(jsonb_build_object('item_code', item_code, 'qty', qty) order by id) from tandem.client_order_lines where order_id = o.id);
   if v_big then
     v_q := tandem.corder_check(jsonb_build_object('kind', coalesce(payload->>'kind', o.kind), 'point_id', o.point_id,
              'for_date', coalesce(payload->>'for_date', o.for_date::text), 'ready_by', coalesce(payload->>'ready_by', to_char(o.ready_by, 'HH24:MI')),
@@ -975,8 +1007,12 @@ begin
            comment = coalesce(left(nullif(btrim(coalesce(payload->>'comment', '')), ''), 500), comment), updated_at = now()
      where id = o.id;
   end if;
-  insert into tandem.client_order_events (order_id, status_from, status_to, by_kind, by_name, payload)
-    values (o.id, o.status, o.status, p_kind, v_by, jsonb_build_object('edited', true));
+  -- в журнале — что было и что стало: деньги и текст бота восстанавливаются по журналу
+  perform tandem.corder_event(o.id, o.status, o.status, p_kind, v_by, (select jsonb_strip_nulls(jsonb_build_object('edited', true,
+    'total_from', o.total, 'total_to', n.total, 'lines_from', v_old,
+    'lines_to', (select jsonb_agg(jsonb_build_object('item_code', item_code, 'qty', qty) order by id) from tandem.client_order_lines where order_id = o.id),
+    'for_date_from', o.for_date, 'for_date_to', n.for_date, 'ready_by_from', to_char(o.ready_by, 'HH24:MI'), 'ready_by_to', to_char(n.ready_by, 'HH24:MI'),
+    'address_from', o.address, 'address_to', n.address)) from tandem.client_orders n where n.id = o.id));
   return jsonb_build_object('ok', true, 'order', tandem.corder_json(o.id));
 end $$;
 
@@ -995,7 +1031,8 @@ returns jsonb language sql stable set search_path to 'tandem', 'public' as $$
            order by (o.status = 'new') desc, o.for_date, o.ready_by, o.no), '[]'::jsonb))
     from tandem.client_orders o
    where (p_point is null or o.point_id = p_point)
-     and (o.for_date between p_from and p_to or o.status = 'new')
+     and (o.for_date between p_from and p_to or o.status = 'new'
+          or (o.for_date < p_from and o.status <> all(array['delivered', 'issued', 'rejected', 'cancelled', 'not_collected'])))   -- незакрытый заказ прошлых дней не пропадает
 $$;
 
 create or replace function tandem.corder_history(p_phone text)
@@ -1043,10 +1080,14 @@ begin
       from tandem.client_orders o
      where o.for_date between coalesce(tandem.to_date(payload->>'date_from'), tandem.local_now()::date) and coalesce(tandem.to_date(payload->>'date_to'), tandem.local_now()::date)
        and (nullif(payload->>'point_id', '') is null or o.point_id = payload->>'point_id')
-       and (nullif(payload->>'status', '') is null or o.status = payload->>'status')), '[]'::jsonb));
+       and (nullif(payload->>'status', '') is null or o.status = payload->>'status')
+       -- 0048: учебная учётка видит только заказы учебных точек — телефоны и адреса настоящих клиентов ей закрыты
+       and (not v_user.training or o.point_id in (select id from tandem.points where training))), '[]'::jsonb));
   end if;
   if action = 'corder_get' then
-    if not exists (select 1 from tandem.client_orders where id = v_id) then return tandem.err('not_found', 'Заказ не найден'); end if;
+    if not exists (select 1 from tandem.client_orders where id = v_id
+                    and (not v_user.training or point_id in (select id from tandem.points where training))) then
+      return tandem.err('not_found', 'Заказ не найден'); end if;
     return jsonb_build_object('ok', true, 'order', tandem.corder_json(v_id),
       'events', (select coalesce(jsonb_agg(jsonb_build_object('at', e.at, 'status_from', e.status_from, 'status_to', e.status_to,
                    'status_name', tandem.corder_status_name(e.status_to), 'by_kind', e.by_kind, 'by_name', e.by_name, 'payload', e.payload) order by e.id), '[]'::jsonb)
