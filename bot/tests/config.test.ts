@@ -24,3 +24,9 @@ Deno.test("config: секрет вебхука может быть пустым 
   const c = loadConfig({ ...full, UZEL_WEBHOOK_SECRET: "" });
   assertEquals(c.uzelWebhookSecret, "");
 });
+
+Deno.test("config: TELEGRAM_OWNER_ID и PORT — только числа, иначе ошибка с именем переменной", () => {
+  assertThrows(() => loadConfig({ ...full, TELEGRAM_OWNER_ID: "андрей" }), Error, "TELEGRAM_OWNER_ID");
+  assertThrows(() => loadConfig({ ...full, PORT: "80a" }), Error, "PORT");
+  assertEquals(loadConfig({ ...full, PORT: "9000" }).port, 9000);
+});

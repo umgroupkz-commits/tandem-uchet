@@ -31,6 +31,8 @@ export interface UzelMessage {
 }
 export interface UzelDialog {
   id: string; chatId: string; contactName: string | null; assignedUserId: string | null;
+  // скрытый адрес WhatsApp (…@lid): chatId — служебные цифры; contactPhone — настоящий номер или null
+  addressKind: "phone" | "lid"; contactPhone: string | null;
   bot: { leading: boolean; paused: { kind: string; reason: string | null } | null };
 }
 

@@ -68,7 +68,7 @@ async function callModel(deps: Deps, system: unknown[], messages: unknown[]) {
 }
 
 async function giveUp(deps: Deps, st: DialogState) {
-  await deps.uzel.send(st.dialog_id, handoffText(st.lang, "failed"));
+  await deps.uzel.send(st.dialog_id, handoffText(st.lang, "failed", st.name));
   await deps.uzel.handoff(st.dialog_id, "бот не справился");
   await deps.store.saveDialog(st);
 }

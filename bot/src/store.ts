@@ -7,6 +7,7 @@ export interface Await { chat_id: number; prompt_id: number; order_id: number; k
 export const FINAL = new Set(["delivered", "issued", "rejected", "cancelled", "not_collected"]);
 
 export interface Store {
+  /** Отметить событие «Узла»; true — событие НОВОЕ (первый раз), false — повтор. */
   seenEvent(id: string): Promise<boolean>;
   getDialog(id: string): Promise<DialogState | null>;
   saveDialog(d: DialogState): Promise<void>;

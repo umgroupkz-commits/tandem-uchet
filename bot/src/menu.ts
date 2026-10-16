@@ -38,7 +38,7 @@ export const findItem = (menu: Menu, code: string): MenuItem | null => menu.item
 export function cartCheck(it: MenuItem, qty: number): string | null {
   if (!(qty > 0)) return `Количество «${it.title_ru}» — больше нуля`;
   if (it.unit_label !== "кг" && qty !== Math.trunc(qty)) return `«${it.title_ru}» — только целым числом`;
-  if (it.stopped) return `«${it.title_ru}» сейчас нет (стоп до ${it.stop_until})`;
+  // стоп не проверяется: он действует на даты заказа (stop_until >= for_date), а дата здесь неизвестна — решает учёт
   if (qty < it.min_qty) return `Минимум «${it.title_ru}» — ${qtyText(it.min_qty)} ${it.unit_label}`;
   const k = (qty - it.min_qty) / it.step;
   if (Math.abs(Math.round(k) - k) > 1e-6) return `«${it.title_ru}» — шагом ${qtyText(it.step)} ${it.unit_label} от ${qtyText(it.min_qty)}`;
@@ -49,9 +49,19 @@ export function phoneFromChat(chatId: string): string | null {
   const d = String(chatId).replace(/\D/g, "");
   return d.length >= 10 && d.length <= 15 ? d : null;
 }
+// Номер клиента из диалога «Узла». У скрытого адреса WhatsApp (…@lid) chatId — служебные цифры, не номер:
+// настоящий — contactPhone, если WhatsApp его присылал. Нет номера — заказ не оформить.
+export function phoneOf(d: { chatId: string; addressKind?: "phone" | "lid" | string; contactPhone?: string | null }): string | null {
+  if (d.contactPhone) { const p = phoneFromChat(d.contactPhone); if (p) return p; }
+  return d.addressKind === "lid" ? null : phoneFromChat(d.chatId);
+}
 export function maskPhone(p: string): string {
   const d = p.replace(/\D/g, "");
   return d.length === 11 ? `+${d[0]} ${d.slice(1, 4)} *** ** ${d.slice(9)}` : "+***" + d.slice(-2);
+}
+// Любая запись из 10+ цифр (с пробелами, «+», «-», скобками) — маской, для журнала.
+export function maskPhonesIn(text: string): string {
+  return text.replace(/\+?\d[\d\s()+-]{8,}\d/g, (run) => run.replace(/\D/g, "").length >= 10 ? maskPhone(run) : run);
 }
 export function detectLang(text: string): Lang | null {
   if (/[әғқңөұүһі]/i.test(text)) return "kz";

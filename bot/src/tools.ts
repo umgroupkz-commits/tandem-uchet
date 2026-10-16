@@ -70,7 +70,7 @@ export async function runTool(deps: Deps, st: DialogState, menu: Menu, name: str
   }
   if (name === "handoff") {
     const kind = (["complaint", "human", "failed"].includes(String(input.kind)) ? input.kind : "human") as "complaint" | "human" | "failed";
-    await deps.uzel.send(st.dialog_id, handoffText(st.lang, kind));
+    await deps.uzel.send(st.dialog_id, handoffText(st.lang, kind, st.name));
     await deps.uzel.handoff(st.dialog_id, String(input.reason || "бот передал разговор"));
     return { result: JSON.stringify({ ok: true }), stop: true };
   }

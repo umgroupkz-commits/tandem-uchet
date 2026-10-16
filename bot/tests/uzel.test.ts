@@ -50,10 +50,11 @@ Deno.test("uzel: диалог на паузе — код bot_paused, без ис
 });
 Deno.test("uzel: история и диалог читаются из data", async () => {
   const { f } = fakeFetch({
-    "GET /v1/dialogs/d1": () => [200, { data: { id: "d1", chatId: "77011234567", contactName: "Айгуль", assignedUserId: null, bot: { leading: true, paused: null } } }],
+    "GET /v1/dialogs/d1": () => [200, { data: { id: "d1", chatId: "77011234567", contactName: "Айгуль", assignedUserId: null, addressKind: "lid", contactPhone: "77015554433", bot: { leading: true, paused: null } } }],
     "GET /v1/dialogs/d1/messages": () => [200, { data: [{ id: "m2", direction: "in", type: "text", text: "пирог", author: "client", attachment: null, occurredAt: "2026-10-17T05:00:00Z" }] }],
   });
   const u = new UzelClient("https://uzel.example.kz", "k", f);
-  assertEquals((await u.getDialog("d1")).contactName, "Айгуль");
+  const dlg = await u.getDialog("d1");
+  assertEquals([dlg.contactName, dlg.addressKind, dlg.contactPhone], ["Айгуль", "lid", "77015554433"]);
   assertEquals((await u.messages("d1", 20))[0].text, "пирог");
 });

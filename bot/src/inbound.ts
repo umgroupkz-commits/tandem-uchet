@@ -4,7 +4,7 @@ import type { UzelClient, UzelEvent, UzelMessage } from "./uzel.ts";
 import { verifyUzel } from "./uzel.ts";
 import { type Deps, handleTurn } from "./dialog.ts";
 import type { DialogState } from "./types.ts";
-import { detectLang, maskPhone, phoneFromChat } from "./menu.ts";
+import { detectLang, maskPhone, maskPhonesIn, phoneOf } from "./menu.ts";
 import { handoffText } from "./templates.ts";
 
 export interface InDeps extends Deps {
@@ -52,9 +52,9 @@ export class Inbound {
     const dlg = await this.d.uzelApi.getDialog(id);
     if (dlg.bot.paused || dlg.assignedUserId) return;
     const msgs: UzelMessage[] = (await this.d.uzelApi.messages(id, 30)).slice().sort((a, b) => a.occurredAt.localeCompare(b.occurredAt));
-    const phone = phoneFromChat(dlg.chatId);
-    if (!phone) return;   // скрытый адрес WhatsApp без номера — заказ не оформить, ответит человек
-    let st = await this.d.store.getDialog(id) ?? this.fresh(id, phone, dlg.contactName);
+    const phone = phoneOf(dlg);
+    let st = await this.d.store.getDialog(id) ?? this.fresh(id, phone ?? "", dlg.contactName);
+    if (phone) st.phone = phone;
     const lastIdx = st.last_client_msg_id ? msgs.findIndex((m) => m.id === st.last_client_msg_id) : -1;
     const newer = msgs.slice(lastIdx + 1);
     const clientNew = newer.filter((m) => m.direction === "in");
@@ -64,19 +64,25 @@ export class Inbound {
     st.last_client_msg_id = lastClient.id;
     const now = this.d.now().getTime();
     const idle = now - new Date(st.last_activity).getTime();
-    if (idle > SIX_H || (st.stage === "submitted" && idle > HALF_H)) st = { ...this.fresh(id, phone, st.name), lang: st.lang, details: { client_name: st.details.client_name, address: st.details.address } , last_client_msg_id: st.last_client_msg_id, last_order_no: st.last_order_no };
+    if (idle > SIX_H || (st.stage === "submitted" && idle > HALF_H)) st = { ...this.fresh(id, st.phone, st.name), lang: st.lang, details: { client_name: st.details.client_name, address: st.details.address } , last_client_msg_id: st.last_client_msg_id, last_order_no: st.last_order_no };
     const texts = clientNew.map((m) => m.text ?? "").filter(Boolean);
     const lang = detectLang(texts.join(" "));
     if (lang) st.lang = lang;
-    await this.d.store.journal("in", id, `${maskPhone(phone)}: ${texts.join(" | ").slice(0, 300)}`);
+    await this.d.store.journal("in", id, `${phone ? maskPhone(phone) : "скрытый номер"}: ${maskPhonesIn(texts.join(" | ")).slice(0, 300)}`);
+    if (!phone) {   // скрытый адрес WhatsApp без номера — заказ не оформить, ответит человек
+      await this.d.uzel.send(id, handoffText(st.lang, "human", st.name));
+      await this.d.uzel.handoff(id, "скрытый номер — нужен телефон");
+      await this.d.store.saveDialog(st);
+      return;
+    }
     if (clientNew.some((m) => m.attachment && ["audio", "voice", "image", "video"].includes(m.attachment.kind))) {
-      await this.d.uzel.send(id, handoffText(st.lang, "voice"));
+      await this.d.uzel.send(id, handoffText(st.lang, "files", st.name));
       await this.d.uzel.handoff(id, "голосовое или фото");
       await this.d.store.saveDialog(st);
       return;
     }
     if (await this.d.paused()) {
-      await this.d.uzel.send(id, handoffText(st.lang, "human"));
+      await this.d.uzel.send(id, handoffText(st.lang, "human", st.name));
       await this.d.uzel.handoff(id, "бот на паузе");
       await this.d.store.saveDialog(st);
       return;

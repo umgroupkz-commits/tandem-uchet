@@ -1,5 +1,5 @@
 import { assert, assertEquals } from "@std/assert";
-import { statusText, submittedText, summaryText } from "../src/templates.ts";
+import { handoffText, soonText, statusText, submittedText, summaryText } from "../src/templates.ts";
 import type { Order, Quote } from "../src/types.ts";
 import { MENU } from "./fakes.ts";
 
@@ -35,4 +35,29 @@ Deno.test("шаблоны: внутренние статусы клиенту н
 });
 Deno.test("шаблоны: «передал продавцу» вне часов — подтвердим утром", () => {
   assert(submittedText(12, "ru", false, "09:00").includes("утром"));
+});
+Deno.test("шаблоны: без имени — с заглавной буквы", () => {
+  const n = { ...o, client_name: null } as Order;
+  assert(statusText({ ...n, status: "confirmed" }, MENU.settings)!.startsWith("Заказ №12"));
+  assert(statusText({ ...n, status: "paid", lang: "kz" }, MENU.settings)!.startsWith("№12"));
+  assert(summaryText(q, "ru", null).startsWith("Проверьте заказ"));
+  assert(summaryText(q, "kz", null).startsWith("Тапсырысты"));
+  assert(soonText({ ...n, status: "new" }).startsWith("Продавец"));
+});
+Deno.test("шаблоны: реквизитов Kaspi нет в настройках — строка опускается, без «undefined»", () => {
+  for (const lang of ["ru", "kz"]) {
+    const t = statusText({ ...o, lang, status: "awaiting_prepay" } as Order, {})!;
+    assert(!t.includes("undefined") && !t.includes("\n\n"), t);
+  }
+});
+Deno.test("шаблоны: передача продавцу — с именем, когда оно известно (тексты разные)", () => {
+  const a = handoffText("ru", "human", "Айгуль"), b = handoffText("ru", "human", "Ерлан");
+  assert(a.startsWith("Айгуль, передаю продавцу"), a);
+  assert(a !== b);
+  assert(handoffText("ru", "human", null).startsWith("Передаю продавцу"));
+  assert(handoffText("kz", "complaint", "Айгүл").startsWith("Айгүл, "));
+});
+Deno.test("шаблоны: файлы, голосовые и стикеры — своя фраза", () => {
+  assert(handoffText("ru", "files", null).includes("Файлы, голосовые и стикеры пока не разбираю — передаю продавцу"));
+  assert(handoffText("kz", "files", null).length > 10);
 });

@@ -4,9 +4,10 @@ import { hmacHex } from "../src/uzel.ts";
 import { deps, ScriptModel, text } from "./fakes.ts";
 
 const SECRET = "whsec_t";
-function api(over: Partial<{ paused: unknown; assigned: string | null; msgs: unknown[] }> = {}) {
+function api(over: Partial<{ paused: unknown; assigned: string | null; msgs: unknown[]; chatId: string; addressKind: string; contactPhone: string | null }> = {}) {
   return {
-    getDialog: () => Promise.resolve({ id: "d1", chatId: "77011234567", contactName: "Айгуль", assignedUserId: over.assigned ?? null,
+    getDialog: () => Promise.resolve({ id: "d1", chatId: over.chatId ?? "77011234567", contactName: "Айгуль", assignedUserId: over.assigned ?? null,
+      addressKind: over.addressKind ?? "phone", contactPhone: "contactPhone" in over ? over.contactPhone : (over.chatId ?? "77011234567"),
       bot: { leading: true, paused: over.paused ?? null } }),
     messages: () => Promise.resolve(over.msgs ?? [
       { id: "m2", direction: "in", type: "text", text: "и манты", author: "client", attachment: null, occurredAt: "2026-10-17T05:00:02Z" },
@@ -60,7 +61,7 @@ Deno.test("вход: голосовое — фраза и передача пр�
   const { inb, d } = make(new ScriptModel([]), api({ msgs: [
     { id: "m2", direction: "in", type: "audio", text: null, author: "client", attachment: { kind: "audio" }, occurredAt: "2026-10-17T05:00:02Z" } ] }));
   await inb.handle(await signed(ev("e1"))); await inb.idle();
-  assert(d.uzelF.sent[0].text.includes("Голосовые"));
+  assert(d.uzelF.sent[0].text.includes("голосовые и стикеры пока не разбираю"));
   assertEquals(d.uzelF.handoffs.length, 1);
 });
 Deno.test("вход: уже обработанное сообщение повторно в ход не идёт", async () => {
@@ -69,4 +70,26 @@ Deno.test("вход: уже обработанное сообщение повт
   await inb.handle(await signed(ev("e1"))); await inb.idle();
   await inb.handle(await signed(ev("e2"))); await inb.idle();   // новое событие, но новых сообщений клиента нет
   assertEquals(d.uzelF.sent.length, 1);
+});
+Deno.test("вход: скрытый адрес WhatsApp без номера — передача продавцу «нужен телефон», модель не зовётся", async () => {
+  const m = new ScriptModel([]);
+  const { inb, d } = make(m, api({ chatId: "241802581950656", addressKind: "lid", contactPhone: null }));
+  await inb.handle(await signed(ev("e1"))); await inb.idle();
+  assertEquals(m.requests.length, 0);
+  assert(d.uzelF.sent[0].text.includes("ередаю продавцу"), d.uzelF.sent[0]?.text);
+  assertEquals(d.uzelF.handoffs, [{ dialogId: "d1", reason: "скрытый номер — нужен телефон" }]);
+});
+Deno.test("вход: скрытый адрес с известным номером — заказ на contactPhone, не на служебные цифры", async () => {
+  const m = new ScriptModel([{ content: [text("Здравствуйте")], stop_reason: "end_turn" }]);
+  const { inb, d } = make(m, api({ chatId: "241802581950656", addressKind: "lid", contactPhone: "77015554433" }));
+  await inb.handle(await signed(ev("e1"))); await inb.idle();
+  assertEquals(d.storeM.dialogs.get("d1")!.phone, "77015554433");
+  assertEquals(d.uzelF.sent.map((x) => x.text), ["Здравствуйте"]);
+});
+Deno.test("вход: номер телефона в журнале маскируется и в тексте клиента", async () => {
+  const msgs = [{ id: "m1", direction: "in", type: "text", text: "мой второй номер 8 701 765 43 21", author: "client", attachment: null, occurredAt: "2026-10-17T05:00:00Z" }];
+  const { inb, d } = make(new ScriptModel([{ content: [text("Записала")], stop_reason: "end_turn" }]), api({ msgs }));
+  await inb.handle(await signed(ev("e1"))); await inb.idle();
+  const line = d.storeM.log.find((l) => l.startsWith("in "))!;
+  assert(!line.includes("765 43 21") && line.includes("+7 701 *** ** 67"), line);
 });

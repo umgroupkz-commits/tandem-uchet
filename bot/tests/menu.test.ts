@@ -1,5 +1,5 @@
 import { assert, assertEquals } from "@std/assert";
-import { cartCheck, detectLang, inHours, maskPhone, menuText, money, phoneFromChat, rulesText } from "../src/menu.ts";
+import { cartCheck, detectLang, inHours, maskPhone, maskPhonesIn, menuText, money, phoneFromChat, phoneOf, rulesText } from "../src/menu.ts";
 import { MENU } from "./fakes.ts";
 
 Deno.test("menu: текст меню с кодом, ценой, единицей, сроком и стопом", () => {
@@ -19,13 +19,26 @@ Deno.test("menu: проверка строки корзины", () => {
   assertEquals(cartCheck(p, 1.5), null);
   assert(cartCheck(p, 0.5)!.includes("Минимум"));
   assert(cartCheck(p, 1.3)!.includes("шагом"));
-  assert(cartCheck(MENU.items[1], 2.5)!.includes("целым"));
-  assert(cartCheck(MENU.items[1], 3)!.includes("нет"));
+  assert(cartCheck(MENU.items[3], 2.5)!.includes("целым"));
+});
+Deno.test("menu: стоп не проверяется в корзине — он на дату заказа, решает учёт (stop_until >= for_date)", () => {
+  assertEquals(cartCheck(MENU.items[1], 3), null);
 });
 Deno.test("menu: телефон из chatId и маска", () => {
   assertEquals(phoneFromChat("77011234567"), "77011234567");
   assertEquals(phoneFromChat("123"), null);
   assertEquals(maskPhone("77011234567"), "+7 701 *** ** 67");
+});
+Deno.test("menu: номер клиента из диалога «Узла» — contactPhone, иначе chatId обычного адреса, у скрытого без номера — нет", () => {
+  assertEquals(phoneOf({ chatId: "77011234567", addressKind: "phone", contactPhone: "77011234567" }), "77011234567");
+  assertEquals(phoneOf({ chatId: "77011234567", addressKind: "phone", contactPhone: null }), "77011234567");
+  assertEquals(phoneOf({ chatId: "241802581950656", addressKind: "lid", contactPhone: "77015554433" }), "77015554433");
+  assertEquals(phoneOf({ chatId: "241802581950656", addressKind: "lid", contactPhone: null }), null);
+});
+Deno.test("menu: номера в тексте журнала маскируются", () => {
+  const t = maskPhonesIn("звоните +7 (701) 123-45-67 или 87011234567, заказ на 2 кг к 12:00");
+  assert(t.includes("+7 701 *** ** 67") && !t.includes("123-45-67") && !t.includes("87011234567"), t);
+  assert(t.includes("заказ на 2 кг к 12:00"), t);
 });
 Deno.test("menu: язык по буквам", () => {
   assertEquals(detectLang("Сәлеметсіз бе, бәліш керек"), "kz");
