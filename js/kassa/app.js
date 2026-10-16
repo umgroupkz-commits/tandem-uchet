@@ -2,8 +2,8 @@
 // попадает в дневной отчёт точки и на склад (миграция 0033). Связь на точках нестабильная, поэтому
 // чек сначала кладётся в очередь планшета (localStorage) и досылается в фоне; сервер узнаёт
 // повторную досылку по uid и второй чек не создаёт.
-import { el, fmt, toast, today, debounce } from "../office/ui.js?v=22";
-import { mountOrders, stopOrders } from "./orders.js?v=22";
+import { el, fmt, toast, today, debounce } from "../office/ui.js?v=23";
+import { mountOrders, stopOrders } from "./orders.js?v=23";
 
 const API = window.TANDEM_API_URL || "https://qeehxcnnuzuwskznhdyg.supabase.co/functions/v1/uchet";
 const $ = (id) => document.getElementById(id);
@@ -853,7 +853,7 @@ document.addEventListener("visibilitychange", () => { if (!document.hidden && S.
 // без открытой кассы они не уйдут.
 window.addEventListener("beforeunload", (e) => { if (S.cart.length || (!leaving && S.queue.some(unsent))) { e.preventDefault(); e.returnValue = ""; } });
 
-// Замечание (сборка 22): своя кнопка в шапке, а не плавающая — плавающая закрывала бы плитки меню или
+// Замечание (сборка 23): своя кнопка в шапке, а не плавающая — плавающая закрывала бы плитки меню или
 // кнопки оплаты. Отправка — действием feedback с кодом и точкой кассы, как любой запрос кассы; в
 // сведения (context) код не попадает: их собирает feedback.js без кодов, касса добавляет только своё.
 const mainTabName = () => (!$("orders").hidden ? "Заказы" : !$("shift").hidden ? "Смена" : "Продажа");
