@@ -24,6 +24,8 @@ export async function storeContract(s: Store) {
   assertEquals(await s.takeAwait(-100, 9), null);
   assertEquals(await s.noticeOnce(7, "confirmed"), true);
   assertEquals(await s.noticeOnce(7, "confirmed"), false);
+  await s.noticeUndo(7, "confirmed");
+  assertEquals(await s.noticeOnce(7, "confirmed"), true);
   await s.journal("in", "d1", "+7 701 *** ** 67: привет");
   assert(true);
 }

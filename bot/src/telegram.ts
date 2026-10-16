@@ -72,7 +72,8 @@ export class Cards {
   async updateCard(o: Order) {
     const c = await this.d.store.getCard(o.id);
     if (!c) return this.newCard(o);
-    await this.d.tg.call("editMessageText", { chat_id: c.chat_id, message_id: c.message_id, text: cardText(o), reply_markup: cardKeyboard(o) });
+    try { await this.d.tg.call("editMessageText", { chat_id: c.chat_id, message_id: c.message_id, text: cardText(o), reply_markup: cardKeyboard(o) }); }
+    catch (e) { if (!String(e).includes("message is not modified")) throw e; }   // карточка уже такая — это успех
     await this.d.store.saveCard({ ...c, status: o.status });
   }
   private async move(id: number, to: string, by: string, extra: Record<string, unknown>, cbId?: string) {

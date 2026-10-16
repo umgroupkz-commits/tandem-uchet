@@ -71,6 +71,9 @@ export class PgStore implements Store {
     const r = await this.q("insert into bot.notices (order_id, kind) values ($1, $2) on conflict do nothing", [id, kind]);
     return r.rowCount === 1;
   }
+  async noticeUndo(id: number, kind: string) {
+    await this.q("delete from bot.notices where order_id = $1 and kind = $2", [id, kind]);
+  }
   async journal(kind: string, d: string | null, text: string) {
     await this.q("insert into bot.journal (kind, dialog_id, text) values ($1, $2, $3)", [kind, d, text.slice(0, 2000)]);
   }

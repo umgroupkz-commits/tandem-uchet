@@ -121,3 +121,11 @@ Deno.test("команды: /team — только владелец и тольк
   await s.cards.onUpdate({ message: { message_id: 4, chat: { id: -100 }, from: { id: 42 }, text: "/team@EneshkaBot" } });
   assertEquals(s.tg.calls[n].p.text, "Мария");
 });
+Deno.test("карточка: Telegram «message is not modified» — это успех, статус карточки записан", async () => {
+  const s = setup();
+  await s.store.saveCard({ order_id: 7, chat_id: -100, message_id: 101, status: "new", created_at: "x", dialog_id: "d1", lang: "ru", no: 12 });
+  s.tg.call = (method: string, p: Record<string, unknown>) => { s.tg.calls.push({ method, p });
+    return method === "editMessageText" ? Promise.reject(new Error("Telegram editMessageText: Bad Request: message is not modified: specified new message content and reply markup are exactly the same")) : Promise.resolve({ message_id: 1 } as never); };
+  await s.cards.updateCard(order({ status: "confirmed" }));
+  assertEquals((await s.store.getCard(7))!.status, "confirmed");
+});

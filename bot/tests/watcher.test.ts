@@ -8,7 +8,7 @@ const o = (over: Partial<Order> = {}) => ({ id: 7, no: 12, uid: "u", point_id: "
   client_name: "Айгуль", lang: "ru", kind: "pickup", address: null, for_date: "2026-10-18", ready_by: "18:00", total: 9300, prepay_suggested: false,
   prepay_required: false, pay_kind: null, courier: null, status: "new", status_name: "новый", reason: null, created_at: new Date().toISOString(),
   confirmed_by: null, lines: [], ...over }) as Order;
-const e = (id: number, from: string | null, to: string, order: Order): OrderEvent => ({ id, at: new Date().toISOString(), status_from: from, status_to: to, by_kind: "point", by_name: "Мария", payload: {}, order });
+const e = (id: number, from: string | null, to: string, order: Order, at = new Date().toISOString()): OrderEvent => ({ id, at, status_from: from, status_to: to, by_kind: "point", by_name: "Мария", payload: {}, order });
 
 function setup(events: OrderEvent[]) {
   const store = new MemStore(), uzel = new FakeUzel(), cards: string[] = [], said: string[] = [];
@@ -17,7 +17,7 @@ function setup(events: OrderEvent[]) {
   const c = { newCard: (x: Order) => { cards.push("new:" + x.no); return Promise.resolve(); }, updateCard: (x: Order) => { cards.push("upd:" + x.status); return Promise.resolve(); },
     say: (t: string) => { said.push(t); return Promise.resolve(); } };
   const w = new Watcher({ uchet: uchet as never, cards: c as never, uzel, store, now: () => new Date() });
-  return { w, store, uzel, cards, said };
+  return { w, store, uzel, cards, said, c };
 }
 
 Deno.test("наблюдатель: новый заказ — карточка; подтверждение — клиенту и в карточку; курсор сохранён", async () => {
@@ -62,4 +62,43 @@ Deno.test("напоминания: неподтверждённый 16 мину�
   await w2.reminders(); await w2.reminders();
   assertEquals(s.uzel.sent.length, 1);
   assert(s.uzel.sent[0].text.includes("№12"));
+});
+const twoHoursAgo = () => new Date(Date.now() - 2 * 3600e3).toISOString();
+Deno.test("наблюдатель: сбой на одном событии — журнал, следующее обрабатывается, курсор не застревает", async () => {
+  const s = setup([e(1, null, "new", o()), e(2, null, "new", o({ id: 8, no: 13 }))]);
+  let first = true;
+  s.c.newCard = (x: Order) => { if (first) { first = false; return Promise.reject(new Error("Telegram sendMessage: 429")); } s.cards.push("new:" + x.no); return Promise.resolve(); };
+  assertEquals(await s.w.pollOnce(), 2);
+  assertEquals(s.cards, ["new:13"]);
+  assertEquals(await s.store.getState("events_after"), 2);
+  assert(s.store.log.some((l) => l.startsWith("error") && l.includes("429")), s.store.log.join("\n"));
+  assertEquals(await s.w.pollOnce(), 0);   // упавшее событие не повторяется вечно
+});
+Deno.test("наблюдатель: после простоя больше часа — карточки всё равно, клиенту не пишем, группе сказано", async () => {
+  const s = setup([e(1, null, "new", o(), twoHoursAgo()), e(2, "new", "confirmed", o({ status: "confirmed" }), twoHoursAgo())]);
+  await s.w.pollOnce();
+  assertEquals(s.cards, ["new:12", "upd:confirmed"]);
+  assertEquals(s.uzel.sent, []);
+  assert(s.said.some((t) => t.includes("№12") && t.includes("клиенту не написано: событие старше часа")), s.said.join("\n"));
+});
+Deno.test("наблюдатель: клиенту не ушло — отметка снята, в группу сказано", async () => {
+  const s = setup([e(2, "new", "confirmed", o({ status: "confirmed" }))]);
+  s.uzel.send = (() => Promise.reject(new Error("Узел недоступен"))) as never;
+  await s.w.pollOnce();
+  assert(s.said.some((t) => t.includes("№12")), s.said.join("\n"));
+  assertEquals(await s.store.noticeOnce(7, "confirmed"), true);   // отметку сняли — её можно поставить снова
+  assertEquals(await s.store.getState("events_after"), 2);
+});
+Deno.test("напоминания: клиенту не ушло (сбой связи) — повтор в следующую минуту", async () => {
+  const s = setup([]);
+  const t0 = new Date("2026-10-17T05:00:00Z");
+  await s.store.saveCard({ order_id: 7, chat_id: -100, message_id: 1, status: "new", created_at: t0.toISOString(), dialog_id: "d1", lang: "ru", no: 12 });
+  let down = true;
+  const uzel = { send: (dlg: string, t: string) => down ? Promise.reject(new Error("net")) : s.uzel.send(dlg, t) };
+  const w = new Watcher({ uchet: { menu: () => Promise.resolve(MENU) } as never, cards: { say: () => Promise.resolve() } as never,
+    uzel, store: s.store, now: () => new Date(t0.getTime() + 31 * 60e3) });
+  await w.reminders().catch(() => {});
+  down = false;
+  await w.reminders();
+  assertEquals(s.uzel.sent.length, 1);
 });

@@ -20,7 +20,8 @@ export interface Store {
   setAwait(a: Await): Promise<void>;
   getAwait(chatId: number, promptId: number): Promise<Await | null>;    // подсмотреть, не снимая
   takeAwait(chatId: number, promptId: number): Promise<Await | null>;   // снять
-  noticeOnce(orderId: number, kind: string): Promise<boolean>;
+  noticeOnce(orderId: number, kind: string): Promise<boolean>;   // true — отметка поставлена сейчас (уведомления ещё не было)
+  noticeUndo(orderId: number, kind: string): Promise<void>;      // снять отметку: уведомление не ушло
   journal(kind: string, dialogId: string | null, text: string): Promise<void>;
 }
 
@@ -39,5 +40,6 @@ export class MemStore implements Store {
   getAwait(chat: number, p: number) { return Promise.resolve(this.awaits.get(`${chat}:${p}`) ?? null); }
   takeAwait(chat: number, p: number) { const k = `${chat}:${p}`; const a = this.awaits.get(k) ?? null; this.awaits.delete(k); return Promise.resolve(a); }
   noticeOnce(id: number, kind: string) { const k = `${id}:${kind}`; const n = !this.notices.has(k); this.notices.add(k); return Promise.resolve(n); }
+  noticeUndo(id: number, kind: string) { this.notices.delete(`${id}:${kind}`); return Promise.resolve(); }
   journal(kind: string, d: string | null, text: string) { this.log.push(`${kind} ${d ?? "-"} ${text}`); return Promise.resolve(); }
 }
