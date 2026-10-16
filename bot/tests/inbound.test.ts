@@ -1,7 +1,7 @@
 import { assert, assertEquals } from "@std/assert";
 import { Inbound } from "../src/inbound.ts";
 import { hmacHex } from "../src/uzel.ts";
-import { deps, ScriptModel, text } from "./fakes.ts";
+import { deps, newDialog, ScriptModel, text } from "./fakes.ts";
 
 const SECRET = "whsec_t";
 function api(over: Partial<{ paused: unknown; assigned: string | null; msgs: unknown[]; chatId: string; addressKind: string; contactPhone: string | null }> = {}) {
@@ -21,8 +21,12 @@ async function signed(body: unknown) {
 }
 const ev = (id: string) => ({ event: "message.in", eventId: id, ts: "x", channelId: "c", dialogId: "d1", messageId: "m2", author: "client",
   status: null, bot: null, pauseKind: null, pauseReason: null });
-const make = (model: ScriptModel, a = api()) => { const d = deps(model);
-  return { inb: new Inbound({ ...d, uzelApi: a as never, secret: SECRET, debounceMs: 0, paused: () => Promise.resolve(false) }), d }; };
+const make = (model: ScriptModel, a = api()) => { const d = deps(model); const notified: string[] = [];
+  return { inb: new Inbound({ ...d, uzelApi: a as never, secret: SECRET, debounceMs: 0, paused: () => Promise.resolve(false),
+    notify: (t: string) => { notified.push(t); return Promise.resolve(); } }), d, notified }; };
+const msg = (id: string, direction: "in" | "out", txt: string | null, at: string, author = direction === "in" ? "client" : "program", extra: Record<string, unknown> = {}) =>
+  ({ id, direction, type: "text", text: txt, author, attachment: null, occurredAt: at, ...extra });
+const userText = (m: ScriptModel) => JSON.stringify((m.requests[0].messages as unknown[])[0]);
 
 Deno.test("вход: неверная подпись — 401", async () => {
   const { inb } = make(new ScriptModel([]));
@@ -92,4 +96,104 @@ Deno.test("вход: номер телефона в журнале маскир�
   await inb.handle(await signed(ev("e1"))); await inb.idle();
   const line = d.storeM.log.find((l) => l.startsWith("in "))!;
   assert(!line.includes("765 43 21") && line.includes("+7 701 *** ** 67"), line);
+});
+Deno.test("вход: ping без подписи — 200 (регистрация: «Узел» подписывает его ещё неизвестным боту секретом)", async () => {
+  const { inb } = make(new ScriptModel([]));
+  const r = await inb.handle(new Request("https://bot/uzel", { method: "POST", body: JSON.stringify({ event: "ping", eventId: "p1", ts: "x" }) }));
+  assertEquals(r.status, 200);
+});
+Deno.test("вход: message.in без подписи — 401", async () => {
+  const { inb, d } = make(new ScriptModel([]));
+  const r = await inb.handle(new Request("https://bot/uzel", { method: "POST", body: JSON.stringify(ev("e1")) }));
+  assertEquals(r.status, 401);
+  await inb.idle();
+  assertEquals(d.uzelF.sent.length, 0);
+});
+Deno.test("вход: на паузе — молчит, но курсор сдвигает (состояние создаётся)", async () => {
+  const { inb, d } = make(new ScriptModel([]), api({ paused: { kind: "handoff", reason: null }, msgs: [msg("m1", "in", "позовите человека", "2026-10-17T05:00:00Z")] }));
+  await inb.handle(await signed(ev("e1"))); await inb.idle();
+  assertEquals(d.uzelF.sent.length, 0);
+  assertEquals(d.storeM.dialogs.get("d1")!.last_client_msg_id, "m1");
+});
+Deno.test("вход: после возврата от человека — только сообщения после его ответа, не то, что он уже разобрал", async () => {
+  const m = new ScriptModel([{ content: [text("Конечно")], stop_reason: "end_turn" }]);
+  const { inb, d } = make(m, api({ msgs: [
+    msg("m1", "in", "пирог хочу", "2026-10-17T04:00:00Z"),
+    msg("m2", "in", "СТАРОЕ разобрал человек", "2026-10-17T04:10:00Z"),
+    msg("m3", "out", "Здравствуйте, всё сделаем", "2026-10-17T04:20:00Z", "operator"),
+    msg("m4", "in", "а ещё манты можно?", "2026-10-17T05:00:00Z"),
+  ] }));
+  await d.storeM.saveDialog({ ...newDialog(), last_client_msg_id: "m1" });
+  await inb.handle(await signed(ev("e1"))); await inb.idle();
+  assert(userText(m).includes("манты") && !userText(m).includes("СТАРОЕ"), userText(m));
+});
+Deno.test("вход: курсора нет в окне истории — только сообщения после последнего исходящего", async () => {
+  const m = new ScriptModel([{ content: [text("Конечно")], stop_reason: "end_turn" }]);
+  const { inb, d } = make(m, api({ msgs: [
+    msg("m5", "in", "СТАРОЕ", "2026-10-17T04:00:00Z"),
+    msg("m6", "out", "Ответ бота", "2026-10-17T04:01:00Z", "program"),
+    msg("m7", "in", "новое: пирог на завтра", "2026-10-17T05:00:00Z"),
+  ] }));
+  await d.storeM.saveDialog({ ...newDialog(), last_client_msg_id: "m0-ушло-из-окна" });
+  await inb.handle(await signed(ev("e1"))); await inb.idle();
+  assert(userText(m).includes("новое") && !userText(m).includes("СТАРОЕ"), userText(m));
+});
+Deno.test("вход: клиент дописал, пока бот отвечал, — его сообщение не теряется", async () => {
+  const m = new ScriptModel([{ content: [text("Хорошо")], stop_reason: "end_turn" }]);
+  const { inb, d } = make(m, api({ msgs: [
+    msg("m1", "in", "пирог хочу", "2026-10-17T04:00:00Z"),
+    msg("m2", "in", "и манты", "2026-10-17T04:00:03Z"),
+    msg("m3", "out", "Какой пирог?", "2026-10-17T04:00:06Z", "program"),
+  ] }));
+  await d.storeM.saveDialog({ ...newDialog(), last_client_msg_id: "m1" });
+  await inb.handle(await signed(ev("e1"))); await inb.idle();
+  assert(userText(m).includes("и манты"), userText(m));
+});
+for (const kind of ["image", "video", "voice", "document", "sticker", "что-то-новое"]) {
+  Deno.test(`вход: вложение «${kind}» — фраза про файлы и передача продавцу, модель не зовётся`, async () => {
+    const m = new ScriptModel([]);
+    const { inb, d } = make(m, api({ msgs: [msg("m1", "in", kind === "image" ? "вот такой торт" : null, "2026-10-17T05:00:00Z", "client", { type: kind, attachment: { kind } })] }));
+    await inb.handle(await signed(ev("e1"))); await inb.idle();
+    assertEquals(m.requests.length, 0);
+    assert(d.uzelF.sent[0].text.startsWith("Айгуль, файлы, голосовые и стикеры пока не разбираю — передаю продавцу"), d.uzelF.sent[0]?.text);
+    assertEquals(d.uzelF.handoffs.length, 1);
+  });
+}
+Deno.test("вход: сообщение без текста и без вложения — модель не зовётся", async () => {
+  const m = new ScriptModel([]);
+  const { inb, d } = make(m, api({ msgs: [msg("m1", "in", "", "2026-10-17T05:00:00Z")] }));
+  await inb.handle(await signed(ev("e1"))); await inb.idle();
+  assertEquals(m.requests.length, 0);
+  assertEquals(d.storeM.dialogs.get("d1")!.last_client_msg_id, "m1");
+});
+Deno.test("вход: сбой обработки — клиенту фраза передачи, продавцу handoff, в группу сообщение; цепочка жива", async () => {
+  let calls = 0;
+  const a = api();
+  const base = a.getDialog;
+  a.getDialog = () => ++calls === 1 ? Promise.reject(new Error("Узел: диалог 502")) : base();
+  const m = new ScriptModel([{ content: [text("Слушаю")], stop_reason: "end_turn" }]);
+  const { inb, d, notified } = make(m, a);
+  const journal = d.storeM.journal.bind(d.storeM);
+  d.storeM.journal = (k: string, id: string | null, t: string) => k === "error" ? Promise.reject(new Error("база легла")) : journal(k, id, t);
+  await inb.handle(await signed(ev("e1"))); await inb.idle();
+  assert(d.uzelF.sent[0].text.includes("чтобы ничего не напутать"), d.uzelF.sent[0]?.text);
+  assertEquals(d.uzelF.handoffs[0].reason, "бот не справился");
+  assertEquals(notified.length, 1);
+  await inb.handle(await signed(ev("e2"))); await inb.idle();
+  assertEquals(d.uzelF.sent[1].text, "Слушаю");
+});
+Deno.test("вход: у сообщения нет occurredAt — порядок по createdAt, без падения", async () => {
+  const m = new ScriptModel([{ content: [text("Хорошо")], stop_reason: "end_turn" }]);
+  const { inb, d } = make(m, api({ msgs: [
+    msg("m2", "in", "второе", null as unknown as string, "client", { createdAt: "2026-10-17T05:00:02Z" }),
+    msg("m1", "in", "первое", "2026-10-17T05:00:00Z"),
+  ] }));
+  await inb.handle(await signed(ev("e1"))); await inb.idle();
+  assert(userText(m).indexOf("первое") < userText(m).indexOf("второе"), userText(m));
+  assertEquals(d.storeM.dialogs.get("d1")!.last_client_msg_id, "m2");
+});
+Deno.test("вход: законченные цепочки диалогов не копятся", async () => {
+  const { inb } = make(new ScriptModel([{ content: [text("Здравствуйте")], stop_reason: "end_turn" }]));
+  await inb.handle(await signed(ev("e1"))); await inb.idle();
+  assertEquals((inb as unknown as { chains: Map<string, unknown> }).chains.size, 0);
 });

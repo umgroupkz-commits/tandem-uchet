@@ -14,3 +14,6 @@ Deno.test("app: /health и 404", async () => {
   assertEquals((await app(new Request("https://b/health"))).status, 200);
   assertEquals((await app(new Request("https://b/x"))).status, 404);
 });
+Deno.test("app: /tg с неверным секретом той же длины — 401", async () => {
+  assertEquals((await app(new Request("https://b/tg", { method: "POST", body: "{}", headers: { "x-telegram-bot-api-secret-token": "x" } }))).status, 401);
+});

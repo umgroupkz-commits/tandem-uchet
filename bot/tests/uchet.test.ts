@@ -1,4 +1,4 @@
-import { assertEquals, assertRejects } from "@std/assert";
+import { assert, assertEquals, assertRejects } from "@std/assert";
 import { Uchet } from "../src/uchet.ts";
 
 function gate(handler: (action: string, payload: Record<string, unknown>) => unknown) {
@@ -35,4 +35,10 @@ Deno.test("uchet: учёт упал — отдаём прежнее меню", a
 Deno.test("uchet: учёт упал и кэша нет — исключение", async () => {
   const u = new Uchet("https://u", "k", () => Promise.reject(new Error("net")));
   await assertRejects(() => u.menu());
+});
+Deno.test("uchet: каждый вызов с тайм-аутом", async () => {
+  const seen: (AbortSignal | null | undefined)[] = [];
+  const f = (_u: string, init?: RequestInit) => { seen.push(init?.signal); return Promise.resolve(new Response('{"ok":true}')); };
+  await new Uchet("https://u", "k", f).get(1);
+  assert(seen[0] instanceof AbortSignal);
 });

@@ -87,29 +87,36 @@ export class Cards {
       if (!by) { await this.d.tg.call("answerCallbackQuery", { callback_query_id: q.id, text: "Нет доступа" }); return; }
       const [kind, idS, arg] = String(q.data ?? "").split(":"); const id = Number(idS);
       if (kind === "e") { await this.d.tg.call("answerCallbackQuery", { callback_query_id: q.id, text: "Правка — на планшете кассы, вкладка «Заказы»", show_alert: true }); return; }
-      if (kind === "p") return this.move(id, (await this.d.store.getState<string>(`pay:${id}`)) ?? "issued", by, { pay_kind: arg }, q.id);
-      if (kind !== "s") return;
+      if (kind === "p") {
+        const to = await this.d.store.getState<string>(`pay:${id}`);
+        if (!to) { await this.d.tg.call("answerCallbackQuery", { callback_query_id: q.id, text: "Нажмите «Доставлен»/«Выдан» ещё раз" }); return; }
+        return this.move(id, to, by, { pay_kind: arg }, q.id);
+      }
+      if (kind !== "s") { await this.d.tg.call("answerCallbackQuery", { callback_query_id: q.id }); return; }
       const chat = q.message?.chat.id ?? (await this.group())!;
       if (arg === "delivered" || arg === "issued") {
         await this.d.store.setState(`pay:${id}`, arg);
-        await this.d.tg.call("sendMessage", { chat_id: chat, text: `№ заказа ${id}: чем оплатили?`, reply_markup: { inline_keyboard: [PAY.map(([k, t]) => ({ text: t, callback_data: `p:${id}:${k}` }))] } });
+        const no = (await this.d.store.getCard(id))?.no;
+        await this.d.tg.call("sendMessage", { chat_id: chat, text: `${no ? `Заказ №${no}` : "Заказ"}: чем оплатили?`, reply_markup: { inline_keyboard: [PAY.map(([k, t]) => ({ text: t, callback_data: `p:${id}:${k}` }))] } });
         await this.d.tg.call("answerCallbackQuery", { callback_query_id: q.id }); return;
       }
       if (REASON.has(arg) || arg === "handed_to_courier") {
         const m = await this.d.tg.call<{ message_id: number }>("sendMessage", { chat_id: chat,
           text: arg === "handed_to_courier" ? "Кто везёт? Ответьте на это сообщение именем курьера." : "Причина (её увидит клиент)? Ответьте на это сообщение.",
-          reply_markup: { force_reply: true, selective: true } });
-        await this.d.store.setAwait({ chat_id: chat, prompt_id: m.message_id, order_id: id, kind: arg === "handed_to_courier" ? "courier" : "reason", to: arg, by_name: by });
+          reply_markup: { force_reply: true } });
+        await this.d.store.setAwait({ chat_id: chat, prompt_id: m.message_id, order_id: id, kind: arg === "handed_to_courier" ? "courier" : "reason", to: arg, by_name: by, by_id: q.from.id });
         await this.d.tg.call("answerCallbackQuery", { callback_query_id: q.id }); return;
       }
       return this.move(id, arg, by, {}, q.id);
     }
     const m = u.message; if (!m || !m.from) return;
-    const text = (m.text ?? "").trim();
+    const text = (m.text ?? "").trim().replace(/^(\/[a-z]+)@\w+/i, "$1");   // «/here@ИмяБота» — та же команда
     if (m.reply_to_message && !text.startsWith("/")) {
-      const a = await this.d.store.takeAwait(m.chat.id, m.reply_to_message.message_id);
-      if (a && text) return this.move(a.order_id, a.to, a.by_name, a.kind === "courier" ? { courier: text } : { reason: text });
-      return;
+      // ответ принимается только от нажавшего кнопку; чужой ответ ожидание не снимает
+      const a = await this.d.store.getAwait(m.chat.id, m.reply_to_message.message_id);
+      if (!a || !text || m.from.id !== a.by_id) return;
+      if (!await this.d.store.takeAwait(m.chat.id, m.reply_to_message.message_id)) return;
+      return this.move(a.order_id, a.to, a.by_name, a.kind === "courier" ? { courier: text } : { reason: text });
     }
     const owner = m.from.id === this.d.ownerId;
     if (text === "/here" && owner) { await this.d.store.setState("tg_group", m.chat.id); await this.d.tg.call("sendMessage", { chat_id: m.chat.id, text: "Карточки заказов будут приходить сюда." }); return; }
@@ -121,7 +128,7 @@ export class Cards {
     if (text === "/disallow" && owner && m.reply_to_message?.from) {
       await this.d.store.setState("team", ((await this.d.store.getState<Team>("team")) ?? []).filter((x) => x.id !== m.reply_to_message!.from!.id)); return;
     }
-    if (text === "/team") { const t = (await this.d.store.getState<Team>("team")) ?? []; await this.d.tg.call("sendMessage", { chat_id: m.chat.id, text: t.map((x) => x.name).join(", ") || "Команда пуста" }); return; }
+    if (text === "/team" && owner && m.chat.id === await this.group()) { const t = (await this.d.store.getState<Team>("team")) ?? []; await this.d.tg.call("sendMessage", { chat_id: m.chat.id, text: t.map((x) => x.name).join(", ") || "Команда пуста" }); return; }
     if ((text === "/pause" || text === "/resume") && owner) {
       await this.d.store.setState("paused", text === "/pause");
       await this.d.tg.call("sendMessage", { chat_id: m.chat.id, text: text === "/pause" ? "Бот на паузе: новые разговоры сразу передаются продавцу." : "Бот снова принимает заказы." });

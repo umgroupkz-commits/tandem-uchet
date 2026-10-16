@@ -8,7 +8,8 @@ export async function hmacHex(secret: string, data: string): Promise<string> {
   const mac = new Uint8Array(await crypto.subtle.sign("HMAC", key, enc.encode(data)));
   return [...mac].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
-function sameText(a: string, b: string): boolean {
+// сравнение секретов за постоянное время (длина тоже не подсказывает)
+export function sameText(a: string, b: string): boolean {
   const x = enc.encode(a), y = enc.encode(b);
   let diff = x.length ^ y.length;
   for (let i = 0; i < Math.max(x.length, y.length); i++) diff |= (x[i] ?? 0) ^ (y[i] ?? 0);
@@ -27,7 +28,7 @@ export interface UzelEvent {
 }
 export interface UzelMessage {
   id: string; direction: "in" | "out"; type: string; text: string | null; author: string | null;
-  attachment: { kind: string } | null; occurredAt: string;
+  attachment: { kind: string } | null; occurredAt: string | null; createdAt?: string | null;
 }
 export interface UzelDialog {
   id: string; chatId: string; contactName: string | null; assignedUserId: string | null;
@@ -41,7 +42,7 @@ export class UzelClient {
   private async req(method: string, path: string, body?: unknown): Promise<{ status: number; json: Record<string, unknown> }> {
     const res = await this.f(this.base + path, {
       method, headers: { authorization: "Bearer " + this.key, ...(body ? { "content-type": "application/json" } : {}) },
-      body: body ? JSON.stringify(body) : undefined,
+      body: body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(10_000),
     });
     let json: Record<string, unknown> = {};
     try { json = await res.json(); } catch { /* пустой ответ */ }

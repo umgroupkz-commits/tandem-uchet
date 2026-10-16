@@ -3,14 +3,19 @@
 import type { UzelClient, UzelEvent, UzelMessage } from "./uzel.ts";
 import { verifyUzel } from "./uzel.ts";
 import { type Deps, handleTurn } from "./dialog.ts";
-import type { DialogState } from "./types.ts";
+import type { DialogState, Lang } from "./types.ts";
 import { detectLang, maskPhone, maskPhonesIn, phoneOf } from "./menu.ts";
 import { handoffText } from "./templates.ts";
 
 export interface InDeps extends Deps {
   uzelApi: Pick<UzelClient, "getDialog" | "messages">; secret: string; debounceMs: number; paused(): Promise<boolean>;
+  notify(text: string): Promise<void>;   // сообщение в группу продавцов (main.ts: cards.say)
 }
 const SIX_H = 6 * 3600e3, HALF_H = 30 * 60e3;
+const HUMAN = new Set(["operator", "phone_echo"]);
+const at = (m: UzelMessage) => Date.parse(m.occurredAt ?? m.createdAt ?? "") || 0;
+// Вложение любого вида (фото, видео, голосовое, аудио, документ, стикер, неизвестное) или не-текст без текста
+const notText = (m: UzelMessage) => !!m.attachment || (m.type !== "text" && !(m.text ?? "").trim());
 
 export class Inbound {
   private chains = new Map<string, Promise<void>>();
@@ -20,12 +25,15 @@ export class Inbound {
 
   async handle(req: Request): Promise<Response> {
     const raw = await req.text();
+    let ev: UzelEvent | null = null;
+    try { ev = JSON.parse(raw); } catch { /* ниже: без подписи — 401, с подписью — 400 */ }
+    // ping при регистрации «Узел» подписывает новым секретом, которого бот ещё не знает; данных в нём нет
+    if (ev && ev.event === "ping") return new Response("ok");
     if (!await verifyUzel(this.d.secret, req.headers.get("x-uzel-timestamp"), req.headers.get("x-uzel-signature"), raw)) {
       return new Response("bad signature", { status: 401 });
     }
-    let ev: UzelEvent;
-    try { ev = JSON.parse(raw); } catch { return new Response("bad json", { status: 400 }); }
-    if (ev.event === "ping" || !ev.eventId) return new Response("ok");
+    if (!ev) return new Response("bad json", { status: 400 });
+    if (!ev.eventId) return new Response("ok");
     if (!await this.d.store.seenEvent(ev.eventId)) return new Response("dup");
     if (ev.event === "message.in" && ev.dialogId) this.schedule(ev.dialogId);
     return new Response("ok");
@@ -39,7 +47,8 @@ export class Inbound {
       const t = setTimeout(() => {
         this.timers.delete(id);
         const prev = this.chains.get(id) ?? Promise.resolve();
-        const next = prev.then(() => this.process(id)).catch((e) => this.d.store.journal("error", id, String(e))).finally(done);
+        const next: Promise<void> = prev.then(() => this.process(id)).catch((e) => this.failed(id, e))
+          .finally(() => { if (this.chains.get(id) === next) this.chains.delete(id); done(); });
         this.chains.set(id, next);
       }, this.d.debounceMs);
       this.timers.set(id, { t, done });
@@ -48,24 +57,44 @@ export class Inbound {
   }
   async idle() { while (this.pending.size) await Promise.all([...this.pending]); }
 
+  // Сбой хода: клиент не должен остаться без ответа. Всё — по возможности: сбой здесь не рвёт цепочку.
+  private async failed(id: string, e: unknown) {
+    const tryDo = async (f: () => Promise<unknown>) => { try { await f(); } catch { /* по возможности */ } };
+    await tryDo(() => this.d.store.journal("error", id, maskPhonesIn(String(e))));
+    let lang: Lang = "ru", name: string | null = null, phone = "";
+    await tryDo(async () => { const st = await this.d.store.getDialog(id); if (st) ({ lang, name, phone } = st); });
+    await tryDo(() => this.d.uzel.send(id, handoffText(lang, "failed", name)));
+    await tryDo(() => this.d.uzel.handoff(id, "бот не справился"));
+    await tryDo(() => this.d.notify(`Бот не справился с разговором${phone ? ` +${phone}` : ""} — ответьте клиенту в «Узле».`));
+  }
+
   async process(id: string): Promise<void> {
     const dlg = await this.d.uzelApi.getDialog(id);
-    if (dlg.bot.paused || dlg.assignedUserId) return;
-    const msgs: UzelMessage[] = (await this.d.uzelApi.messages(id, 30)).slice().sort((a, b) => a.occurredAt.localeCompare(b.occurredAt));
+    const msgs: UzelMessage[] = (await this.d.uzelApi.messages(id, 30)).slice().sort((a, b) => at(a) - at(b));
     const phone = phoneOf(dlg);
     let st = await this.d.store.getDialog(id) ?? this.fresh(id, phone ?? "", dlg.contactName);
     if (phone) st.phone = phone;
-    const lastIdx = st.last_client_msg_id ? msgs.findIndex((m) => m.id === st.last_client_msg_id) : -1;
-    const newer = msgs.slice(lastIdx + 1);
-    const clientNew = newer.filter((m) => m.direction === "in");
+    // Новое от клиента — после курсора и после последнего ответа человека (то, на что ответил человек, уже
+    // разобрано). Курсора нет в окне — только после последнего исходящего вообще. Ответ самого бота
+    // (program) при найденном курсоре границей не служит: клиент мог дописать, пока бот отвечал.
+    const lastIdx = (pred: (m: UzelMessage) => boolean) => msgs.findLastIndex(pred);
+    const cursor = st.last_client_msg_id ? msgs.findIndex((m) => m.id === st.last_client_msg_id) : -1;
+    const human = lastIdx((m) => m.direction === "out" && HUMAN.has(m.author ?? ""));
+    const start = st.last_client_msg_id && cursor < 0 ? lastIdx((m) => m.direction === "out") : Math.max(cursor, human);
+    const clientNew = msgs.slice(start + 1).filter((m) => m.direction === "in");
+    const lastIn = lastIdx((m) => m.direction === "in");
+    // Ведёт человек или бот на паузе в «Узле» — молчать, но курсор сдвинуть: после возврата это не новое
+    if (dlg.bot.paused || dlg.assignedUserId) {
+      if (lastIn >= 0 && msgs[lastIn].id !== st.last_client_msg_id) { st.last_client_msg_id = msgs[lastIn].id; await this.d.store.saveDialog(st); }
+      return;
+    }
     if (!clientNew.length) return;
     const lastClient = clientNew[clientNew.length - 1];
-    if (newer.some((m) => m.direction === "out" && (m.author === "operator" || m.author === "phone_echo") && m.occurredAt > lastClient.occurredAt)) return;
     st.last_client_msg_id = lastClient.id;
     const now = this.d.now().getTime();
     const idle = now - new Date(st.last_activity).getTime();
     if (idle > SIX_H || (st.stage === "submitted" && idle > HALF_H)) st = { ...this.fresh(id, st.phone, st.name), lang: st.lang, details: { client_name: st.details.client_name, address: st.details.address } , last_client_msg_id: st.last_client_msg_id, last_order_no: st.last_order_no };
-    const texts = clientNew.map((m) => m.text ?? "").filter(Boolean);
+    const texts = clientNew.map((m) => (m.text ?? "").trim()).filter(Boolean);
     const lang = detectLang(texts.join(" "));
     if (lang) st.lang = lang;
     await this.d.store.journal("in", id, `${phone ? maskPhone(phone) : "скрытый номер"}: ${maskPhonesIn(texts.join(" | ")).slice(0, 300)}`);
@@ -75,19 +104,21 @@ export class Inbound {
       await this.d.store.saveDialog(st);
       return;
     }
-    if (clientNew.some((m) => m.attachment && ["audio", "voice", "image", "video"].includes(m.attachment.kind))) {
+    if (clientNew.some(notText)) {
       await this.d.uzel.send(id, handoffText(st.lang, "files", st.name));
-      await this.d.uzel.handoff(id, "голосовое или фото");
+      await this.d.uzel.handoff(id, "файл, голосовое или стикер");
       await this.d.store.saveDialog(st);
       return;
     }
+    if (!texts.length) { await this.d.store.saveDialog(st); return; }   // пустое (реакция и т. п.) — ход не нужен
     if (await this.d.paused()) {
       await this.d.uzel.send(id, handoffText(st.lang, "human", st.name));
       await this.d.uzel.handoff(id, "бот на паузе");
       await this.d.store.saveDialog(st);
       return;
     }
-    const afterSummary = !!st.summary_sent_at && clientNew.some((m) => m.occurredAt > st.summary_sent_at!);
+    const summaryAt = st.summary_sent_at ? Date.parse(st.summary_sent_at) : NaN;
+    const afterSummary = !Number.isNaN(summaryAt) && clientNew.some((m) => at(m) > summaryAt);
     await handleTurn(this.d, st, texts.join("\n"), afterSummary);
   }
 

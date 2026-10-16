@@ -1,4 +1,4 @@
-import { assertEquals } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
 import { hmacHex, UzelClient, verifyUzel } from "../src/uzel.ts";
 
 const SECRET = "whsec_test";
@@ -57,4 +57,10 @@ Deno.test("uzel: история и диалог читаются из data", asy
   const dlg = await u.getDialog("d1");
   assertEquals([dlg.contactName, dlg.addressKind, dlg.contactPhone], ["Айгуль", "lid", "77015554433"]);
   assertEquals((await u.messages("d1", 20))[0].text, "пирог");
+});
+Deno.test("uzel: каждый запрос с тайм-аутом", async () => {
+  const seen: (AbortSignal | null | undefined)[] = [];
+  const f = (_u: string, init?: RequestInit) => { seen.push(init?.signal); return Promise.resolve(new Response("{}", { status: 202 })); };
+  await new UzelClient("https://u", "k", f).handoff("d1", "x");
+  assert(seen[0] instanceof AbortSignal);
 });

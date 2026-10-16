@@ -5,10 +5,13 @@ import { type Await, type Card, FINAL, type Store } from "./store.ts";
 
 export class PgStore implements Store {
   private pool: pg.Pool;
-  constructor(url: string) { this.pool = new pg.Pool({ connectionString: url, max: 4 }); }
-  async migrate() {
-    const sql = await Deno.readTextFile(new URL("../sql/001_bot.sql", import.meta.url));
-    await this.pool.query(sql);
+  constructor(url: string) {
+    this.pool = new pg.Pool({ connectionString: url, max: 4, connectionTimeoutMillis: 5000, idleTimeoutMillis: 30000 });
+    // ошибка простаивающего соединения (перезапуск Postgres) без обработчика роняет процесс
+    this.pool.on("error", (e: Error) => console.error("pg pool:", e.message));
+  }
+  async migrate() {   // по порядку; каждый файл можно повторять (if not exists)
+    for (const f of ["001_bot.sql", "002_bot.sql"]) await this.pool.query(await Deno.readTextFile(new URL(`../sql/${f}`, import.meta.url)));
   }
   private q(text: string, params: unknown[] = []) { return this.pool.query(text, params); }
   async seenEvent(id: string) {
@@ -49,13 +52,20 @@ export class PgStore implements Store {
       created_at: new Date(x.created_at as string).toISOString(), dialog_id: (x.dialog_id as string) ?? null, lang: x.lang as "ru" | "kz", no: Number(x.no) };
   }
   async setAwait(a: Await) {
-    await this.q(`insert into bot.awaits (chat_id, prompt_id, order_id, kind, to_status, by_name) values ($1,$2,$3,$4,$5,$6)
-                  on conflict do nothing`, [a.chat_id, a.prompt_id, a.order_id, a.kind, a.to, a.by_name]);
+    await this.q(`insert into bot.awaits (chat_id, prompt_id, order_id, kind, to_status, by_name, by_id) values ($1,$2,$3,$4,$5,$6,$7)
+                  on conflict do nothing`, [a.chat_id, a.prompt_id, a.order_id, a.kind, a.to, a.by_name, a.by_id]);
+  }
+  async getAwait(chat: number, p: number) {
+    const r = await this.q("select * from bot.awaits where chat_id = $1 and prompt_id = $2", [chat, p]);
+    return r.rows[0] ? this.await_(r.rows[0]) : null;
   }
   async takeAwait(chat: number, p: number) {
     const r = await this.q("delete from bot.awaits where chat_id = $1 and prompt_id = $2 returning *", [chat, p]);
-    const x = r.rows[0];
-    return x ? { chat_id: Number(x.chat_id), prompt_id: Number(x.prompt_id), order_id: Number(x.order_id), kind: x.kind, to: x.to_status, by_name: x.by_name } : null;
+    return r.rows[0] ? this.await_(r.rows[0]) : null;
+  }
+  private await_(x: Record<string, unknown>): Await {
+    return { chat_id: Number(x.chat_id), prompt_id: Number(x.prompt_id), order_id: Number(x.order_id), kind: x.kind as Await["kind"],
+      to: String(x.to_status), by_name: String(x.by_name), by_id: Number(x.by_id) };
   }
   async noticeOnce(id: number, kind: string) {
     const r = await this.q("insert into bot.notices (order_id, kind) values ($1, $2) on conflict do nothing", [id, kind]);

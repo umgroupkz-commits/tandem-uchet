@@ -72,3 +72,52 @@ Deno.test("команды: /here только владелец; /allow отве�
   await s.cards.onUpdate({ message: { message_id: 3, chat: { id: -100 }, from: { id: 42 }, text: "/allow", reply_to_message: { message_id: 9, from: { id: 5, first_name: "Мария" } } } });
   assertEquals(await s.store.getState("team"), [{ id: 5, name: "Мария" }]);
 });
+Deno.test("кнопки: причину принимает только нажавший — чужой ответ игнорируется и ожидание не съедает", async () => {
+  const s = setup(); await s.store.setState("tg_group", -100); await s.store.setState("team", [{ id: 5, name: "Мария" }, { id: 6, name: "Ерлан" }]);
+  await s.cards.onUpdate(cb(5, "s:7:rejected"));
+  const prompt = 101;   // message_id вопроса «Причина?» (первый вызов FakeTg)
+  const n = s.tg.calls.length;
+  await s.cards.onUpdate({ message: { message_id: 300, chat: { id: -100 }, from: { id: 6, first_name: "Ерлан" }, text: "просто так", reply_to_message: { message_id: prompt } } });
+  await s.cards.onUpdate({ message: { message_id: 301, chat: { id: -100 }, from: { id: 777, first_name: "Чужой" }, text: "хаха", reply_to_message: { message_id: prompt } } });
+  assertEquals(s.statuses.length, 0);
+  assertEquals(s.tg.calls.length, n);   // никому ничего не ответили
+  await s.cards.onUpdate({ message: { message_id: 302, chat: { id: -100 }, from: { id: 5, first_name: "Мария" }, text: "нет начинки", reply_to_message: { message_id: prompt } } });
+  assertEquals(s.statuses[0].slice(0, 3), [7, "rejected", "Мария"]);
+});
+Deno.test("кнопки: вопрос «Причина?» — force_reply без selective", async () => {
+  const s = setup(); await s.store.setState("tg_group", -100);
+  await s.cards.onUpdate(cb(42, "s:7:cancelled", "Андрей"));
+  assertEquals(s.tg.calls.find((c) => c.method === "sendMessage")!.p.reply_markup, { force_reply: true });
+});
+Deno.test("кнопки: вопрос об оплате — с номером заказа, не с id", async () => {
+  const s = setup(); await s.store.setState("tg_group", -100);
+  await s.store.saveCard({ order_id: 7, chat_id: -100, message_id: 101, status: "awaiting_pickup", created_at: "x", dialog_id: "d1", lang: "ru", no: 12 });
+  await s.cards.onUpdate(cb(42, "s:7:issued", "Андрей"));
+  const t = String(s.tg.calls.find((c) => c.method === "sendMessage")!.p.text);
+  assert(t.includes("№12") && !t.includes(" 7"), t);
+});
+Deno.test("кнопки: способ оплаты без нажатого «Доставлен»/«Выдан» — просим нажать ещё раз, статус не трогаем", async () => {
+  const s = setup(); await s.store.setState("tg_group", -100);
+  await s.cards.onUpdate(cb(42, "p:7:cash", "Андрей"));
+  assertEquals(s.statuses.length, 0);
+  const a = s.tg.calls.find((c) => c.method === "answerCallbackQuery")!;
+  assertEquals(a.p.text, "Нажмите «Доставлен»/«Выдан» ещё раз");
+});
+Deno.test("кнопки: неизвестная кнопка — ответ на нажатие всё равно есть", async () => {
+  const s = setup(); await s.store.setState("tg_group", -100);
+  await s.cards.onUpdate(cb(42, "zz:7:x", "Андрей"));
+  assert(s.tg.calls.some((c) => c.method === "answerCallbackQuery"));
+  assertEquals(s.statuses.length, 0);
+});
+Deno.test("команды: /team — только владелец и только в группе заказов; /here@ИмяБота понимается", async () => {
+  const s = setup();
+  await s.cards.onUpdate({ message: { message_id: 1, chat: { id: -100 }, from: { id: 42 }, text: "/here@EneshkaBot" } });
+  assertEquals(await s.store.getState("tg_group"), -100);
+  await s.store.setState("team", [{ id: 5, name: "Мария" }]);
+  const n = s.tg.calls.length;
+  await s.cards.onUpdate({ message: { message_id: 2, chat: { id: -100 }, from: { id: 5 }, text: "/team" } });
+  await s.cards.onUpdate({ message: { message_id: 3, chat: { id: 42 }, from: { id: 42 }, text: "/team" } });
+  assertEquals(s.tg.calls.length, n);
+  await s.cards.onUpdate({ message: { message_id: 4, chat: { id: -100 }, from: { id: 42 }, text: "/team@EneshkaBot" } });
+  assertEquals(s.tg.calls[n].p.text, "Мария");
+});

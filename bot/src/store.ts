@@ -3,7 +3,8 @@
 import type { DialogState, Lang } from "./types.ts";
 
 export interface Card { order_id: number; chat_id: number; message_id: number; status: string; created_at: string; dialog_id: string | null; lang: Lang; no: number }
-export interface Await { chat_id: number; prompt_id: number; order_id: number; kind: "reason" | "courier"; to: string; by_name: string }
+// by_id — Telegram id нажавшего кнопку: ответ с причиной или курьером принимается только от него
+export interface Await { chat_id: number; prompt_id: number; order_id: number; kind: "reason" | "courier"; to: string; by_name: string; by_id: number }
 export const FINAL = new Set(["delivered", "issued", "rejected", "cancelled", "not_collected"]);
 
 export interface Store {
@@ -17,7 +18,8 @@ export interface Store {
   saveCard(c: Card): Promise<void>;
   openCards(): Promise<Card[]>;
   setAwait(a: Await): Promise<void>;
-  takeAwait(chatId: number, promptId: number): Promise<Await | null>;
+  getAwait(chatId: number, promptId: number): Promise<Await | null>;    // подсмотреть, не снимая
+  takeAwait(chatId: number, promptId: number): Promise<Await | null>;   // снять
   noticeOnce(orderId: number, kind: string): Promise<boolean>;
   journal(kind: string, dialogId: string | null, text: string): Promise<void>;
 }
@@ -34,6 +36,7 @@ export class MemStore implements Store {
   saveCard(c: Card) { this.cards.set(c.order_id, { ...c }); return Promise.resolve(); }
   openCards() { return Promise.resolve([...this.cards.values()].filter((c) => !FINAL.has(c.status))); }
   setAwait(a: Await) { this.awaits.set(`${a.chat_id}:${a.prompt_id}`, a); return Promise.resolve(); }
+  getAwait(chat: number, p: number) { return Promise.resolve(this.awaits.get(`${chat}:${p}`) ?? null); }
   takeAwait(chat: number, p: number) { const k = `${chat}:${p}`; const a = this.awaits.get(k) ?? null; this.awaits.delete(k); return Promise.resolve(a); }
   noticeOnce(id: number, kind: string) { const k = `${id}:${kind}`; const n = !this.notices.has(k); this.notices.add(k); return Promise.resolve(n); }
   journal(kind: string, d: string | null, text: string) { this.log.push(`${kind} ${d ?? "-"} ${text}`); return Promise.resolve(); }

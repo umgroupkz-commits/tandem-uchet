@@ -17,7 +17,7 @@ const uchet = new Uchet(cfg.uchetUrl, cfg.uchetKey);
 const cards = new Cards({ tg: new Telegram(cfg.tgToken), uchet, store, ownerId: cfg.telegramOwnerId });
 const base = { uchet, uzel, store, model: new ClaudeModel(cfg.anthropicKey), modelName: cfg.model, now: () => new Date(), uuid: () => crypto.randomUUID() };
 const inbound = new Inbound({ ...base, uzelApi: uzel, secret: cfg.uzelWebhookSecret, debounceMs: 4000,
-  paused: async () => (await store.getState<boolean>("paused")) === true });
+  paused: async () => (await store.getState<boolean>("paused")) === true, notify: (t) => cards.say(t) });
 const watcher = new Watcher({ uchet, cards, uzel, store, now: () => new Date() });
 setInterval(() => watcher.pollOnce().catch((e) => store.journal("error", null, "watcher: " + e)), 10_000);
 setInterval(() => watcher.reminders().catch((e) => store.journal("error", null, "reminders: " + e)), 60_000);

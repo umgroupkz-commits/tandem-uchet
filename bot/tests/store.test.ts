@@ -16,8 +16,11 @@ export async function storeContract(s: Store) {
   assertEquals((await s.openCards()).map((c) => c.order_id), [7]);
   await s.saveCard({ order_id: 7, chat_id: -100, message_id: 55, status: "issued", created_at: "2026-10-17T05:00:00.000Z", dialog_id: "d1", lang: "ru", no: 3 });
   assertEquals((await s.openCards()).length, 0);
-  await s.setAwait({ chat_id: -100, prompt_id: 9, order_id: 7, kind: "reason", to: "rejected", by_name: "Мария" });
-  assertEquals((await s.takeAwait(-100, 9))!.to, "rejected");
+  await s.setAwait({ chat_id: -100, prompt_id: 9, order_id: 7, kind: "reason", to: "rejected", by_name: "Мария", by_id: 5 });
+  assertEquals((await s.getAwait(-100, 9))!.by_id, 5);   // подсмотреть — не съесть
+  const a = (await s.takeAwait(-100, 9))!;
+  assertEquals([a.to, a.by_id, a.by_name, a.kind, a.order_id], ["rejected", 5, "Мария", "reason", 7]);
+  assertEquals(await s.getAwait(-100, 9), null);
   assertEquals(await s.takeAwait(-100, 9), null);
   assertEquals(await s.noticeOnce(7, "confirmed"), true);
   assertEquals(await s.noticeOnce(7, "confirmed"), false);
@@ -35,3 +38,12 @@ Deno.test({ name: "store: PgStore выполняет контракт (BOT_TEST_
   await (s as unknown as { q: (t: string) => Promise<unknown> }).q("truncate bot.events_seen, bot.dialogs, bot.state, bot.cards, bot.awaits, bot.notices, bot.journal");
   await storeContract(s);
 }, sanitizeResources: false, sanitizeOps: false });
+
+Deno.test("store: PgStore — у пула есть обработчик ошибок и тайм-ауты", async () => {
+  const { PgStore } = await import("../src/store_pg.ts");
+  const s = new PgStore("postgres://u:p@127.0.0.1:1/x");
+  const pool = (s as unknown as { pool: { listenerCount(e: string): number; options: Record<string, unknown>; end(): Promise<void> } }).pool;
+  assertEquals(pool.listenerCount("error"), 1);
+  assertEquals([pool.options.connectionTimeoutMillis, pool.options.idleTimeoutMillis], [5000, 30000]);
+  await pool.end();
+});
