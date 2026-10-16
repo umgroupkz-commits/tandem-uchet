@@ -13,6 +13,7 @@ const SECTIONS = [
   { id: "stores", title: "Склады" },
   { id: "counteragents", title: "Контрагенты" },
   { id: "users", title: "Пользователи" },
+  { id: "clients", title: "Заказы клиентов" },
   { id: "feedback", title: "Замечания", allow: fbReader },
 ];
 const allowedSections = () => SECTIONS.filter((x) => (x.allow ? x.allow() : can(x.id, "view")));
