@@ -856,14 +856,15 @@ window.addEventListener("beforeunload", (e) => { if (S.cart.length || (!leaving 
 // Замечание (сборка 22): своя кнопка в шапке, а не плавающая — плавающая закрывала бы плитки меню или
 // кнопки оплаты. Отправка — действием feedback с кодом и точкой кассы, как любой запрос кассы; в
 // сведения (context) код не попадает: их собирает feedback.js без кодов, касса добавляет только своё.
+const mainTabName = () => (!$("orders").hidden ? "Заказы" : !$("shift").hidden ? "Смена" : "Продажа");
 if (window.TandemFeedback) {
   window.TandemFeedback.mount({
     source: "kassa", build: BUILD, attachTo: $("fbbtn"),
-    screen: () => ["Касса", S.point && S.point.name, $("shift").hidden ? "Продажа" : "Смена",
+    screen: () => ["Касса", S.point && S.point.name, mainTabName(),
       S.editUid ? "исправление чека №" + (S.editNo || "—") : null, closedText() ? "смена закрыта" : null].filter(Boolean).join(" · "),
     send: async (message, ctx) => {
       if (!S.point) return { ok: false, error: "Сначала войдите в кассу" };
-      const r = await call("feedback", { source: "kassa", message, page: "kassa.html · " + ($("shift").hidden ? "Продажа" : "Смена"),
+      const r = await call("feedback", { source: "kassa", message, page: "kassa.html · " + mainTabName(),
         context: { ...ctx, seller: S.seller, cart_lines: S.cart.length, unsent: S.queue.filter(unsent).length,
           rejected: S.queue.filter((q) => q.state === "bad").length, shift_closed: !!closedText() } });
       if (r && r.error === "Нет доступа") return { ok: false, error: "Сервер не принял код точки — выйдите и войдите в кассу заново" };

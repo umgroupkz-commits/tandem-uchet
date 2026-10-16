@@ -19,14 +19,18 @@ const NEXT = {
 const REASON = new Set(["rejected", "cancelled", "not_collected"]);
 const PAYTO = new Set(["delivered", "issued"]);
 const OPEN = new Set(Object.keys(NEXT));
-let R = null, C = null, timer = null, known = new Set(), first = true;
+let R = null, C = null, timer = null, known = new Set(), first = true, sess = 0;
 
 export function mountOrders(root, ctx) {
-  R = root; C = ctx; first = true; known = new Set();
+  R = root; C = ctx; first = true; known = new Set(); sess++;
   clearInterval(timer); timer = setInterval(load, POLL);
   load();
 }
-export function stopOrders() { clearInterval(timer); timer = null; }
+export function stopOrders() {
+  sess++; clearInterval(timer); timer = null;
+  if (R) R.innerHTML = "";
+  if (C) C.onCount(0);
+}
 
 function beep() {
   try { const a = new (window.AudioContext || window.webkitAudioContext)(); const o = a.createOscillator(); o.frequency.value = 880;
@@ -35,8 +39,10 @@ function beep() {
 
 async function load() {
   if (!R) return;
+  const s = sess;
   let r;
   try { r = await C.call("corder_list", {}); } catch { return; }   // нет связи — следующий опрос
+  if (s !== sess) return;                                          // вышли или перешли к другой точке
   if (!r || !r.ok) return;
   const fresh = r.orders.filter((o) => o.status === "new" && !known.has(o.id));
   if (!first && fresh.length) { beep(); toast(`Новый заказ: №${fresh.map((o) => o.no).join(", №")}`); }
@@ -69,7 +75,7 @@ function card(o) {
     el("div", {}, o.kind === "delivery" ? `Доставка: ${o.address}` : `Самовывоз`, " · ", o.client_name || "", " ",
       el("a", { href: "tel:+" + o.client_phone }, "+" + o.client_phone)),
     el("div", { class: "dim" }, lines),
-    o.prepay_suggested && o.status === "new" ? el("div", { class: "tag bad" }, "по правилу нужна предоплата") : null,
+    o.prepay_suggested && o.status === "new" ? el("div", { class: "pill bad" }, "по правилу нужна предоплата") : null,
     o.courier ? el("div", { class: "dim" }, "Курьер: " + o.courier) : null,
     o.reason ? el("div", { class: "dim" }, "Причина: " + o.reason) : null,
     el("div", { class: "actions" }, ...btns));
@@ -82,7 +88,7 @@ async function move(o, to) {
   if (PAYTO.has(to)) { const v = await payDialog(o); if (!v) return; p.pay_kind = v; }
   let r;
   try { r = await C.call("corder_status", { ...p, seller: C.seller() }); } catch (e) { toast("Нет связи — статус не изменён", "bad"); return; }
-  if (!r.ok) { toast(r.message || r.error || "Не получилось", "bad"); load(); return; }
+  if (!r.ok) { toast(r.message || "Не получилось — повторите", "bad"); load(); return; }
   toast(`№${o.no}: ${r.order.status_name}`); load();
 }
 
@@ -112,20 +118,20 @@ async function editOrder(o) {
         const p = { id: o.id, lines, for_date: date.value, ready_by: time.value, seller: C.seller() };
         if (o.kind === "delivery") p.address = addr.value.trim();
         let r; try { r = await C.call("corder_edit", p); } catch { toast("Нет связи — правка не сохранена", "bad"); return; }
-        if (!r.ok) { toast(r.message || r.error, "bad"); return; }
+        if (!r.ok) { toast(r.message || "Не получилось — повторите", "bad"); return; }
         ov.remove(); toast(`№${o.no}: сумма ${fmt(r.order.total)} ₸`); load(); } }, "Сохранить")));
   ov.append(box); document.body.append(ov);
 }
 
 async function stopList() {
   let r; try { r = await C.call("cmenu_point_list", {}); } catch { toast("Нет связи", "bad"); return; }
-  if (!r.ok) { toast(r.message || r.error, "bad"); return; }
+  if (!r.ok) { toast(r.message || "Не получилось — повторите", "bad"); return; }
   const today = new Date(Date.now() + 5 * 3600e3).toISOString().slice(0, 10);
   const ov = el("div", { class: "overlay" });
   const box = el("div", { class: "card" }, el("h3", {}, "Сегодня нет (бот перестанет предлагать)"),
     ...r.rows.map((x) => el("label", {}, el("input", { type: "checkbox", checked: x.stopped, onchange: async (e) => {
       let s; try { s = await C.call("cmenu_stop", { item_code: x.item_code, until: e.target.checked ? today : "" }); } catch { s = null; }
-      if (!s || !s.ok) { e.target.checked = !e.target.checked; toast((s && (s.message || s.error)) || "Нет связи", "bad"); } } }), " ", x.title_ru)),
+      if (!s || !s.ok) { e.target.checked = !e.target.checked; toast((s && s.message) || (s ? "Не получилось — повторите" : "Нет связи"), "bad"); } } }), " ", x.title_ru)),
     el("button", { onclick: () => ov.remove() }, "Готово"));
   ov.append(box); document.body.append(ov);
 }
