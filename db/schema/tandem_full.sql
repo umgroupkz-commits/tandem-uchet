@@ -1,6 +1,6 @@
 -- Полный снимок схемы учёта Тандем KZ (схема tandem + функции public.tandem_*).
--- Снят каталогом PostgreSQL 2026-10-02 запросом db/schema/snapshot-query.sql со стенда, идентичного боевой базе после 0048
--- (тела всех 100 функций сверены по md5 с живой базой, колонки совпадают) и собран tools/build-schema-snapshot.mjs. Данных не содержит.
+-- Снят каталогом PostgreSQL 2026-10-16 запросом db/schema/snapshot-query.sql (search_path = public) со стенда, идентичного
+-- боевой базе после 0051 (тела всех 120 функций сверены по md5 с живой базой) и собран tools/build-schema-snapshot.mjs. Данных не содержит.
 -- Назначение: поднять пустую базу на собственном сервере одной командой
 --   psql -v ON_ERROR_STOP=1 -f db/schema/tandem_full.sql
 -- затем db/schema/tandem_seed.sql. Проверяется подъёмом в Docker и дымовым тестом (server/README.md).
@@ -14,6 +14,9 @@ create schema if not exists tandem;
 create schema if not exists extensions;
 
 -- ---------------------------------------------------------------- последовательности
+create sequence if not exists tandem.client_order_events_id_seq as bigint increment 1 minvalue 1 maxvalue 9223372036854775807 start 1;
+create sequence if not exists tandem.client_order_lines_id_seq as bigint increment 1 minvalue 1 maxvalue 9223372036854775807 start 1;
+create sequence if not exists tandem.client_orders_id_seq as bigint increment 1 minvalue 1 maxvalue 9223372036854775807 start 1;
 create sequence if not exists tandem.item_code_seq as bigint increment 1 minvalue 1 maxvalue 9223372036854775807 start 90000;
 create sequence if not exists tandem.stock_moves_id_seq as bigint increment 1 minvalue 1 maxvalue 9223372036854775807 start 1;
 
@@ -92,6 +95,69 @@ create table if not exists tandem.checks (
   updated_at timestamp with time zone default now() not null,
   first_total numeric,
   first_pay_kind text
+);
+
+create table if not exists tandem.client_order_events (
+  id bigint default nextval('tandem.client_order_events_id_seq'::regclass) not null,
+  order_id bigint not null,
+  at timestamp with time zone default now() not null,
+  status_from text,
+  status_to text not null,
+  by_kind text not null,
+  by_name text not null,
+  payload jsonb default '{}'::jsonb not null
+);
+
+create table if not exists tandem.client_order_lines (
+  id bigint default nextval('tandem.client_order_lines_id_seq'::regclass) not null,
+  order_id bigint not null,
+  item_code text not null,
+  title text not null,
+  unit text not null,
+  qty numeric(10,3) not null,
+  price numeric(12,2) not null,
+  sum numeric(12,2) not null
+);
+
+create table if not exists tandem.client_order_moves (
+  status_from text not null,
+  status_to text not null,
+  kinds text[] not null,
+  need text,
+  only_kind text
+);
+
+create table if not exists tandem.client_orders (
+  id bigint default nextval('tandem.client_orders_id_seq'::regclass) not null,
+  uid uuid not null,
+  no integer not null,
+  no_date date not null,
+  point_id text not null,
+  channel text default 'whatsapp'::text not null,
+  uzel_dialog_id text,
+  client_phone text not null,
+  client_name text,
+  lang text default 'ru'::text not null,
+  kind text not null,
+  address text,
+  comment text,
+  for_date date not null,
+  ready_by time without time zone not null,
+  total numeric(12,2) not null,
+  delivery_fee numeric(12,2) default 0 not null,
+  prepay_suggested boolean default false not null,
+  prepay_required boolean default false not null,
+  pay_kind text,
+  courier text,
+  status text default 'new'::text not null,
+  reason text,
+  check_uid uuid,
+  confirmed_by text,
+  confirmed_at timestamp with time zone,
+  created_at timestamp with time zone default now() not null,
+  updated_at timestamp with time zone default now() not null,
+  production_doc uuid,
+  act_at timestamp with time zone
 );
 
 create table if not exists tandem.counteragents (
@@ -259,6 +325,27 @@ create table if not exists tandem.order_lines (
   order_id bigint not null,
   item_code text not null,
   qty numeric not null
+);
+
+create table if not exists tandem.order_menu (
+  item_code text not null,
+  title_ru text not null,
+  title_kz text,
+  composition_ru text,
+  composition_kz text,
+  unit_label text default 'шт'::text not null,
+  price numeric(12,2) not null,
+  min_qty numeric(10,3) default 1 not null,
+  step numeric(10,3) default 1 not null,
+  section text default 'Выпечка'::text not null,
+  ready_kind text default 'stock'::text not null,
+  price_checked_by text,
+  price_checked_at timestamp with time zone,
+  stop_until date,
+  sort_order integer default 0 not null,
+  active boolean default true not null,
+  updated_at timestamp with time zone default now() not null,
+  updated_by text
 );
 
 create table if not exists tandem.order_plan (
@@ -449,6 +536,24 @@ alter table tandem.checks add constraint checks_pkey PRIMARY KEY (id);
 alter table tandem.checks add constraint checks_point_id_check_date_no_key UNIQUE (point_id, check_date, no);
 alter table tandem.checks add constraint checks_status_check CHECK ((status = ANY (ARRAY['active'::text, 'void'::text])));
 alter table tandem.checks add constraint checks_uid_key UNIQUE (uid);
+alter table tandem.client_order_events add constraint client_order_events_by_kind_check CHECK ((by_kind = ANY (ARRAY['bot'::text, 'point'::text, 'office'::text, 'telegram'::text])));
+alter table tandem.client_order_events add constraint client_order_events_pkey PRIMARY KEY (id);
+alter table tandem.client_order_lines add constraint client_order_lines_pkey PRIMARY KEY (id);
+alter table tandem.client_order_lines add constraint client_order_lines_price_check CHECK ((price >= (0)::numeric));
+alter table tandem.client_order_lines add constraint client_order_lines_qty_check CHECK ((qty > (0)::numeric));
+alter table tandem.client_order_moves add constraint client_order_moves_need_check CHECK ((need = ANY (ARRAY['reason'::text, 'courier'::text, 'pay'::text])));
+alter table tandem.client_order_moves add constraint client_order_moves_only_kind_check CHECK ((only_kind = ANY (ARRAY['delivery'::text, 'pickup'::text])));
+alter table tandem.client_order_moves add constraint client_order_moves_pkey PRIMARY KEY (status_from, status_to);
+alter table tandem.client_orders add constraint client_orders_channel_check CHECK ((channel = 'whatsapp'::text));
+alter table tandem.client_orders add constraint client_orders_client_phone_check CHECK ((client_phone ~ '^[0-9]{10,15}$'::text));
+alter table tandem.client_orders add constraint client_orders_kind_check CHECK ((kind = ANY (ARRAY['delivery'::text, 'pickup'::text])));
+alter table tandem.client_orders add constraint client_orders_lang_check CHECK ((lang = ANY (ARRAY['ru'::text, 'kz'::text])));
+alter table tandem.client_orders add constraint client_orders_no_date_no_key UNIQUE (no_date, no);
+alter table tandem.client_orders add constraint client_orders_pay_kind_check CHECK ((pay_kind = ANY (ARRAY['cash'::text, 'kaspi_qr'::text, 'transfer'::text, 'card'::text])));
+alter table tandem.client_orders add constraint client_orders_pkey PRIMARY KEY (id);
+alter table tandem.client_orders add constraint client_orders_status_check CHECK ((status = ANY (ARRAY['new'::text, 'awaiting_prepay'::text, 'paid'::text, 'confirmed'::text, 'cooking'::text, 'assembled'::text, 'handed_to_courier'::text, 'on_the_way'::text, 'delivered'::text, 'awaiting_pickup'::text, 'issued'::text, 'rejected'::text, 'cancelled'::text, 'not_collected'::text])));
+alter table tandem.client_orders add constraint client_orders_total_check CHECK ((total >= (0)::numeric));
+alter table tandem.client_orders add constraint client_orders_uid_key UNIQUE (uid);
 alter table tandem.counteragents add constraint counteragents_iiko_id_key UNIQUE (iiko_id);
 alter table tandem.counteragents add constraint counteragents_kind_check CHECK ((kind = ANY (ARRAY['supplier'::text, 'customer'::text, 'employee'::text, 'other'::text])));
 alter table tandem.counteragents add constraint counteragents_pkey PRIMARY KEY (id);
@@ -483,6 +588,14 @@ alter table tandem.items add constraint items_item_type_check CHECK ((item_type 
 alter table tandem.items add constraint items_pkey PRIMARY KEY (code);
 alter table tandem.order_lines add constraint order_lines_pkey PRIMARY KEY (order_id, item_code);
 alter table tandem.order_lines add constraint order_lines_qty_check CHECK ((qty > (0)::numeric));
+alter table tandem.order_menu add constraint order_menu_min_qty_check CHECK ((min_qty > (0)::numeric));
+alter table tandem.order_menu add constraint order_menu_pkey PRIMARY KEY (item_code);
+alter table tandem.order_menu add constraint order_menu_price_check CHECK ((price > (0)::numeric));
+alter table tandem.order_menu add constraint order_menu_ready_kind_check CHECK ((ready_kind = ANY (ARRAY['fresh'::text, 'stock'::text])));
+alter table tandem.order_menu add constraint order_menu_section_check CHECK ((btrim(section) <> ''::text));
+alter table tandem.order_menu add constraint order_menu_step_check CHECK ((step > (0)::numeric));
+alter table tandem.order_menu add constraint order_menu_title_ru_check CHECK ((btrim(title_ru) <> ''::text));
+alter table tandem.order_menu add constraint order_menu_unit_label_check CHECK ((unit_label = ANY (ARRAY['кг'::text, 'шт'::text, 'сет'::text])));
 alter table tandem.order_plan add constraint order_plan_fact_qty_check CHECK ((fact_qty >= (0)::numeric));
 alter table tandem.order_plan add constraint order_plan_pkey PRIMARY KEY (for_date, item_code);
 alter table tandem.orders add constraint orders_pkey PRIMARY KEY (id);
@@ -518,6 +631,10 @@ CREATE INDEX chart_lines_chart_idx ON tandem.chart_lines USING btree (chart_id);
 CREATE INDEX chart_lines_ingredient_idx ON tandem.chart_lines USING btree (ingredient_code);
 CREATE INDEX charts_item_idx ON tandem.charts USING btree (item_code, date_from DESC);
 CREATE INDEX check_lines_check_idx ON tandem.check_lines USING btree (check_id);
+CREATE INDEX client_order_events_order_idx ON tandem.client_order_events USING btree (order_id);
+CREATE INDEX client_order_lines_order_idx ON tandem.client_order_lines USING btree (order_id);
+CREATE INDEX client_orders_phone_idx ON tandem.client_orders USING btree (client_phone, created_at DESC);
+CREATE INDEX client_orders_point_date_idx ON tandem.client_orders USING btree (point_id, for_date);
 CREATE INDEX document_lines_doc_idx ON tandem.document_lines USING btree (document_id, line_kind, sort_order);
 CREATE UNIQUE INDEX documents_client_key_idx ON tandem.documents USING btree (client_key) WHERE (client_key IS NOT NULL);
 CREATE INDEX documents_date_idx ON tandem.documents USING btree (doc_date DESC, created_at DESC);
@@ -545,6 +662,11 @@ alter table tandem.charts add constraint charts_updated_by_fkey FOREIGN KEY (upd
 alter table tandem.check_lines add constraint check_lines_check_id_fkey FOREIGN KEY (check_id) REFERENCES tandem.checks(id) ON DELETE CASCADE;
 alter table tandem.check_lines add constraint check_lines_item_code_fkey FOREIGN KEY (item_code) REFERENCES tandem.items(code);
 alter table tandem.checks add constraint checks_point_id_fkey FOREIGN KEY (point_id) REFERENCES tandem.points(id);
+alter table tandem.client_order_events add constraint client_order_events_order_id_fkey FOREIGN KEY (order_id) REFERENCES tandem.client_orders(id) ON DELETE CASCADE;
+alter table tandem.client_order_lines add constraint client_order_lines_item_code_fkey FOREIGN KEY (item_code) REFERENCES tandem.items(code) ON UPDATE CASCADE;
+alter table tandem.client_order_lines add constraint client_order_lines_order_id_fkey FOREIGN KEY (order_id) REFERENCES tandem.client_orders(id) ON DELETE CASCADE;
+alter table tandem.client_orders add constraint client_orders_point_id_fkey FOREIGN KEY (point_id) REFERENCES tandem.points(id);
+alter table tandem.client_orders add constraint client_orders_production_doc_fkey FOREIGN KEY (production_doc) REFERENCES tandem.documents(id) ON DELETE SET NULL;
 alter table tandem.daily_reports add constraint daily_reports_point_id_fkey FOREIGN KEY (point_id) REFERENCES tandem.points(id);
 alter table tandem.document_lines add constraint document_lines_document_id_fkey FOREIGN KEY (document_id) REFERENCES tandem.documents(id) ON DELETE CASCADE;
 alter table tandem.document_lines add constraint document_lines_item_code_fkey FOREIGN KEY (item_code) REFERENCES tandem.items(code);
@@ -563,6 +685,7 @@ alter table tandem.items add constraint items_group_id_fkey FOREIGN KEY (group_i
 alter table tandem.items add constraint items_unit_id_fkey FOREIGN KEY (unit_id) REFERENCES tandem.units(id);
 alter table tandem.order_lines add constraint order_lines_item_code_fkey FOREIGN KEY (item_code) REFERENCES tandem.items(code);
 alter table tandem.order_lines add constraint order_lines_order_id_fkey FOREIGN KEY (order_id) REFERENCES tandem.orders(id) ON DELETE CASCADE;
+alter table tandem.order_menu add constraint order_menu_item_code_fkey FOREIGN KEY (item_code) REFERENCES tandem.items(code) ON UPDATE CASCADE ON DELETE CASCADE;
 alter table tandem.order_plan add constraint order_plan_item_code_fkey FOREIGN KEY (item_code) REFERENCES tandem.items(code);
 alter table tandem.orders add constraint orders_point_id_fkey FOREIGN KEY (point_id) REFERENCES tandem.points(id);
 alter table tandem.points add constraint points_default_store_id_fkey FOREIGN KEY (default_store_id) REFERENCES tandem.stores(id);
@@ -585,6 +708,9 @@ alter table tandem.user_stores add constraint user_stores_store_id_fkey FOREIGN 
 alter table tandem.user_stores add constraint user_stores_user_id_fkey FOREIGN KEY (user_id) REFERENCES tandem.users(id) ON DELETE CASCADE;
 
 -- ---------------------------------------------------------------- владельцы последовательностей
+alter sequence tandem.client_order_events_id_seq owned by tandem.client_order_events.id;
+alter sequence tandem.client_order_lines_id_seq owned by tandem.client_order_lines.id;
+alter sequence tandem.client_orders_id_seq owned by tandem.client_orders.id;
 alter sequence tandem.stock_moves_id_seq owned by tandem.stock_moves.id;
 
 -- ---------------------------------------------------------------- функции
@@ -653,7 +779,7 @@ begin
     return jsonb_build_object('ok', false, 'error', 'Неверный код');
   end if;
 
-  if action in ('items','get_report','save_report','aliases','check_save','check_void','check_list','order_get','order_save') then
+  if action in ('items','get_report','save_report','aliases','check_save','check_void','check_list','order_get','order_save','corder_list','corder_get','corder_status','corder_edit','cmenu_point_list','cmenu_stop') then
     -- 0048: учебный код сводки — только учебные точки
     if v_train and not coalesce(v_point = any(v_tp), false) then
       return jsonb_build_object('ok', false, 'error', 'Учебный код сводки открывает только учебные точки', 'code', 'forbidden');
@@ -915,6 +1041,11 @@ begin
   end if;
   if action = 'order_save' then return tandem.order_save(v_point, payload); end if;
 
+  -- ---------- заказы клиентов (0050) ----------
+  if action in ('corder_list','corder_get','corder_status','corder_edit','cmenu_point_list','cmenu_stop') then
+    return tandem.corder_point(action, v_point, payload);
+  end if;
+
   -- ---------- касса: чеки в течение дня ----------
   if action in ('check_save','check_void','check_list') then
     if (select mode from tandem.points where id = v_point) is distinct from 'checks' then
@@ -1143,7 +1274,7 @@ declare
   v_res   jsonb;
   v_hash  text;
   v_owner text;
-  v_service boolean := action in ('migrate','test_cleanup','sync_items','sync_prices','recalc_ranks','set_packaging','set_short_list');
+  v_service boolean := action in ('migrate','test_cleanup','sync_items','sync_prices','recalc_ranks','set_packaging','set_short_list','bot_menu','bot_order_quote','bot_order_create','bot_order_events','bot_order_get','bot_order_cancel','bot_card_status','bot_client_history');
   v_busy  jsonb := jsonb_build_object('ok', false, 'error', 'Слишком много неверных кодов. Подождите 5 минут', 'code', 'throttled');
   v_svc_ok   boolean := false;   -- служебное действие с верным ключом
   v_point_ok boolean := false;   -- верный код присланной активной точки
@@ -1201,7 +1332,9 @@ begin
   -- Что из присланного верно — до порогов: порог по адресу и замок 'master' пропускают верный код точки
   -- и верный служебный ключ, а верный код собственника и водителя не засчитывают неудачей.
   if v_service then
-    select value into v_hash from tandem.settings where key = 'service_key_hash';
+    select value into v_hash from tandem.settings
+     where key = case when action like 'bot\_%' and coalesce((select value from tandem.settings where key = 'bot_key_hash'), '') <> ''
+                      then 'bot_key_hash' else 'service_key_hash' end;
     v_svc_ok := v_hash is not null and coalesce(payload->>'service_key', '') <> ''
                 and encode(digest(payload->>'service_key', 'sha256'), 'hex') = v_hash;
   elsif v_pin <> '' and v_pin not ilike 'CHANGE-ME%' then
@@ -1218,7 +1351,7 @@ begin
     return jsonb_build_object('ok', false, 'error', 'Слишком много неверных кодов с этого адреса. Подождите 10 минут', 'code', 'throttled');
   end if;
   -- 2) ключ запроса: 10 за 5 минут.
-  if (select count(*) from tandem.pin_failures f where f.key = v_key and f.at > now() - interval '5 minutes') >= 10 then
+  if not v_svc_ok and (select count(*) from tandem.pin_failures f where f.key = v_key and f.at > now() - interval '5 minutes') >= 10 then
     return v_busy;
   end if;
   -- 3) 'master' — все неверные коды сети: любой из них мог быть попыткой кода собственника или водителя,
@@ -1251,6 +1384,16 @@ begin
       when 'recalc_ranks'   then public.tandem_recalc_ranks(v_owner, coalesce((payload->>'days')::int, 30))
       when 'set_packaging'  then public.tandem_set_packaging(v_owner, coalesce(payload->'data','[]'::jsonb))
       when 'set_short_list' then public.tandem_set_short_list(v_owner, coalesce(payload->>'point',''), coalesce(payload->'codes','[]'::jsonb))
+      when 'bot_menu'       then tandem.cmenu_bot()
+      when 'bot_order_quote'  then tandem.corder_check(payload)
+      when 'bot_order_create' then tandem.corder_create(payload)
+      when 'bot_order_events' then tandem.corder_events(coalesce(tandem.to_num(payload->>'after'), 0)::bigint, coalesce(tandem.to_num(payload->>'limit'), 200)::int)
+      when 'bot_order_get'    then coalesce((select jsonb_build_object('ok', true, 'order', tandem.corder_json(o.id)) from tandem.client_orders o
+                                               where o.id = tandem.to_num(payload->>'id')::bigint or o.uid::text = payload->>'uid' limit 1),
+                                             tandem.err('not_found', 'Заказ не найден'))
+      when 'bot_order_cancel' then tandem.corder_set_status(tandem.to_num(payload->>'id')::bigint, 'cancelled', 'bot', 'Бот', payload, null)
+      when 'bot_card_status'  then tandem.corder_set_status(tandem.to_num(payload->>'order_id')::bigint, payload->>'to', 'telegram', payload->>'by_name', payload, null)
+      when 'bot_client_history' then tandem.corder_history(payload->>'phone')
     end;
     return v_res;
   end if;
@@ -1759,6 +1902,7 @@ begin
     when action like 'store%'        then 'stores'
     when action like 'counteragent%' then 'counteragents'
     when action like 'user%'         then 'users'
+    when action like 'cmenu%' or action like 'corder%' or action = 'client_settings_save' then 'clients'
   end;
   if v_section is null then
     return tandem.err('unknown_action', 'Неизвестное действие: ' || action);
@@ -1795,6 +1939,8 @@ begin
     return tandem.office_users(action, payload, v_user);
   elsif v_section = 'stock' then
     return tandem.office_stock(action, payload, v_user);
+  elsif v_section = 'clients' then
+    return tandem.office_clients(action, payload, v_user);
   end if;
 exception
   -- Minor: кривой uuid/число/boolean в payload — это ошибка ввода, а не сбой базы.
@@ -2217,6 +2363,7 @@ begin
                   where left(o.point_id, 3) = 'zz_' and o.for_date = pl.for_date and l.item_code = pl.item_code)
      and not exists (select 1 from tandem.order_lines l join tandem.orders o on o.id = l.order_id
                       where left(o.point_id, 3) <> 'zz_' and o.for_date = pl.for_date and l.item_code = pl.item_code);
+  delete from tandem.client_orders where left(point_id, 3) = 'zz_';   -- 0050: заказы клиентов служебных точек
   delete from tandem.orders where left(point_id, 3) = 'zz_';
   delete from tandem.order_plan where item_code in (select code from tandem.items where name like 'ZZ_TEST_%' or code like 'ZZ_TEST_%');
   update tandem.settings set value = '' where key = 'orders_store_id'
@@ -2285,6 +2432,7 @@ begin
        + (select count(*) from tandem.stores where name like 'ZZ\_TEST\_%')
        + (select count(*) from tandem.counteragents where name like 'ZZ\_TEST\_%')
        + (select count(*) from tandem.users where login like 'zz\_test\_%')
+       + (select count(*) from tandem.client_orders where left(point_id, 3) = 'zz_')
     into v_left;
 
   return jsonb_build_object('ok', true, 'deleted', jsonb_build_object(
@@ -2628,6 +2776,500 @@ begin
   end if;
   return jsonb_build_object('ok', true);
 end $function$
+;
+
+CREATE OR REPLACE FUNCTION tandem.client_settings()
+ RETURNS jsonb
+ LANGUAGE sql
+ STABLE
+ SET search_path TO 'tandem', 'public'
+AS $function$
+  select coalesce(jsonb_object_agg(key, value), '{}'::jsonb) from tandem.settings
+   where key like 'client\_%' or key in ('stock_ready_minutes', 'kaspi_details_ru', 'kaspi_details_kz', 'couriers')
+$function$
+;
+
+CREATE OR REPLACE FUNCTION tandem.cmenu_bot()
+ RETURNS jsonb
+ LANGUAGE sql
+ STABLE
+ SET search_path TO 'tandem', 'public'
+AS $function$
+  select jsonb_build_object('ok', true,
+    'now', to_char(tandem.local_now(), 'YYYY-MM-DD"T"HH24:MI'),
+    'settings', tandem.client_settings(),
+    'points', coalesce((select jsonb_agg(jsonb_build_object('id', p.id, 'name', p.name) order by p.sort_order)
+                          from tandem.points p
+                         where p.id = any(string_to_array(replace(tandem.setting('client_pickup_points', 'eneshka'), ' ', ''), ','))), '[]'::jsonb),
+    'items', coalesce((select jsonb_agg(tandem.cmenu_json(m) - 'kassa_price' - 'price_checked_by' - 'price_checked_at' - 'item_name' - 'updated_by' - 'item_ok'
+                                        order by m.section, m.sort_order, m.title_ru)
+                         from tandem.order_menu m join tandem.items i on i.code = m.item_code
+                        where m.active and m.price_checked_at is not null and i.active and i.for_sale and not i.training), '[]'::jsonb))
+$function$
+;
+
+CREATE OR REPLACE FUNCTION tandem.cmenu_json(m tandem.order_menu)
+ RETURNS jsonb
+ LANGUAGE sql
+ STABLE
+ SET search_path TO 'tandem', 'public'
+AS $function$
+  select jsonb_build_object('item_code', m.item_code, 'item_name', i.name, 'item_ok', coalesce(i.active and i.for_sale, false),
+    'title_ru', m.title_ru, 'title_kz', m.title_kz, 'composition_ru', m.composition_ru, 'composition_kz', m.composition_kz,
+    'unit_label', m.unit_label, 'price', m.price, 'min_qty', m.min_qty, 'step', m.step, 'section', m.section,
+    'ready_kind', m.ready_kind, 'checked', m.price_checked_at is not null,
+    'price_checked_by', m.price_checked_by, 'price_checked_at', m.price_checked_at,
+    'stop_until', m.stop_until, 'stopped', m.stop_until is not null and m.stop_until >= tandem.local_now()::date,
+    'sort_order', m.sort_order, 'active', m.active, 'updated_by', m.updated_by,
+    'kassa_price', coalesce((select pp.price from tandem.item_prices pp where pp.point_id = 'eneshka' and pp.item_code = m.item_code), i.price))
+  from tandem.items i where i.code = m.item_code
+$function$
+;
+
+CREATE OR REPLACE FUNCTION tandem.cmenu_stop(p_code text, p_until text, p_by text)
+ RETURNS jsonb
+ LANGUAGE plpgsql
+ SET search_path TO 'tandem', 'public'
+AS $function$
+declare v_d date;
+begin
+  if nullif(btrim(coalesce(p_until, '')), '') is not null then
+    v_d := tandem.to_date(p_until);
+    if v_d is null then return tandem.err('validation', 'Дата стопа не похожа на дату'); end if;
+  end if;
+  update tandem.order_menu set stop_until = v_d, updated_at = now(), updated_by = left(p_by, 100) where item_code = p_code;
+  if not found then return tandem.err('not_found', 'Позиции нет в меню заказов'); end if;
+  return jsonb_build_object('ok', true, 'row', (select tandem.cmenu_json(m) from tandem.order_menu m where m.item_code = p_code));
+end $function$
+;
+
+CREATE OR REPLACE FUNCTION tandem.corder_check(payload jsonb)
+ RETURNS jsonb
+ LANGUAGE plpgsql
+ STABLE
+ SET search_path TO 'tandem', 'public'
+AS $function$
+declare
+  v_now    timestamp := tandem.local_now();
+  v_today  date := v_now::date;
+  v_date   date := tandem.to_date(payload->>'for_date');
+  v_ready  time;
+  v_kind   text := coalesce(payload->>'kind', '');
+  v_point  text := nullif(btrim(coalesce(payload->>'point_id', '')), '');
+  v_points text[] := string_to_array(replace(tandem.setting('client_pickup_points', 'eneshka'), ' ', ''), ',');
+  v_from   time := tandem.setting('client_hours_from', '09:00')::time;
+  v_to     time := tandem.setting('client_hours_to', '18:00')::time;
+  v_cut    time := tandem.setting('client_fresh_cutoff', '12:00')::time;
+  v_fready time := tandem.setting('client_fresh_ready', '18:00')::time;
+  v_mins   int := tandem.setting('stock_ready_minutes', '120')::int;
+  v_days   int := tandem.setting('client_max_days_ahead', '14')::int;
+  v_min    numeric := tandem.setting('client_min_order', '7000')::numeric;
+  v_rule   text := tandem.setting('client_prepay_rule', 'off');
+  v_lines  jsonb := '[]'::jsonb;
+  v_total  numeric := 0;
+  v_fresh  boolean := false;
+  v_stock  boolean := false;
+  v_first  timestamp;
+  v_qty    numeric;
+  x        jsonb;
+  m        record;
+begin
+  begin v_ready := (payload->>'ready_by')::time; exception when others then v_ready := null; end;
+  if v_kind not in ('delivery', 'pickup') then return tandem.err('validation', 'Способ получения — доставка или самовывоз'); end if;
+  v_point := coalesce(v_point, v_points[1]);
+  if not (v_point = any(v_points) or left(v_point, 3) = 'zz_') or not exists (select 1 from tandem.points where id = v_point) then
+    return tandem.err('validation', 'Эта точка заказы не выдаёт'); end if;
+  if v_date is null or v_date < v_today or v_date > v_today + v_days then
+    return tandem.err('validation', format('Дата заказа — с сегодняшнего дня и не дальше %s дней', v_days)); end if;
+  if v_ready is null or v_ready < v_from or v_ready > v_to then
+    return tandem.err('validation', format('Время готовности — с %s до %s', to_char(v_from, 'HH24:MI'), to_char(v_to, 'HH24:MI'))); end if;
+  if jsonb_typeof(payload->'lines') is distinct from 'array' or jsonb_array_length(payload->'lines') = 0 then
+    return tandem.err('validation', 'В заказе нет позиций'); end if;
+
+  for x in select * from jsonb_array_elements(payload->'lines') loop
+    select mm.*, (i.active and i.for_sale and not i.training) as sellable into m
+      from tandem.order_menu mm join tandem.items i on i.code = mm.item_code
+     where mm.item_code = x->>'item_code';
+    if m.item_code is null or not m.active or m.price_checked_at is null or not m.sellable then
+      return tandem.err('validation', 'Позиции нет в меню заказов: ' || coalesce(x->>'item_code', '—')); end if;
+    if m.stop_until is not null and m.stop_until >= v_date then
+      return tandem.err('stopped', format('«%s» на %s нет', m.title_ru, to_char(v_date, 'DD.MM'))); end if;
+    v_qty := round(tandem.to_num(x->>'qty'), 3);   -- как хранится (numeric(10,3)): сумма считается от того же числа
+    if v_qty is null or v_qty <= 0 then return tandem.err('validation', format('Количество «%s» — число больше нуля', m.title_ru)); end if;
+    if m.unit_label <> 'кг' and v_qty <> trunc(v_qty) then return tandem.err('validation', format('«%s» — только целым числом', m.title_ru)); end if;
+    if v_qty < m.min_qty then
+      return tandem.err('validation', format('Минимум «%s» — %s %s', m.title_ru, replace(trim_scale(m.min_qty)::text, '.', ','), m.unit_label)); end if;
+    if abs(round((v_qty - m.min_qty) / m.step) * m.step - (v_qty - m.min_qty)) > 0.0005 then
+      return tandem.err('validation', format('«%s» — шагом %s %s от %s', m.title_ru, replace(trim_scale(m.step)::text, '.', ','), m.unit_label, replace(trim_scale(m.min_qty)::text, '.', ','))); end if;
+    if exists (select 1 from jsonb_array_elements(v_lines) l where l->>'item_code' = m.item_code) then
+      return tandem.err('validation', format('«%s» указан дважды', m.title_ru)); end if;
+    v_fresh := v_fresh or m.ready_kind = 'fresh';
+    v_stock := v_stock or m.ready_kind = 'stock';
+    v_lines := v_lines || jsonb_build_array(jsonb_build_object('item_code', m.item_code, 'title', m.title_ru, 'title_kz', m.title_kz,
+      'unit', m.unit_label, 'qty', v_qty, 'price', m.price, 'sum', round(v_qty * m.price, 2), 'ready_kind', m.ready_kind));
+    v_total := v_total + round(v_qty * m.price, 2);
+  end loop;
+
+  if v_date = v_today then
+    if v_fresh and (v_now::time >= v_cut or v_ready < v_fready) then
+      return tandem.err('slot', format('Свежие пироги на сегодня — заказ до %s, готовность к %s. Позже — на завтра',
+                                       to_char(v_cut, 'HH24:MI'), to_char(v_fready, 'HH24:MI'))); end if;
+    v_first := greatest(v_now, v_today + v_from) + make_interval(mins => v_mins);
+    if v_stock and v_first > v_today + v_to then
+      return tandem.err('slot', 'Сегодня уже не успеем — выберите завтра'); end if;
+    if v_stock and v_today + v_ready < v_first then
+      return tandem.err('slot', format('Сегодня — не раньше %s', to_char(v_first, 'HH24:MI'))); end if;
+  end if;
+
+  if v_kind = 'delivery' then
+    if nullif(btrim(coalesce(payload->>'address', '')), '') is null then return tandem.err('validation', 'Для доставки нужен адрес'); end if;
+    if v_total < v_min then
+      return tandem.err('min_order', format('Доставка — от %s ₸, в заказе %s ₸. Можно забрать самому', trim_scale(v_min), trim_scale(v_total))); end if;
+  end if;
+
+  return jsonb_build_object('ok', true, 'quote', jsonb_build_object(
+    'point_id', v_point, 'point_name', (select name from tandem.points where id = v_point),
+    'kind', v_kind, 'for_date', v_date, 'ready_by', to_char(v_ready, 'HH24:MI'),
+    'address', case when v_kind = 'delivery' then btrim(payload->>'address') end,
+    'lines', v_lines, 'total', v_total, 'delivery_fee', 0,
+    'prepay_suggested', (v_rule = 'fresh' and v_fresh) or (v_rule like 'from\_sum:%' and v_total >= substr(v_rule, 10)::numeric)));
+end $function$
+;
+
+CREATE OR REPLACE FUNCTION tandem.corder_create(payload jsonb)
+ RETURNS jsonb
+ LANGUAGE plpgsql
+ SET search_path TO 'tandem', 'public'
+AS $function$
+declare
+  v_uid   uuid;
+  v_phone text := regexp_replace(coalesce(payload->>'client_phone', ''), '\D', '', 'g');
+  v_q     jsonb;
+  v_day   date := tandem.local_now()::date;
+  v_id    bigint;
+  v_no    int;
+begin
+  begin v_uid := (payload->>'uid')::uuid; exception when others then v_uid := null; end;
+  if v_uid is null then return tandem.err('validation', 'Нужен uid заказа'); end if;
+  -- одна блокировка на создание: повтор бота с тем же uid ждёт первый вызов и получает тот же заказ, а номер дня не двоится
+  perform pg_advisory_xact_lock(hashtext('tandem.client_orders:create'));
+  select id into v_id from tandem.client_orders where uid = v_uid;
+  if v_id is not null then return jsonb_build_object('ok', true, 'repeat', true, 'order', tandem.corder_json(v_id)); end if;
+  if length(v_phone) < 10 or length(v_phone) > 15 then return tandem.err('validation', 'Нужен телефон клиента'); end if;
+  v_q := tandem.corder_check(payload);
+  if not coalesce((v_q->>'ok')::boolean, false) then return v_q; end if;
+  v_q := v_q->'quote';
+  select coalesce(max(no), 0) + 1 into v_no from tandem.client_orders where no_date = v_day;
+  insert into tandem.client_orders (uid, no, no_date, point_id, uzel_dialog_id, client_phone, client_name, lang, kind, address,
+                                    comment, for_date, ready_by, total, prepay_suggested)
+  values (v_uid, v_no, v_day, v_q->>'point_id', nullif(btrim(coalesce(payload->>'uzel_dialog_id', '')), ''), v_phone,
+          left(nullif(btrim(coalesce(payload->>'client_name', '')), ''), 100),
+          case when payload->>'lang' = 'kz' then 'kz' else 'ru' end, v_q->>'kind', left(v_q->>'address', 300),
+          left(nullif(btrim(coalesce(payload->>'comment', '')), ''), 500),
+          (v_q->>'for_date')::date, (v_q->>'ready_by')::time, (v_q->>'total')::numeric, (v_q->>'prepay_suggested')::boolean)
+  returning id into v_id;
+  insert into tandem.client_order_lines (order_id, item_code, title, unit, qty, price, sum)
+    select v_id, l->>'item_code', l->>'title', l->>'unit', (l->>'qty')::numeric, (l->>'price')::numeric, (l->>'sum')::numeric
+      from jsonb_array_elements(v_q->'lines') l;
+  perform tandem.corder_event(v_id, null, 'new', 'bot', 'Бот', null);
+  return jsonb_build_object('ok', true, 'order', tandem.corder_json(v_id));
+end $function$
+;
+
+CREATE OR REPLACE FUNCTION tandem.corder_edit(p_id bigint, payload jsonb, p_kind text, p_by text, p_point text)
+ RETURNS jsonb
+ LANGUAGE plpgsql
+ SET search_path TO 'tandem', 'public'
+AS $function$
+declare
+  o     tandem.client_orders;
+  v_q   jsonb;
+  v_by  text := left(nullif(btrim(coalesce(p_by, '')), ''), 100);
+  v_big boolean := payload ? 'lines' or payload ? 'for_date' or payload ? 'ready_by' or payload ? 'kind';
+  v_old jsonb;
+begin
+  select * into o from tandem.client_orders where id = p_id for update;
+  if o.id is null or (p_point is not null and o.point_id <> p_point) then return tandem.err('not_found', 'Заказ не найден'); end if;
+  if v_by is null then return tandem.err('validation', 'Кто правит — имя обязательно'); end if;
+  if o.status not in ('new', 'awaiting_prepay', 'paid', 'confirmed') then
+    return tandem.err('validation', 'Заказ уже готовится — правка только словами с кухней'); end if;
+  -- сумма, о которой клиенту написали реквизиты или которую он уже оплатил, не меняется: только адрес и комментарий
+  if v_big and o.status in ('awaiting_prepay', 'paid') then
+    return tandem.err('validation', 'Заказ с предоплатой: состав, дату и время не правим — отмените и оформите заново'); end if;
+  v_old := (select jsonb_agg(jsonb_build_object('item_code', item_code, 'qty', qty) order by id) from tandem.client_order_lines where order_id = o.id);
+  if v_big and (o.production_doc is not null or o.act_at is not null) then
+    return tandem.err('validation', 'Заказ уже в акте производства — состав и время не правятся'); end if;
+  if v_big then
+    v_q := tandem.corder_check(jsonb_build_object('kind', coalesce(payload->>'kind', o.kind), 'point_id', o.point_id,
+             'for_date', coalesce(payload->>'for_date', o.for_date::text), 'ready_by', coalesce(payload->>'ready_by', to_char(o.ready_by, 'HH24:MI')),
+             'address', coalesce(payload->>'address', o.address),
+             'lines', coalesce(payload->'lines', (select jsonb_agg(jsonb_build_object('item_code', item_code, 'qty', qty) order by id)
+                                                    from tandem.client_order_lines where order_id = o.id))));
+    if not coalesce((v_q->>'ok')::boolean, false) then return v_q; end if;
+    v_q := v_q->'quote';
+    update tandem.client_orders set kind = v_q->>'kind', for_date = (v_q->>'for_date')::date, ready_by = (v_q->>'ready_by')::time,
+           address = left(v_q->>'address', 300), total = (v_q->>'total')::numeric, prepay_suggested = (v_q->>'prepay_suggested')::boolean,
+           comment = coalesce(left(nullif(btrim(coalesce(payload->>'comment', '')), ''), 500), comment), updated_at = now()
+     where id = o.id;
+    delete from tandem.client_order_lines where order_id = o.id;
+    insert into tandem.client_order_lines (order_id, item_code, title, unit, qty, price, sum)
+      select o.id, l->>'item_code', l->>'title', l->>'unit', (l->>'qty')::numeric, (l->>'price')::numeric, (l->>'sum')::numeric
+        from jsonb_array_elements(v_q->'lines') l;
+  else
+    if o.kind = 'delivery' and payload ? 'address' and nullif(btrim(coalesce(payload->>'address', '')), '') is null then
+      return tandem.err('validation', 'Для доставки нужен адрес'); end if;
+    update tandem.client_orders set address = coalesce(left(nullif(btrim(coalesce(payload->>'address', '')), ''), 300), address),
+           comment = coalesce(left(nullif(btrim(coalesce(payload->>'comment', '')), ''), 500), comment), updated_at = now()
+     where id = o.id;
+  end if;
+  -- в журнале — что было и что стало: деньги и текст бота восстанавливаются по журналу
+  perform tandem.corder_event(o.id, o.status, o.status, p_kind, v_by, (select jsonb_strip_nulls(jsonb_build_object('edited', true,
+    'total_from', o.total, 'total_to', n.total, 'lines_from', v_old,
+    'lines_to', (select jsonb_agg(jsonb_build_object('item_code', item_code, 'qty', qty) order by id) from tandem.client_order_lines where order_id = o.id),
+    'for_date_from', o.for_date, 'for_date_to', n.for_date, 'ready_by_from', to_char(o.ready_by, 'HH24:MI'), 'ready_by_to', to_char(n.ready_by, 'HH24:MI'),
+    'address_from', o.address, 'address_to', n.address)) from tandem.client_orders n where n.id = o.id));
+  return jsonb_build_object('ok', true, 'order', tandem.corder_json(o.id));
+end $function$
+;
+
+CREATE OR REPLACE FUNCTION tandem.corder_event(p_order bigint, p_from text, p_to text, p_kind text, p_by text, p_payload jsonb)
+ RETURNS void
+ LANGUAGE plpgsql
+ SET search_path TO 'tandem', 'public'
+AS $function$
+begin
+  perform pg_advisory_xact_lock(hashtext('tandem.client_order_events'));
+  insert into tandem.client_order_events (order_id, status_from, status_to, by_kind, by_name, payload)
+    values (p_order, p_from, p_to, p_kind, p_by, coalesce(p_payload, '{}'::jsonb));
+end $function$
+;
+
+CREATE OR REPLACE FUNCTION tandem.corder_events(p_after bigint, p_limit integer)
+ RETURNS jsonb
+ LANGUAGE sql
+ STABLE
+ SET search_path TO 'tandem', 'public'
+AS $function$
+  with e as (select * from tandem.client_order_events where id > coalesce(p_after, 0) order by id limit least(greatest(coalesce(p_limit, 200), 1), 500))
+  select jsonb_build_object('ok', true,
+    'events', coalesce((select jsonb_agg(jsonb_build_object('id', e.id, 'at', e.at, 'status_from', e.status_from, 'status_to', e.status_to,
+                  'by_kind', e.by_kind, 'by_name', e.by_name, 'payload', e.payload, 'order', tandem.corder_json(e.order_id)) order by e.id) from e), '[]'::jsonb),
+    'last', coalesce((select max(id) from e), coalesce(p_after, 0)))
+$function$
+;
+
+CREATE OR REPLACE FUNCTION tandem.corder_history(p_phone text)
+ RETURNS jsonb
+ LANGUAGE sql
+ STABLE
+ SET search_path TO 'tandem', 'public'
+AS $function$
+  with o as (select * from tandem.client_orders where client_phone = regexp_replace(coalesce(p_phone, ''), '\D', '', 'g')
+              order by created_at desc limit 20)
+  select jsonb_build_object('ok', true,
+    'name', (select client_name from o where client_name is not null limit 1),
+    'lang', (select lang from o limit 1),
+    'orders', (select count(*) from o),
+    'addresses', coalesce((select jsonb_agg(a) from (select address a, max(created_at) at from o where address is not null
+                             group by address order by max(created_at) desc limit 3) x), '[]'::jsonb))
+$function$
+;
+
+CREATE OR REPLACE FUNCTION tandem.corder_json(p_id bigint)
+ RETURNS jsonb
+ LANGUAGE sql
+ STABLE
+ SET search_path TO 'tandem', 'public'
+AS $function$
+  select jsonb_build_object('id', o.id, 'uid', o.uid, 'no', o.no, 'no_date', o.no_date, 'point_id', o.point_id,
+    'point_name', p.name, 'point_mode', p.mode, 'channel', o.channel, 'uzel_dialog_id', o.uzel_dialog_id,
+    'client_phone', o.client_phone, 'client_name', o.client_name, 'lang', o.lang, 'kind', o.kind, 'address', o.address,
+    'comment', o.comment, 'for_date', o.for_date, 'ready_by', to_char(o.ready_by, 'HH24:MI'), 'total', o.total,
+    'delivery_fee', o.delivery_fee, 'prepay_suggested', o.prepay_suggested, 'prepay_required', o.prepay_required,
+    'pay_kind', o.pay_kind, 'courier', o.courier, 'status', o.status, 'status_name', tandem.corder_status_name(o.status),
+    'reason', o.reason, 'check_uid', o.check_uid, 'created_at', o.created_at, 'confirmed_by', o.confirmed_by,
+    'confirmed_at', o.confirmed_at,
+    'in_act', (o.production_doc is not null or o.act_at is not null),
+    'lines', coalesce((select jsonb_agg(jsonb_build_object('item_code', l.item_code, 'title', l.title, 'unit', l.unit,
+                         'qty', l.qty, 'price', l.price, 'sum', l.sum) order by l.id)
+                       from tandem.client_order_lines l where l.order_id = o.id), '[]'::jsonb),
+    'last_by', (select e.by_name from tandem.client_order_events e where e.order_id = o.id order by e.id desc limit 1))
+  from tandem.client_orders o join tandem.points p on p.id = o.point_id where o.id = p_id
+$function$
+;
+
+CREATE OR REPLACE FUNCTION tandem.corder_kitchen()
+ RETURNS text[]
+ LANGUAGE sql
+ IMMUTABLE
+AS $function$
+  select array['confirmed', 'paid', 'cooking', 'assembled', 'handed_to_courier', 'on_the_way', 'delivered',
+               'awaiting_pickup', 'issued', 'not_collected']
+$function$
+;
+
+CREATE OR REPLACE FUNCTION tandem.corder_list(p_point text, p_from date, p_to date)
+ RETURNS jsonb
+ LANGUAGE sql
+ STABLE
+ SET search_path TO 'tandem', 'public'
+AS $function$
+  select jsonb_build_object('ok', true, 'orders', coalesce(jsonb_agg(tandem.corder_json(o.id)
+           order by (o.status = 'new') desc, o.for_date, o.ready_by, o.no), '[]'::jsonb))
+    from tandem.client_orders o
+   where (p_point is null or o.point_id = p_point)
+     and (o.for_date between p_from and p_to or o.status = 'new'
+          or (o.for_date < p_from and o.status <> all(array['delivered', 'issued', 'rejected', 'cancelled', 'not_collected'])))   -- незакрытый заказ прошлых дней не пропадает
+$function$
+;
+
+CREATE OR REPLACE FUNCTION tandem.corder_make_docs(p_for_date date, p_user tandem.users)
+ RETURNS jsonb
+ LANGUAGE plpgsql
+ SET search_path TO 'tandem', 'public'
+AS $function$
+declare
+  pt     record;
+  v_lines jsonb;
+  v_r    jsonb;
+  v_made int := 0;
+  v_skip text := '';
+  v_n    int;
+begin
+  if p_for_date is null then return tandem.err('validation', 'Нужна дата'); end if;
+  perform pg_advisory_xact_lock(hashtext('tandem.orders:' || p_for_date::text));
+  -- документы плана датируются днём плана: окно дат doc_save на время вызова открыто (как в orders_make_docs)
+  perform set_config('tandem.orders_docs', '1', true);
+  for pt in select o.point_id, p.name, p.default_store_id, array_agg(o.id) ids
+              from tandem.client_orders o join tandem.points p on p.id = o.point_id
+             where o.for_date = p_for_date and o.status = any(tandem.corder_kitchen()) and o.production_doc is null and o.act_at is null
+             group by o.point_id, p.name, p.default_store_id, p.sort_order order by p.sort_order loop
+    if pt.default_store_id is null then
+      v_skip := v_skip || case when v_skip = '' then '' else ', ' end || pt.name; continue; end if;
+    select coalesce(jsonb_agg(jsonb_build_object('item_code', x.item_code, 'qty', x.q)), '[]'::jsonb) into v_lines
+      from (select l.item_code, sum(l.qty) q from tandem.client_order_lines l
+             where l.order_id = any(pt.ids) and tandem.active_chart(l.item_code, p_for_date) is not null
+             group by l.item_code) x;
+    if jsonb_array_length(v_lines) > 0 then
+      -- следующий номер — за наибольшим (удалённый черновик не должен дать повтор номера: source_id уникален);
+      -- префикс сравнивается целиком, без like: «_» в коде точки — не подстановочный знак
+      select coalesce(max(substring(source_id from '-([0-9]+)$')::int), 0) + 1 into v_n from tandem.documents
+       where source_kind = 'orders' and left(source_id, length(p_for_date::text || '/clients-' || pt.point_id || '-'))
+                                        = p_for_date::text || '/clients-' || pt.point_id || '-';
+      v_r := tandem.office_stock('doc_save', jsonb_build_object('doc_type', 'production', 'doc_date', p_for_date,
+               'store_from', pt.default_store_id, 'comment', format('Заказы клиентов «%s» на %s', pt.name, to_char(p_for_date, 'DD.MM.YYYY')),
+               'lines', v_lines), p_user);
+      if not coalesce((v_r->>'ok')::boolean, false) then
+        raise exception using errcode = 'P0001', message = 'Акт по заказам клиентов не создан: ' || coalesce(v_r->>'message', v_r->>'error', 'ошибка'); end if;
+      update tandem.documents set source_kind = 'orders', source_id = p_for_date::text || '/clients-' || pt.point_id || '-' || v_n
+       where id = (v_r->>'id')::uuid;
+      update tandem.client_orders o set production_doc = (v_r->>'id')::uuid
+       where o.id = any(pt.ids) and exists (select 1 from tandem.client_order_lines l
+                                             where l.order_id = o.id and tandem.active_chart(l.item_code, p_for_date) is not null);
+      v_made := v_made + 1;
+    end if;
+    update tandem.client_orders o set act_at = now()
+     where o.id = any(pt.ids) and not exists (select 1 from tandem.client_order_lines l
+                                                where l.order_id = o.id and tandem.active_chart(l.item_code, p_for_date) is not null);
+  end loop;
+  perform set_config('tandem.orders_docs', '', true);
+  return jsonb_build_object('ok', true, 'made', v_made, 'skipped', nullif(v_skip, ''));
+end $function$
+;
+
+CREATE OR REPLACE FUNCTION tandem.corder_point(action text, p_point text, payload jsonb)
+ RETURNS jsonb
+ LANGUAGE plpgsql
+ SET search_path TO 'tandem', 'public'
+AS $function$
+declare
+  v_by    text := coalesce(left(nullif(btrim(coalesce(payload->>'seller', '')), ''), 100), 'Точка');
+  v_today date := tandem.local_now()::date;
+  v_id    bigint := tandem.to_num(payload->>'id')::bigint;
+begin
+  if action = 'corder_list' then return tandem.corder_list(p_point, v_today - 1, v_today + 14); end if;
+  if action = 'corder_get' then
+    if not exists (select 1 from tandem.client_orders where id = v_id and point_id = p_point) then
+      return tandem.err('not_found', 'Заказ не найден'); end if;
+    return jsonb_build_object('ok', true, 'order', tandem.corder_json(v_id));
+  end if;
+  if action = 'corder_status' then return tandem.corder_set_status(v_id, payload->>'to', 'point', v_by, payload, p_point); end if;
+  if action = 'corder_edit' then return tandem.corder_edit(v_id, payload - 'pin' - 'point_id' - 'seller' - 'id', 'point', v_by, p_point); end if;
+  if action = 'cmenu_point_list' then
+    return jsonb_build_object('ok', true, 'rows', coalesce((select jsonb_agg(tandem.cmenu_json(m) - 'kassa_price' order by m.section, m.sort_order, m.title_ru)
+                                                             from tandem.order_menu m where m.active and m.price_checked_at is not null), '[]'::jsonb));
+  end if;
+  if action = 'cmenu_stop' then return tandem.cmenu_stop(payload->>'item_code', payload->>'until', 'точка: ' || v_by); end if;
+  return tandem.err('unknown_action', 'Неизвестное действие: ' || action);
+end $function$
+;
+
+CREATE OR REPLACE FUNCTION tandem.corder_set_status(p_id bigint, p_to text, p_kind text, p_by text, payload jsonb, p_point text)
+ RETURNS jsonb
+ LANGUAGE plpgsql
+ SET search_path TO 'tandem', 'public'
+AS $function$
+declare
+  o        tandem.client_orders;
+  t        tandem.client_order_moves;
+  v_pay    text := nullif(payload->>'pay_kind', '');
+  v_reason text := left(nullif(btrim(coalesce(payload->>'reason', '')), ''), 300);
+  v_cour   text := left(nullif(btrim(coalesce(payload->>'courier', '')), ''), 100);
+  v_by     text := left(nullif(btrim(coalesce(p_by, '')), ''), 100);
+  v_chk    jsonb;
+  v_check  uuid;
+begin
+  select * into o from tandem.client_orders where id = p_id for update;
+  if o.id is null or (p_point is not null and o.point_id <> p_point) then return tandem.err('not_found', 'Заказ не найден'); end if;
+  if v_by is null then return tandem.err('validation', 'Кто меняет статус — имя обязательно'); end if;
+  if p_to is null or not exists (select 1 from tandem.client_order_moves where status_to = p_to) then
+    return tandem.err('validation', 'Неизвестный статус: ' || coalesce(p_to, '—')); end if;
+  select * into t from tandem.client_order_moves where status_from = o.status and status_to = p_to;
+  if t.status_to is null then
+    return jsonb_build_object('ok', false, 'error', 'conflict',
+      'message', format('Заказ №%s уже «%s»%s', o.no, tandem.corder_status_name(o.status),
+                        coalesce(' — ' || (select e.by_name from tandem.client_order_events e where e.order_id = o.id order by e.id desc limit 1), '')),
+      'order', tandem.corder_json(o.id));
+  end if;
+  if not (p_kind = any(t.kinds)) then return tandem.err('forbidden', 'Этот шаг здесь не делается'); end if;
+  if t.only_kind is not null and t.only_kind <> o.kind then
+    return tandem.err('validation', case when o.kind = 'pickup' then 'Это самовывоз — курьера нет' else 'Это доставка — «ждёт клиента» не ставится' end); end if;
+  if t.need = 'reason' and v_reason is null then return tandem.err('validation', 'Укажите причину'); end if;
+  if t.need = 'courier' and v_cour is null then return tandem.err('validation', 'Укажите курьера'); end if;
+  if t.need = 'pay' then
+    if v_pay is null or v_pay not in ('cash', 'kaspi_qr', 'transfer', 'card') then return tandem.err('validation', 'Выберите способ оплаты'); end if;
+    if (select mode from tandem.points where id = o.point_id) = 'checks' then
+      v_chk := tandem.check_save(o.point_id, jsonb_build_object('uid', o.uid, 'date', tandem.local_now()::date, 'seller', v_by,
+                 'pay_kind', v_pay, 'lines', (select jsonb_agg(jsonb_build_object('item_code', item_code, 'qty', qty, 'price', price) order by id)
+                                               from tandem.client_order_lines where order_id = o.id)));
+      if not coalesce((v_chk->>'ok')::boolean, false) then
+        return tandem.err('check', 'Чек не пробит: ' || coalesce(v_chk->>'error', v_chk->>'message', 'ошибка')); end if;
+      v_check := o.uid;
+    end if;
+  end if;
+  update tandem.client_orders set status = p_to, updated_at = now(),
+         reason = coalesce(v_reason, reason), courier = coalesce(v_cour, courier),
+         pay_kind = coalesce(v_pay, pay_kind), check_uid = coalesce(v_check, check_uid),
+         prepay_required = prepay_required or p_to = 'awaiting_prepay',
+         confirmed_by = case when p_to in ('confirmed', 'awaiting_prepay') then v_by else confirmed_by end,
+         confirmed_at = case when p_to in ('confirmed', 'awaiting_prepay') then now() else confirmed_at end
+   where id = o.id;
+  perform tandem.corder_event(o.id, o.status, p_to, p_kind, v_by, jsonb_strip_nulls(jsonb_build_object('reason', v_reason, 'courier', v_cour, 'pay_kind', v_pay)));
+  return jsonb_build_object('ok', true, 'order', tandem.corder_json(o.id));
+end $function$
+;
+
+CREATE OR REPLACE FUNCTION tandem.corder_status_name(p text)
+ RETURNS text
+ LANGUAGE sql
+ IMMUTABLE
+AS $function$
+  select case p when 'new' then 'новый' when 'awaiting_prepay' then 'ждёт предоплаты' when 'paid' then 'оплачен'
+    when 'confirmed' then 'подтверждён' when 'cooking' then 'готовится' when 'assembled' then 'собран'
+    when 'handed_to_courier' then 'передан курьеру' when 'on_the_way' then 'в пути' when 'delivered' then 'доставлен'
+    when 'awaiting_pickup' then 'ждёт клиента' when 'issued' then 'выдан' when 'rejected' then 'отказ'
+    when 'cancelled' then 'отменён' when 'not_collected' then 'не забрали' else p end
+$function$
 ;
 
 CREATE OR REPLACE FUNCTION tandem.cost_missing_at(p_items text[], p_dates date[])
@@ -4136,6 +4778,137 @@ exception
     return tandem.err('validation', 'На эти даты уже действует другая версия этой карты');
   when invalid_datetime_format or datetime_field_overflow then
     return tandem.err('validation', 'Дата — в формате ГГГГ-ММ-ДД');
+end $function$
+;
+
+CREATE OR REPLACE FUNCTION tandem.office_clients(action text, payload jsonb, v_user tandem.users)
+ RETURNS jsonb
+ LANGUAGE plpgsql
+ SET search_path TO 'tandem', 'public'
+AS $function$
+declare
+  v_code  text := nullif(btrim(coalesce(payload->>'item_code', '')), '');
+  v_price numeric;
+  v_min   numeric;
+  v_step  numeric;
+  v_unit  text := coalesce(nullif(payload->>'unit_label', ''), 'шт');
+  v_kind  text := coalesce(nullif(payload->>'ready_kind', ''), 'stock');
+  k text; v text;
+begin
+  if action like 'corder%' then return tandem.office_corders(action, payload, v_user); end if;
+
+  if action = 'cmenu_list' then
+    return jsonb_build_object('ok', true, 'settings', tandem.client_settings(),
+      'rows', coalesce((select jsonb_agg(tandem.cmenu_json(m) order by m.section, m.sort_order, m.title_ru) from tandem.order_menu m), '[]'::jsonb));
+  end if;
+
+  if action = 'cmenu_save' then
+    if v_code is null or not exists (select 1 from tandem.items where code = v_code and active and for_sale) then
+      return tandem.err('validation', 'Позиция не найдена или не в продаже — в меню заказов только то, что продаётся'); end if;
+    v_price := tandem.to_num(payload->>'price');
+    if v_price is null or v_price <= 0 then return tandem.err('validation', 'Цена для заказов — число больше нуля'); end if;
+    if nullif(btrim(coalesce(payload->>'title_ru', '')), '') is null then return tandem.err('validation', 'Название для клиента обязательно'); end if;
+    if v_unit not in ('кг', 'шт', 'сет') then return tandem.err('validation', 'Единица — кг, шт или сет'); end if;
+    if v_kind not in ('fresh', 'stock') then return tandem.err('validation', 'Готовность — «печём под заказ» или «с витрины»'); end if;
+    v_min := coalesce(tandem.to_num(payload->>'min_qty'), 1);
+    v_step := coalesce(tandem.to_num(payload->>'step'), 1);
+    if v_min <= 0 or v_step <= 0 then return tandem.err('validation', 'Минимум и шаг — больше нуля'); end if;
+    if v_unit <> 'кг' and (v_min <> trunc(v_min) or v_step <> trunc(v_step)) then
+      return tandem.err('validation', 'У штучного и сетов минимум и шаг — целые'); end if;
+    insert into tandem.order_menu as m (item_code, title_ru, title_kz, composition_ru, composition_kz, unit_label, price,
+                                        min_qty, step, section, ready_kind, sort_order, active, updated_at, updated_by)
+    values (v_code, btrim(payload->>'title_ru'), nullif(btrim(coalesce(payload->>'title_kz', '')), ''),
+            nullif(btrim(coalesce(payload->>'composition_ru', '')), ''), nullif(btrim(coalesce(payload->>'composition_kz', '')), ''),
+            v_unit, v_price, v_min, v_step, coalesce(nullif(btrim(coalesce(payload->>'section', '')), ''), 'Выпечка'), v_kind,
+            coalesce((payload->>'sort_order')::int, 0), coalesce((payload->>'active')::boolean, true), now(), v_user.login)
+    on conflict (item_code) do update set
+      title_ru = excluded.title_ru, title_kz = excluded.title_kz, composition_ru = excluded.composition_ru,
+      composition_kz = excluded.composition_kz, unit_label = excluded.unit_label, price = excluded.price,
+      min_qty = excluded.min_qty, step = excluded.step, section = excluded.section, ready_kind = excluded.ready_kind,
+      sort_order = excluded.sort_order, active = excluded.active, updated_at = now(), updated_by = excluded.updated_by,
+      -- смена цены снимает отметку «сверена»: новую цену кто-то должен подтвердить заново
+      price_checked_at = case when m.price = excluded.price then m.price_checked_at end,
+      price_checked_by = case when m.price = excluded.price then m.price_checked_by end;
+    return jsonb_build_object('ok', true, 'row', (select tandem.cmenu_json(x) from tandem.order_menu x where x.item_code = v_code));
+  end if;
+
+  if action = 'cmenu_check' then
+    -- сверяют цену, которую человек видел: если её успели поменять, отметка не ставится
+    v_price := tandem.to_num(payload->>'price');
+    update tandem.order_menu set price_checked_at = now(), price_checked_by = left(v_user.name, 100)
+     where item_code = v_code and price = v_price;
+    if not found then
+      if exists (select 1 from tandem.order_menu where item_code = v_code) then
+        return tandem.err('conflict', 'Цена изменилась или не передана — обновите список и сверьте заново'); end if;
+      return tandem.err('not_found', 'Позиции нет в меню заказов'); end if;
+    return jsonb_build_object('ok', true, 'row', (select tandem.cmenu_json(x) from tandem.order_menu x where x.item_code = v_code));
+  end if;
+
+  if action = 'cmenu_stop' then
+    return tandem.cmenu_stop(v_code, payload->>'until', v_user.login);
+  end if;
+
+  if action = 'client_settings_save' then
+    if v_user.role not in ('owner', 'admin') then return tandem.err('forbidden', 'Настройки заказов меняют собственник и администратор'); end if;
+    if jsonb_typeof(payload->'values') is distinct from 'object' then return tandem.err('validation', 'Нет значений'); end if;
+    for k, v in select key, btrim(coalesce(value, '')) from jsonb_each_text(payload->'values') loop
+      if k in ('client_fresh_cutoff', 'client_fresh_ready', 'client_hours_from', 'client_hours_to') then
+        if v !~ '^([01][0-9]|2[0-3]):[0-5][0-9]$' then return tandem.err('validation', 'Время — ЧЧ:ММ: ' || k); end if;
+      elsif k in ('stock_ready_minutes', 'client_min_order', 'client_max_days_ahead', 'client_confirm_remind_min', 'client_confirm_client_notice_min') then
+        if v !~ '^[0-9]{1,7}$' then return tandem.err('validation', 'Целое число: ' || k); end if;
+      elsif k = 'client_prepay_rule' then
+        if v not in ('off', 'fresh') and v !~ '^from_sum:[0-9]{1,7}$' then return tandem.err('validation', 'Предоплата — off, fresh или from_sum:N'); end if;
+      elsif k = 'client_pickup_points' then
+        if v = '' or exists (select 1 from unnest(string_to_array(replace(v, ' ', ''), ',')) p(id)
+                              where not exists (select 1 from tandem.points x where x.id = p.id)) then
+          return tandem.err('validation', 'Точки выдачи — коды существующих точек через запятую'); end if;
+      elsif k in ('kaspi_details_ru', 'kaspi_details_kz', 'couriers') then
+        if length(v) > 500 then return tandem.err('validation', 'Не длиннее 500 знаков: ' || k); end if;
+      else
+        return tandem.err('validation', 'Неизвестная настройка: ' || k);
+      end if;
+    end loop;
+    insert into tandem.settings (key, value)
+      select key, btrim(coalesce(value, '')) from jsonb_each_text(payload->'values')
+    on conflict (key) do update set value = excluded.value;
+    return jsonb_build_object('ok', true, 'settings', tandem.client_settings());
+  end if;
+
+  return tandem.err('unknown_action', 'Неизвестное действие: ' || action);
+end $function$
+;
+
+CREATE OR REPLACE FUNCTION tandem.office_corders(action text, payload jsonb, v_user tandem.users)
+ RETURNS jsonb
+ LANGUAGE plpgsql
+ SET search_path TO 'tandem', 'public'
+AS $function$
+declare v_id bigint := tandem.to_num(payload->>'id')::bigint;
+begin
+  if action = 'corder_list' then
+    return jsonb_build_object('ok', true, 'orders', coalesce((select jsonb_agg(tandem.corder_json(o.id) order by o.for_date desc, o.ready_by, o.no)
+      from tandem.client_orders o
+     where o.for_date between coalesce(tandem.to_date(payload->>'date_from'), tandem.local_now()::date) and coalesce(tandem.to_date(payload->>'date_to'), tandem.local_now()::date)
+       and (nullif(payload->>'point_id', '') is null or o.point_id = payload->>'point_id')
+       and (nullif(payload->>'status', '') is null or o.status = payload->>'status')
+       -- 0048: учебная учётка видит только заказы учебных точек — телефоны и адреса настоящих клиентов ей закрыты
+       and (not v_user.training or o.point_id in (select id from tandem.points where training))), '[]'::jsonb));
+  end if;
+  if action = 'corder_get' then
+    if not exists (select 1 from tandem.client_orders where id = v_id
+                    and (not v_user.training or point_id in (select id from tandem.points where training))) then
+      return tandem.err('not_found', 'Заказ не найден'); end if;
+    return jsonb_build_object('ok', true, 'order', tandem.corder_json(v_id),
+      'events', (select coalesce(jsonb_agg(jsonb_build_object('at', e.at, 'status_from', e.status_from, 'status_to', e.status_to,
+                   'status_name', tandem.corder_status_name(e.status_to), 'by_kind', e.by_kind, 'by_name', e.by_name, 'payload', e.payload) order by e.id), '[]'::jsonb)
+                 from tandem.client_order_events e where e.order_id = v_id));
+  end if;
+  if action = 'corder_docs_save' then
+    if not tandem.office_can(v_user.role, 'doc:production', 'edit') then return tandem.err('forbidden', 'Нет прав на акт производства'); end if;
+    return tandem.corder_make_docs(tandem.to_date(payload->>'for_date'), v_user);
+  end if;
+  if action = 'corder_status' then return tandem.corder_set_status(v_id, payload->>'to', 'office', v_user.name, payload, null); end if;
+  return tandem.err('unknown_action', 'Неизвестное действие: ' || action);
 end $function$
 ;
 
@@ -5943,7 +6716,8 @@ CREATE OR REPLACE FUNCTION tandem.order_locked(p_for_date date)
  STABLE
  SET search_path TO 'tandem', 'public'
 AS $function$
-  select exists (select 1 from tandem.documents where source_kind = 'orders' and source_id like p_for_date::text || '/%')
+  select exists (select 1 from tandem.documents where source_kind = 'orders' and source_id like p_for_date::text || '/%'
+                    and source_id not like p_for_date::text || '/clients-%')
 $function$
 ;
 
@@ -6134,7 +6908,21 @@ AS $function$
       left join tandem.order_plan pl on pl.for_date = p_for_date and pl.item_code = x.item_code),
     'docs', (select coalesce(jsonb_agg(jsonb_build_object('id', d.id, 'number', d.number, 'doc_type', d.doc_type, 'status', d.status,
         'source_id', d.source_id) order by d.doc_type, d.number), '[]'::jsonb)
-      from tandem.documents d where d.source_kind = 'orders' and d.source_id like p_for_date::text || '/%'))
+      from tandem.documents d where d.source_kind = 'orders' and d.source_id like p_for_date::text || '/%'),
+    -- 0051: заказы клиентов дня — по позициям (колонка «Клиенты») и списком
+    'clients', (select coalesce(jsonb_agg(jsonb_build_object('item_code', x.item_code, 'name', i.name, 'unit', i.unit_id, 'qty', x.q,
+        'in_act', x.q_act, 'has_chart', tandem.active_chart(x.item_code, p_for_date) is not null) order by i.name), '[]'::jsonb)
+      from (select l.item_code, sum(l.qty) q, coalesce(sum(l.qty) filter (where (o.production_doc is not null or o.act_at is not null)), 0) q_act
+              from tandem.client_order_lines l join tandem.client_orders o on o.id = l.order_id
+             where o.for_date = p_for_date and o.status = any(tandem.corder_kitchen()) group by l.item_code) x
+      join tandem.items i on i.code = x.item_code),
+    'client_orders', (select coalesce(jsonb_agg(jsonb_build_object('id', o.id, 'no', o.no, 'point_id', o.point_id, 'point_name', p.name,
+        'kind', o.kind, 'ready_by', to_char(o.ready_by, 'HH24:MI'), 'status', o.status, 'status_name', tandem.corder_status_name(o.status),
+        'in_act', (o.production_doc is not null or o.act_at is not null), 'client_name', o.client_name,
+        'lines', (select jsonb_agg(jsonb_build_object('title', l.title, 'qty', l.qty, 'unit', l.unit) order by l.id)
+                    from tandem.client_order_lines l where l.order_id = o.id)) order by o.ready_by, o.no), '[]'::jsonb)
+      from tandem.client_orders o join tandem.points p on p.id = o.point_id
+     where o.for_date = p_for_date and o.status = any(tandem.corder_kitchen())))
 $function$
 ;
 
@@ -6696,6 +7484,16 @@ AS $function$
   select x.item_code from x where x.chart_id is null or x.ready
   union
   select cl.ingredient_code from x join tandem.chart_lines cl on cl.chart_id = x.chart_id where not x.ready
+$function$
+;
+
+CREATE OR REPLACE FUNCTION tandem.setting(p_key text, p_default text DEFAULT NULL::text)
+ RETURNS text
+ LANGUAGE sql
+ STABLE
+ SET search_path TO 'tandem', 'public'
+AS $function$
+  select coalesce((select nullif(value, '') from tandem.settings where key = p_key), p_default)
 $function$
 ;
 
@@ -7372,6 +8170,10 @@ alter table tandem.chart_lines enable row level security;
 alter table tandem.charts enable row level security;
 alter table tandem.check_lines enable row level security;
 alter table tandem.checks enable row level security;
+alter table tandem.client_order_events enable row level security;
+alter table tandem.client_order_lines enable row level security;
+alter table tandem.client_order_moves enable row level security;
+alter table tandem.client_orders enable row level security;
 alter table tandem.counteragents enable row level security;
 alter table tandem.daily_reports enable row level security;
 alter table tandem.doc_counters enable row level security;
@@ -7384,6 +8186,7 @@ alter table tandem.item_prices enable row level security;
 alter table tandem.item_rank enable row level security;
 alter table tandem.items enable row level security;
 alter table tandem.order_lines enable row level security;
+alter table tandem.order_menu enable row level security;
 alter table tandem.order_plan enable row level security;
 alter table tandem.orders enable row level security;
 alter table tandem.pin_failures enable row level security;
