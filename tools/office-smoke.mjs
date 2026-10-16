@@ -1729,6 +1729,12 @@ SECTIONS.corders = async (ctx) => {
   check("точка: видит свой новый заказ", r.ok && r.orders.some((o) => o.id === o1.id), null);
   r = await call("corder_get", { pin, point_id: "zz_test", id: o1.id });
   check("точка: чужой заказ не виден", r.ok === false && r.error === "not_found", r);
+  r = await call("corder_status", { pin, point_id: "zz_test", seller: "ZZ_TEST_чужой", id: o1.id, to: "confirmed" });
+  check("точка: чужой заказ не подтвердить", r.ok === false && r.error === "not_found", r);
+  r = await call("corder_edit", { pin, point_id: "zz_test", seller: "ZZ_TEST_чужой", id: o1.id, address: "x" });
+  check("точка: чужой заказ не править", r.ok === false && r.error === "not_found", r);
+  r = await call("corder_list", { pin, point_id: "zz_test" });
+  check("точка: в своём списке нет чужих заказов", r.ok && !r.orders.some((o) => o.id === o1.id), null);
   r = await P("corder_edit", { id: o1.id, lines: [{ item_code: pie, qty: 2 }, { item_code: bel, qty: 2 }] });
   check("точка: правка нового заказа пересчитала сумму (2 × 4500 + 1000)", r.ok && near(r.order.total, 10000), r);
   r = await P("corder_status", { id: o1.id, to: "confirmed" });
@@ -1761,6 +1767,10 @@ SECTIONS.corders = async (ctx) => {
   r = await call("bot_card_status", { order_id: o2.id, to: "awaiting_prepay", by_name: "ZZ_TEST_телеграм" });
   check("телеграм: подтверждение с предоплатой", r.ok && r.order.status === "awaiting_prepay" && r.order.prepay_required === true, r);
   r = await call("bot_card_status", { order_id: o2.id, to: "paid", by_name: "ZZ_TEST_телеграм" });
+  r = await call("bot_order_cancel", { id: o2.id, reason: "клиент передумал" });
+  check("бот не отменяет оплаченный", r.ok === false && r.error === "forbidden", r);
+  r = await P("corder_edit", { id: o2.id, lines: [{ item_code: pie, qty: 3 }] });
+  check("оплаченный: состав не правится", r.ok === false && r.error === "validation", r);
   r = await call("bot_card_status", { order_id: o2.id, to: "cooking", by_name: "ZZ_TEST_телеграм" });
   r = await call("bot_card_status", { order_id: o2.id, to: "assembled", by_name: "ZZ_TEST_телеграм" });
   r = await call("bot_card_status", { order_id: o2.id, to: "handed_to_courier", by_name: "ZZ_TEST_телеграм" });
@@ -1772,6 +1782,8 @@ SECTIONS.corders = async (ctx) => {
 
   r = await call("bot_order_create", { ...base, uid: uid(), client_phone: phone });
   const o3 = r.order;
+  r = await P("corder_status", { id: o3.id, to: "lost" });
+  check("неизвестный статус — validation", r.ok === false && r.error === "validation", r);
   r = await P("corder_status", { id: o3.id, to: "rejected" });
   check("отказ без причины — отказ", r.ok === false && r.error === "validation", r);
   r = await P("corder_status", { id: o3.id, to: "rejected", reason: "ZZ_TEST нет начинки" });
@@ -1786,6 +1798,8 @@ SECTIONS.corders = async (ctx) => {
   check("бэк-офис: список заказов точки на день", r.ok && r.orders.length >= 4, r.orders && r.orders.length);
   r = await call("office_corder_get", { token: t, id: o1.id });
   check("бэк-офис: карточка заказа с журналом", r.ok && r.order.id === o1.id && r.events.length >= 6, r.events && r.events.length);
+  check("журнал: правка записана «было → стало»", r.ok && r.events.some((e) => e.payload && e.payload.edited
+    && Number(e.payload.total_from) === 7750 && Number(e.payload.total_to) === 10000), r.events);
   ctx.corderItems = { pie, bel };
 };
 
