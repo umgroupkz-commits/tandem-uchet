@@ -110,3 +110,46 @@ insert into tandem.points (id, name, legal_entity, mode, sort_order, pin, active
 values ('zz_kassa', 'ZZ_TEST_касса', null, 'checks', 999, md5(random()::text), false, 'Служебная касса дымового теста (миграция 0033). Не включать.')
 on conflict (id) do nothing;
 insert into tandem.settings (key, value) values ('orders_cutoff', '20:00') on conflict (key) do nothing;   -- заявки точек, 0038
+
+-- Заказы клиентов (0049–0051): настройки окон и доставки, права раздела «Заказы клиентов», таблица переходов статусов.
+insert into tandem.settings (key, value) values
+  ('client_fresh_cutoff', '12:00'), ('client_fresh_ready', '18:00'), ('stock_ready_minutes', '120'),
+  ('client_min_order', '7000'), ('client_hours_from', '09:00'), ('client_hours_to', '18:00'),
+  ('client_max_days_ahead', '14'), ('client_pickup_points', 'eneshka'), ('client_prepay_rule', 'off'),
+  ('client_confirm_remind_min', '15'), ('client_confirm_client_notice_min', '30'),
+  ('kaspi_details_ru', ''), ('kaspi_details_kz', ''), ('couriers', ''),
+  ('bot_key_hash', '')   -- sha256 ключа бота; пусто — bot_* принимают служебный ключ
+on conflict (key) do nothing;
+insert into tandem.role_permissions (role, section, action) values
+  ('owner', 'clients', 'view'), ('owner', 'clients', 'edit'),
+  ('admin', 'clients', 'view'), ('admin', 'clients', 'edit'),
+  ('technologist', 'clients', 'view'), ('technologist', 'clients', 'edit'),
+  ('accountant', 'clients', 'view')
+on conflict do nothing;
+insert into tandem.client_order_moves (status_from, status_to, kinds, need, only_kind) values
+  ('new', 'confirmed', '{point,telegram}', null, null),
+  ('new', 'awaiting_prepay', '{point,telegram}', null, null),
+  ('new', 'rejected', '{point,telegram}', 'reason', null),
+  ('new', 'cancelled', '{bot,point,telegram}', 'reason', null),
+  ('awaiting_prepay', 'paid', '{point,telegram}', null, null),
+  ('awaiting_prepay', 'cancelled', '{bot,point,telegram}', 'reason', null),
+  ('paid', 'cooking', '{point,telegram,office}', null, null),
+  ('paid', 'cancelled', '{point,telegram}', 'reason', null),
+  ('confirmed', 'cooking', '{point,telegram,office}', null, null),
+  ('confirmed', 'cancelled', '{bot,point,telegram}', 'reason', null),
+  ('cooking', 'assembled', '{point,telegram,office}', null, null),
+  ('cooking', 'cancelled', '{point,telegram}', 'reason', null),
+  ('assembled', 'handed_to_courier', '{point,telegram}', 'courier', 'delivery'),
+  ('assembled', 'awaiting_pickup', '{point,telegram}', null, 'pickup'),
+  ('assembled', 'cancelled', '{point,telegram}', 'reason', null),
+  ('handed_to_courier', 'on_the_way', '{point,telegram}', null, 'delivery'),
+  ('handed_to_courier', 'delivered', '{point,telegram}', 'pay', 'delivery'),
+  ('handed_to_courier', 'not_collected', '{point,telegram}', 'reason', 'delivery'),
+  ('handed_to_courier', 'cancelled', '{point,telegram}', 'reason', 'delivery'),
+  ('on_the_way', 'delivered', '{point,telegram}', 'pay', 'delivery'),
+  ('on_the_way', 'not_collected', '{point,telegram}', 'reason', 'delivery'),
+  ('on_the_way', 'cancelled', '{point,telegram}', 'reason', 'delivery'),
+  ('awaiting_pickup', 'issued', '{point,telegram}', 'pay', 'pickup'),
+  ('awaiting_pickup', 'not_collected', '{point,telegram}', 'reason', 'pickup'),
+  ('awaiting_pickup', 'cancelled', '{point,telegram}', 'reason', 'pickup')
+on conflict do nothing;
