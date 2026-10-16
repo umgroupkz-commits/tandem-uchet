@@ -94,7 +94,7 @@ Expected: `провалено 0` (47 проверок на 02.10.2026).
 - Produces (SQL): `tandem.setting(text, text) → text`; `tandem.client_settings() → jsonb`;
   `tandem.cmenu_json(tandem.order_menu) → jsonb`; `tandem.cmenu_stop(text, text, text) → jsonb`;
   `tandem.cmenu_bot() → jsonb`; `tandem.office_clients(text, jsonb, tandem.users) → jsonb`.
-- Produces (API бэк-офиса, раздел `clients`): `office_cmenu_list`, `office_cmenu_save`, `office_cmenu_check`,
+- Produces (API бэк-офиса, раздел `clients`): `office_cmenu_list`, `office_cmenu_save`, `office_cmenu_check {item_code, price}` (цена, которую видел сверяющий),
   `office_cmenu_stop`, `office_client_settings_save`.
 - Produces (служебное): `bot_menu` → `{ok, now, settings, points:[{id,name}], items:[cmenu_json без kassa_price]}`.
 
@@ -132,15 +132,19 @@ SECTIONS.cmenu = async (ctx) => {
     check("ключ бота не открывает уборку теста", r.ok === false && r.error === "forbidden", r);
   }
   r = await call("office_cmenu_check", { token: t, item_code: pie });
+  check("меню: сверка без цены — conflict", r.ok === false && r.error === "conflict", r);
+  r = await call("office_cmenu_check", { token: t, item_code: pie, price: 4000 });
+  check("меню: сверка не той цены — conflict", r.ok === false && r.error === "conflict", r);
+  r = await call("office_cmenu_check", { token: t, item_code: pie, price: 4550 });
   check("меню: цена отмечена сверенной", r.ok && r.row.checked === true && r.row.price_checked_by, r);
   r = await call("bot_menu", {});
   const seen = (r.items || []).find((x) => x.item_code === pie);
   check("меню: после сверки бот видит позицию без цены кассы", seen && Number(seen.price) === 4550 && seen.kassa_price === undefined && seen.ready_kind === "fresh", seen);
   r = await call("office_cmenu_save", { token: t, item_code: pie, title_ru: "ZZ_TEST_Пирог с мясом", unit_label: "кг", price: 4600, min_qty: 1, step: 0.5, ready_kind: "fresh" });
   check("меню: смена цены снимает отметку «сверена»", r.ok && r.row.checked === false, r.row);
-  r = await call("office_cmenu_save", { token: t, item_code: pie, title_ru: "ZZ_TEST_Пирог с мясом", unit_label: "кг", price: 4600, min_qty: 1, step: 0.5, ready_kind: "fresh", section: "Татарские пироги" });
-  check("меню: та же цена отметку не трогает (её и не было)", r.ok && r.row.checked === false, r.row);
-  await call("office_cmenu_check", { token: t, item_code: pie });
+  await call("office_cmenu_check", { token: t, item_code: pie, price: 4600 });
+  r = await call("office_cmenu_save", { token: t, item_code: pie, title_ru: "ZZ_TEST_Пирог с мясом и луком", unit_label: "кг", price: 4600, min_qty: 1, step: 0.5, ready_kind: "fresh", section: "Татарские пироги" });
+  check("меню: правка без смены цены отметку «сверена» сохраняет", r.ok && r.row.checked === true, r.row);
   r = await call("office_cmenu_save", { token: t, item_code: pie, title_ru: "ZZ_TEST_Пирог с мясом", unit_label: "шт", price: 4600, min_qty: 0.5, step: 0.5, ready_kind: "fresh" });
   check("меню: у штучного дробный минимум — отказ", r.ok === false && r.error === "validation", r);
   const day = new Date(Date.now() + 5 * 3600e3).toISOString().slice(0, 10);
@@ -321,8 +325,14 @@ begin
   end if;
 
   if action = 'cmenu_check' then
-    update tandem.order_menu set price_checked_at = now(), price_checked_by = left(v_user.name, 100) where item_code = v_code;
-    if not found then return tandem.err('not_found', 'Позиции нет в меню заказов'); end if;
+    -- сверяют цену, которую человек видел: если её успели поменять, отметка не ставится
+    v_price := tandem.to_num(payload->>'price');
+    update tandem.order_menu set price_checked_at = now(), price_checked_by = left(v_user.name, 100)
+     where item_code = v_code and price = v_price;
+    if not found then
+      if exists (select 1 from tandem.order_menu where item_code = v_code) then
+        return tandem.err('conflict', 'Цена изменилась или не передана — обновите список и сверьте заново'); end if;
+      return tandem.err('not_found', 'Позиции нет в меню заказов'); end if;
     return jsonb_build_object('ok', true, 'row', (select tandem.cmenu_json(x) from tandem.order_menu x where x.item_code = v_code));
   end if;
 
@@ -390,7 +400,8 @@ begin
   execute n;
 end $mig$;
 
--- tandem_gate: служебное действие bot_menu (ключ бота — тот же служебный ключ settings.service_key_hash).
+-- tandem_gate: служебное действие bot_menu; ключ бота — settings.bot_key_hash (пусто — служебный ключ);
+-- верный ключ не упирается в счётчик чужих неверных попыток (иначе любой запер бы бота на 5 минут).
 do $mig$
 declare d text; n text;
 begin
@@ -405,6 +416,10 @@ begin
      where key = case when action like 'bot\_%' and coalesce((select value from tandem.settings where key = 'bot_key_hash'), '') <> ''
                       then 'bot_key_hash' else 'service_key_hash' end;$a$);
   if n = d then raise exception '0049: якорь выбора ключа tandem_gate не найден'; end if;
+  d := n;
+  n := replace(d, $a$  if (select count(*) from tandem.pin_failures f where f.key = v_key and f.at > now() - interval '5 minutes') >= 10 then$a$,
+    $a$  if not v_svc_ok and (select count(*) from tandem.pin_failures f where f.key = v_key and f.at > now() - interval '5 minutes') >= 10 then$a$);
+  if n = d then raise exception '0049: якорь счётчика по ключу tandem_gate не найден'; end if;
   d := n;
   n := replace(d, $a$coalesce(payload->'codes','[]'::jsonb))
     end;$a$, $a$coalesce(payload->'codes','[]'::jsonb))
@@ -480,7 +495,7 @@ SECTIONS.corders = async (ctx) => {
   r = await call("office_item_save", { token: t, name: "ZZ_TEST_беляш заказов", item_type: "goods", unit_id: "шт", for_sale: true, price: 300 }); const bel = r.code;
   await call("office_cmenu_save", { token: t, item_code: pie, title_ru: "ZZ_TEST_Пирог", unit_label: "кг", price: 4500, min_qty: 1, step: 0.5, ready_kind: "fresh" });
   await call("office_cmenu_save", { token: t, item_code: bel, title_ru: "ZZ_TEST_Беляш", unit_label: "шт", price: 500, min_qty: 2, step: 1, ready_kind: "stock" });
-  await call("office_cmenu_check", { token: t, item_code: pie }); await call("office_cmenu_check", { token: t, item_code: bel });
+  await call("office_cmenu_check", { token: t, item_code: pie, price: 4500 }); await call("office_cmenu_check", { token: t, item_code: bel, price: 500 });
   const menu = await call("bot_menu", {});
   const S = menu.settings || {};
   const hh = (s, add) => { const [h, m] = String(s).split(":").map(Number); const x = h * 60 + m + add; return String(Math.floor(x / 60)).padStart(2, "0") + ":" + String(x % 60).padStart(2, "0"); };
@@ -1166,7 +1181,7 @@ SECTIONS.corders_kitchen = async (ctx) => {
   r = await call("office_item_save", { token: t, name: "ZZ_TEST_пирог кухни", item_type: "dish", unit_id: "кг", for_sale: true, price: 1600 }); const pie = r.code;
   r = await call("office_chart_save", { token: t, code: pie, date_from: "2020-01-01", output_amount: 1, lines: [{ ingredient_code: muka, brutto: 0.5, netto: 0.5, output: 0.5 }] });
   await call("office_cmenu_save", { token: t, item_code: pie, title_ru: "ZZ_TEST_Пирог кухни", unit_label: "кг", price: 4500, min_qty: 1, step: 0.5, ready_kind: "fresh" });
-  await call("office_cmenu_check", { token: t, item_code: pie });
+  await call("office_cmenu_check", { token: t, item_code: pie, price: 4500 });
   const menu = await call("bot_menu", {});
   const from = (menu.settings || {}).client_hours_from || "09:00";
   const ready = String(Number(from.slice(0, 2)) + 1).padStart(2, "0") + from.slice(2);
@@ -1454,7 +1469,7 @@ function drawMenu(rows) {
       el("td", { class: "num" + (diff ? " bad" : "") , title: diff ? "Цена кассы отличается" : "" }, x.kassa_price == null ? "—" : fmtMoney(x.kassa_price)),
       el("td", {}, READY[x.ready_kind]),
       el("td", {}, x.checked ? el("span", { class: "tag ok", title: `${x.price_checked_by || ""}` }, "сверена")
-        : edit ? el("button", { class: "ghost", onclick: () => act("cmenu_check", { item_code: x.item_code }, "Цена отмечена сверенной") }, "Сверить") : el("span", { class: "tag bad" }, "не сверена")),
+        : edit ? el("button", { class: "ghost", onclick: () => act("cmenu_check", { item_code: x.item_code, price: x.price }, "Цена отмечена сверенной") }, "Сверить") : el("span", { class: "tag bad" }, "не сверена")),
       el("td", {}, x.stopped ? el("span", { class: "tag bad" }, "до " + fmtDate(x.stop_until)) : "",
         edit ? el("button", { class: "link", onclick: () => act("cmenu_stop", { item_code: x.item_code, until: x.stopped ? "" : today() }, x.stopped ? "Стоп снят" : "Сегодня нет") }, x.stopped ? "снять" : "сегодня нет") : null),
       el("td", {}, edit ? el("button", { class: "link", onclick: () => editRow(x) }, "править") : null)));
