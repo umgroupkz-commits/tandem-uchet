@@ -1,0 +1,15 @@
+{
+  "tasks": {
+    "test": "deno test --allow-env --allow-read",
+    "check": "deno check main.ts src/*.ts tests/*.ts eval/run.ts scripts/*.ts",
+    "start": "deno run --allow-net --allow-env --allow-read main.ts",
+    "eval": "deno run --allow-net --allow-env --allow-read eval/run.ts"
+  },
+  "nodeModulesDir": "auto",
+  "imports": {
+    "pg": "npm:pg@8.13.1",
+    "@anthropic-ai/sdk": "npm:@anthropic-ai/sdk@0.131.0",
+    "@std/assert": "jsr:@std/assert@1.0.13"
+  },
+  "fmt": { "lineWidth": 110 }
+}

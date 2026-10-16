@@ -23,3 +23,5 @@ server/node_modules/
 *.dump.tmp
 *.backup
 /restore.sql
+
+bot/node_modules/
