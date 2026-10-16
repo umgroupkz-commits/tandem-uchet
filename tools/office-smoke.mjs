@@ -11,10 +11,14 @@ let failed = 0, passed = 0;
 
 // Служебные действия (перенос, уборка теста) с миграции 0029 требуют длинного ключа
 // TANDEM_SERVICE_KEY — кода собственника для них больше недостаточно.
-const SERVICE = new Set(["migrate", "test_cleanup", "sync_items", "sync_prices", "recalc_ranks", "set_packaging", "set_short_list"]);
+const SERVICE = new Set(["migrate", "test_cleanup", "sync_items", "sync_prices", "recalc_ranks", "set_packaging", "set_short_list",
+  "bot_menu", "bot_order_quote", "bot_order_create", "bot_order_events", "bot_order_get", "bot_order_cancel", "bot_card_status", "bot_client_history"]);
 export async function call(action, payload) {
   payload = payload || {};
-  if (SERVICE.has(action) && !("service_key" in payload)) payload = { ...payload, service_key: process.env.TANDEM_SERVICE_KEY || "" };
+  if (SERVICE.has(action) && !("service_key" in payload)) {
+    const key = action.startsWith("bot_") && process.env.TANDEM_BOT_KEY ? process.env.TANDEM_BOT_KEY : process.env.TANDEM_SERVICE_KEY;
+    payload = { ...payload, service_key: key || "" };
+  }
   const r = await fetch(UCHET, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -403,19 +407,20 @@ SECTIONS.users = async (ctx) => {
   // Раздел charts добавлен миграцией 0010 (техкарты): технолог правит, бухгалтер только смотрит.
   // Миграция 0015 (склад) добавила раздел stock всем ролям и права по типам документов
   // doc:<тип>: бухгалтеру только приход, технологу только производство.
+  // Миграция 0049 добавила раздел clients (заказы клиентов): смотреть — собственник, администратор, технолог, бухгалтер; править — без бухгалтера.
   const MATRIX = {
     zz_test_owner: { role: "owner", name: "ZZ_TEST_Собственник",
-      perms: ["charts:edit", "charts:view", "counteragents:edit", "counteragents:view",
+      perms: ["charts:edit", "charts:view", "clients:edit", "clients:view", "counteragents:edit", "counteragents:view",
         "doc:inventory:edit", "doc:inventory:view", "doc:invoice_in:edit", "doc:invoice_in:view",
         "doc:production:edit", "doc:production:view", "doc:transfer:edit", "doc:transfer:view",
         "doc:sale:edit", "doc:sale:view", "doc:writeoff:edit", "doc:writeoff:view",
         "nomenclature:edit", "nomenclature:view", "stock:edit", "stock:view", "stores:edit", "stores:view",
         "users:edit", "users:view"] },
     zz_test_buh: { role: "accountant", name: "ZZ_TEST_Бухгалтер",
-      perms: ["charts:view", "counteragents:edit", "counteragents:view",
+      perms: ["charts:view", "clients:view", "counteragents:edit", "counteragents:view",
         "doc:invoice_in:edit", "doc:invoice_in:view", "doc:sale:edit", "doc:sale:view", "nomenclature:view", "stock:edit", "stock:view", "stores:view"] },
     zz_test_tech: { role: "technologist", name: "ZZ_TEST_Технолог",
-      perms: ["charts:edit", "charts:view", "counteragents:view",
+      perms: ["charts:edit", "charts:view", "clients:edit", "clients:view", "counteragents:view",
         "doc:production:edit", "doc:production:view", "doc:sale:view", "nomenclature:edit", "nomenclature:view",
         "stock:edit", "stock:view", "stores:view"] },
   };
@@ -1597,6 +1602,56 @@ SECTIONS.training = async (ctx) => {
   check("обучение: замечание учебной учётки — ok", r.ok && r.id, r);
   r = await call("office_feedback_done", { token: u, id: r.id });
   check("обучение: «разобрано» по своему замечанию — ok", r.ok, r);
+};
+
+// Меню заказов клиентов (миграция 0049): своя цена, отметка «сверена», стоп-лист, меню для бота.
+SECTIONS.cmenu = async (ctx) => {
+  const t = ctx.token;
+  let r = await call("office_item_save", { token: t, name: "ZZ_TEST_пирог меню", item_type: "dish", unit_id: "кг", for_sale: true, price: 1600 }); const pie = r.code;
+  r = await call("office_item_save", { token: t, name: "ZZ_TEST_мука меню", item_type: "goods", unit_id: "кг" }); const muka = r.code;
+  check("меню: подготовка — пирог в продаже, мука не в продаже", pie && muka, r);
+  r = await call("office_cmenu_save", { token: t, item_code: muka, title_ru: "Мука", price: 100 });
+  check("меню: позицию не в продаже в меню не добавить", r.ok === false && r.error === "validation", r);
+  r = await call("office_cmenu_save", { token: t, item_code: pie, title_ru: "ZZ_TEST_Пирог с мясом", price: 0 });
+  check("меню: цена 0 — отказ", r.ok === false && r.error === "validation", r);
+  r = await call("office_cmenu_save", { token: t, item_code: pie, title_ru: "ZZ_TEST_Пирог с мясом", title_kz: "ZZ_TEST_Етті бәліш",
+    unit_label: "кг", price: 4550, min_qty: 1, step: 0.5, section: "Татарские пироги", ready_kind: "fresh" });
+  check("меню: позиция сохранена, цена не сверена, подсказка — цена кассы", r.ok && r.row.checked === false && Number(r.row.price) === 4550 && r.row.kassa_price != null, r);
+  r = await call("bot_menu", {});
+  check("меню: бот не видит несверенную цену", r.ok && !r.items.some((x) => x.item_code === pie), r.items && r.items.length);
+  check("меню: бот получает настройки и точки выдачи", r.ok && r.settings && r.settings.client_hours_from && Array.isArray(r.points), r.settings);
+  r = await call("bot_menu", { service_key: "zz-wrong-key" });
+  check("меню: без верного ключа — отказ", r.ok === false && r.error === "forbidden", r);
+  if (process.env.TANDEM_BOT_KEY) {
+    r = await call("test_cleanup", { service_key: process.env.TANDEM_BOT_KEY });
+    check("ключ бота не открывает уборку теста", r.ok === false && r.error === "forbidden", r);
+  }
+  r = await call("office_cmenu_check", { token: t, item_code: pie });
+  check("меню: цена отмечена сверенной", r.ok && r.row.checked === true && r.row.price_checked_by, r);
+  r = await call("bot_menu", {});
+  const seen = (r.items || []).find((x) => x.item_code === pie);
+  check("меню: после сверки бот видит позицию без цены кассы", seen && Number(seen.price) === 4550 && seen.kassa_price === undefined && seen.ready_kind === "fresh", seen);
+  r = await call("office_cmenu_save", { token: t, item_code: pie, title_ru: "ZZ_TEST_Пирог с мясом", unit_label: "кг", price: 4600, min_qty: 1, step: 0.5, ready_kind: "fresh" });
+  check("меню: смена цены снимает отметку «сверена»", r.ok && r.row.checked === false, r.row);
+  r = await call("office_cmenu_save", { token: t, item_code: pie, title_ru: "ZZ_TEST_Пирог с мясом", unit_label: "кг", price: 4600, min_qty: 1, step: 0.5, ready_kind: "fresh", section: "Татарские пироги" });
+  check("меню: та же цена отметку не трогает (её и не было)", r.ok && r.row.checked === false, r.row);
+  await call("office_cmenu_check", { token: t, item_code: pie });
+  r = await call("office_cmenu_save", { token: t, item_code: pie, title_ru: "ZZ_TEST_Пирог с мясом", unit_label: "шт", price: 4600, min_qty: 0.5, step: 0.5, ready_kind: "fresh" });
+  check("меню: у штучного дробный минимум — отказ", r.ok === false && r.error === "validation", r);
+  const day = new Date(Date.now() + 5 * 3600e3).toISOString().slice(0, 10);
+  r = await call("office_cmenu_stop", { token: t, item_code: pie, until: day });
+  check("меню: стоп на сегодня поставлен", r.ok && r.row.stopped === true, r.row);
+  r = await call("bot_menu", {});
+  check("меню: бот видит позицию со стопом", ((r.items || []).find((x) => x.item_code === pie) || {}).stopped === true, null);
+  r = await call("office_cmenu_stop", { token: t, item_code: pie, until: "" });
+  check("меню: стоп снят", r.ok && r.row.stopped === false, r.row);
+  r = await call("office_cmenu_list", { token: t });
+  check("меню: список с настройками", r.ok && r.rows.some((x) => x.item_code === pie) && r.settings, null);
+  r = await call("office_client_settings_save", { token: t, values: { client_fresh_cutoff: "25:00" } });
+  check("настройки: неверное время — отказ", r.ok === false && r.error === "validation", r);
+  r = await call("office_client_settings_save", { token: t, values: { client_unknown_key: "1" } });
+  check("настройки: неизвестный ключ — отказ", r.ok === false && r.error === "validation", r);
+  ctx.menuPie = pie;
 };
 
 // migrate и reimport требуют TANDEM_OWNER_PIN и в "all" входят только при его наличии;
