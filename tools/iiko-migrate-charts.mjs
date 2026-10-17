@@ -160,6 +160,7 @@ async function costs() {
   const last = new Map();   // product → {price, date}
   const mismatch = [];
   let docs = 0, lines = 0, packedLines = 0, badOrgs = 0, badDocs = 0;
+  const stubs = new Map();   // строки с ценой 1 ₸ и меньше: товар → сколько раз
   for (const o of orgs) {
     await sleep(pause);
     let l;
@@ -194,6 +195,9 @@ async function costs() {
         const packed = it.containerId && it.containerId !== NO_CONTAINER;
         const price = Number(packed ? perUnit : (it.price || perUnit));
         if (!it.product || !(price > 0)) continue;
+        // Цена 1 ₸ — заглушка, а не закупка (17.10.2026: колбаса вареная 1 ₸/кг четыре раза подряд вместо 1 710):
+        // такую строку не берём, в учёте остаётся последняя настоящая цена; в отчёт — списком.
+        if (price <= 1) { const k = it.productArticle || it.product; stubs.set(k, (stubs.get(k) || 0) + 1); continue; }
         // Без фасовки price и sum/amount обязаны сходиться: расхождение больше 1 % — в отчёт, разобрать руками.
         if (!packed && it.price && perUnit && Math.abs(it.price - perUnit) > perUnit * 0.01) mismatch.push(`${it.productArticle || it.product}: ${it.price} × ${it.amount} ≠ ${it.sum} (${date})`);
         if (packed) packedLines++;
@@ -206,6 +210,7 @@ async function costs() {
   }
   log(`накладных прочитано ${docs}, строк ${lines}, товаров с ценой ${last.size}; предприятий пропущено ${badOrgs}, накладных не отдано ${badDocs}`);
   log(`  строк с фасовкой (цена пересчитана из суммы за основную единицу): ${packedLines}`);
+  if (stubs.size) log(`  строк с ценой 1 ₸ (заглушка, не взяты): ${[...stubs.values()].reduce((a, b) => a + b, 0)} — товары: ${[...stubs.entries()].map(([k, n]) => k + " ×" + n).join(", ")}`);
   if (mismatch.length) {
     log(`  строк без фасовки, где цена × количество не сходится с суммой больше чем на 1 %: ${mismatch.length}`);
     for (const m of mismatch.slice(0, 30)) log(`    ${m}`);

@@ -99,7 +99,9 @@ const stores = d.stores.map((s) => ({ id: s.id, name: s.name, organization_id: s
 const counteragents = d.counteragents.map((c) => ({
   id: c.id, name: c.name,
   kind: c.supplier ? "supplier" : c.client ? "customer" : c.employee ? "employee" : "other",
-  bin: c.taxpayerIdNumber || null, phone: c.phone || c.cellPhone || null, deleted: !!c.deleted,
+  // iiko отдаёт признак удаления контрагента полем isDeleted (17.10.2026: 53 удалённых — бывшие сотрудники
+  // и старые поставщики); в выгрузке 04.09 поля не было, и они пришли действующими.
+  bin: c.taxpayerIdNumber || null, phone: c.phone || c.cellPhone || null, deleted: !!(c.isDeleted ?? c.deleted),
 }));
 // Код позиции у нас — первичный ключ, а в iiko удалённые могут делить код с живыми.
 // На один код берём одну запись: живую, а из удалённых — первую; остальные считаем «дубли».
