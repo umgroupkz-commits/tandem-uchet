@@ -1,9 +1,9 @@
-import { api, can } from "./api.js?v=24";
-import { el, fmt, toast, debounce, modal, confirmDlg, today, isoDate, errText, uid, saveFailed } from "./ui.js?v=24";
-import { parseNum, numStr, numInput, enterNext, fmtDate, fmtDateTime, fmtMoney, itemPicker } from "./inputs.js?v=24";
+import { api, can } from "./api.js?v=25";
+import { el, fmt, toast, debounce, modal, confirmDlg, today, isoDate, errText, uid, saveFailed } from "./ui.js?v=25";
+import { parseNum, numStr, numInput, enterNext, fmtDate, fmtDateTime, fmtMoney, itemPicker } from "./inputs.js?v=25";
 import { TYPES, MANUAL, REASONS, perms, canDoc, canAnyDoc, canSales, stores, setStores, active, opts, myIds, setMyIds, mine,
-  seqs, nextSeq, tabOut, sel, hooks } from "./stock-common.js?v=24";
-import { loadSales, loadTurnover, loadOrders, loadC1, loadReports, loadReady, srResync, resetReports } from "./stock-reports.js?v=24";
+  seqs, nextSeq, tabOut, sel, hooks } from "./stock-common.js?v=25";
+import { loadSales, loadTurnover, loadOrders, loadC1, loadReports, loadReady, srResync, resetReports } from "./stock-reports.js?v=25";
 
 let root, state = { tab: "docs", doc_type: "", store_id: "", status: "", q: "", date_from: "", date_to: "", page: 1 };
 let table, pager;
@@ -891,7 +891,7 @@ async function editDoc(id, newType, preset) {
       if (!o) return;
     }
     let mod;
-    try { mod = await import("./print.js?v=24"); }
+    try { mod = await import("./print.js?v=25"); }
     catch (e) { toast("Печать не загрузилась: " + (e && e.message ? e.message : e), "bad"); return; }
     try {
       const res = await mod.printDoc(formDoc(), o);

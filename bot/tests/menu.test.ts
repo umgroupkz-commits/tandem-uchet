@@ -1,5 +1,5 @@
 import { assert, assertEquals } from "@std/assert";
-import { cartCheck, detectLang, inHours, maskPhone, maskPhonesIn, menuText, money, phoneFromChat, phoneOf, rulesText } from "../src/menu.ts";
+import { cartCheck, detectLang, faqText, inHours, maskPhone, maskPhonesIn, menuText, money, phoneFromChat, phoneOf, rulesText } from "../src/menu.ts";
 import { MENU } from "./fakes.ts";
 
 Deno.test("menu: текст меню с кодом, ценой, единицей, сроком и стопом", () => {
@@ -13,6 +13,18 @@ Deno.test("menu: текст меню с кодом, ценой, единицей
 Deno.test("menu: правила из настроек", () => {
   const t = rulesText(MENU);
   assert(t.includes("до 12:00") && t.includes("к 18:00") && t.includes("7 000 ₸") && t.includes("Енешка"));
+});
+Deno.test("menu: доставка и способы оплаты — из настроек учёта, без них прежние слова", () => {
+  const def = rulesText(MENU);
+  assert(def.includes("Доставка по Темиртау бесплатная, от 7 000 ₸") && def.includes("наличные, Kaspi QR, перевод, карта"));
+  const own = rulesText({ ...MENU, settings: { ...MENU.settings, client_delivery_text: "по Темиртау и Караганде платная, 1 000 ₸",
+    client_payment_methods: "наличные и Kaspi QR" } });
+  assert(own.includes("Доставка по Темиртау и Караганде платная, 1 000 ₸, от 7 000 ₸"), own);
+  assert(own.includes("Оплата при получении: наличные и Kaspi QR.") && !own.includes("перевод"), own);
+});
+Deno.test("menu: частые вопросы — текст из настроек, пустой — без раздела", () => {
+  assertEquals(faqText(MENU), "");
+  assertEquals(faqText({ ...MENU, settings: { ...MENU.settings, client_faq: "  Мясо только халяль.  " } }), "Мясо только халяль.");
 });
 Deno.test("menu: проверка строки корзины", () => {
   const p = MENU.items[0];

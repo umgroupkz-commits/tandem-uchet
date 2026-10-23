@@ -118,6 +118,8 @@ insert into tandem.settings (key, value) values
   ('client_max_days_ahead', '14'), ('client_pickup_points', 'eneshka'), ('client_prepay_rule', 'off'),
   ('client_confirm_remind_min', '15'), ('client_confirm_client_notice_min', '30'),
   ('kaspi_details_ru', ''), ('kaspi_details_kz', ''), ('couriers', ''),
+  ('client_faq', ''), ('client_delivery_text', 'по Темиртау бесплатная'),   -- тексты бота, 0052
+  ('client_payment_methods', 'наличные, Kaspi QR, перевод, карта'),
   ('bot_key_hash', '')   -- sha256 ключа бота; пусто — bot_* принимают служебный ключ
 on conflict (key) do nothing;
 insert into tandem.role_permissions (role, section, action) values

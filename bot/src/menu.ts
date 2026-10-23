@@ -27,11 +27,14 @@ export function rulesText(menu: Menu): string {
     `Свежие пироги и сеты «печём под заказ»: на сегодня — если заказ до ${s.client_fresh_cutoff}, готовность к ${s.client_fresh_ready}; позже — на завтра и дальше.`,
     `«С витрины»: сегодня — не раньше чем через ${s.stock_ready_minutes} минут, в часы приёма.`,
     `Заказ вперёд — не дальше ${s.client_max_days_ahead} дней.`,
-    `Доставка по Темиртау бесплатная, от ${money(Number(s.client_min_order))}. Меньше — только самовывоз.`,
+    `Доставка ${s.client_delivery_text || "по Темиртау бесплатная"}, от ${money(Number(s.client_min_order))}. Меньше — только самовывоз.`,
     `Самовывоз: ${menu.points.map((p) => `[${p.id}] ${p.name}`).join("; ")}.`,
-    `Оплата при получении: наличные, Kaspi QR, перевод, карта.`,
+    `Оплата при получении: ${s.client_payment_methods || "наличные, Kaspi QR, перевод, карта"}.`,
   ].join("\n");
 }
+
+// Частые вопросы клиентов — текст владельца из настроек учёта (client_faq), как есть.
+export const faqText = (menu: Menu): string => (menu.settings.client_faq ?? "").trim();
 
 export const findItem = (menu: Menu, code: string): MenuItem | null => menu.items.find((x) => x.item_code === code) ?? null;
 

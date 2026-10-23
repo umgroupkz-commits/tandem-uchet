@@ -1655,6 +1655,18 @@ SECTIONS.cmenu = async (ctx) => {
   check("настройки: неверное время — отказ", r.ok === false && r.error === "validation", r);
   r = await call("office_client_settings_save", { token: t, values: { client_unknown_key: "1" } });
   check("настройки: неизвестный ключ — отказ", r.ok === false && r.error === "validation", r);
+  // 0052: тексты бота — частые вопросы, доставка, оплата. Живой текст владельца сохраняется и возвращается.
+  const was = (await call("office_cmenu_list", { token: t })).settings || {};
+  r = await call("office_client_settings_save", { token: t, values: { client_faq: "x".repeat(6001) } });
+  check("настройки: частые вопросы длиннее 6000 — отказ", r.ok === false && r.error === "validation", r);
+  r = await call("office_client_settings_save", { token: t, values: { client_payment_methods: "y".repeat(301) } });
+  check("настройки: способы оплаты длиннее 300 — отказ", r.ok === false && r.error === "validation", r);
+  r = await call("office_client_settings_save", { token: t, values: { client_faq: "ZZ_TEST_ частые вопросы\nвторая строка" } });
+  const bm = await call("bot_menu", {});
+  check("настройки: частые вопросы сохранены и видны боту", r.ok && (bm.settings || {}).client_faq === "ZZ_TEST_ частые вопросы\nвторая строка", bm.settings);
+  check("настройки: доставка и оплата видны боту", typeof (bm.settings || {}).client_delivery_text === "string" && typeof (bm.settings || {}).client_payment_methods === "string", bm.settings);
+  r = await call("office_client_settings_save", { token: t, values: { client_faq: was.client_faq ?? "" } });
+  check("настройки: прежний текст частых вопросов возвращён", r.ok && (r.settings || {}).client_faq === (was.client_faq ?? ""), r);
   ctx.menuPie = pie;
 };
 

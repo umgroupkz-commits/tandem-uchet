@@ -26,6 +26,19 @@ Deno.test("разговор: запрос к модели — Sonnet 5.5, низ
   assert(r.tools.every((t: { strict: boolean }) => t.strict === true));
 });
 
+Deno.test("разговор: частые вопросы из настроек учёта — в системной части, отдельным разделом; на «вы»", async () => {
+  const m = new ScriptModel([{ content: [text("ок")], stop_reason: "end_turn" }]);
+  const d = deps(m);
+  d.uchetF.menuData = { ...MENU, settings: { ...MENU.settings, client_faq: "Мясо только халяль, свинины нет." } };
+  await handleTurn(d, newDialog(), "у вас халяль?", false);
+  const sys = (m.requests[0] as Record<string, any>).system[0].text as string;
+  assert(sys.includes("# Частые вопросы\nМясо только халяль, свинины нет."), sys.slice(-400));
+  assert(sys.includes("на «вы»"));
+  const m2 = new ScriptModel([{ content: [text("ок")], stop_reason: "end_turn" }]);
+  await handleTurn(deps(m2), newDialog(), "привет", false);
+  assert(!((m2.requests[0] as Record<string, any>).system[0].text as string).includes("# Частые вопросы"));
+});
+
 Deno.test("разговор: корзина, детали, итог — итог уходит шаблоном с суммой учёта, этап «ждём да»", async () => {
   const m = new ScriptModel([
     { content: [tool("t1", "cart_set", { item_code: "P1", qty: 1.5 }), tool("t2", "order_details", details)], stop_reason: "tool_use" },

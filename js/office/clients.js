@@ -1,8 +1,8 @@
 // Раздел «Заказы клиентов» (0049–0051): меню заказов для бота со своей ценой и отметкой «цена сверена»,
 // список заказов с журналом, настройки окон готовности и доставки. Права — раздел clients.
-import { api, can, session } from "./api.js?v=24";
-import { el, toast, errText, modal, today } from "./ui.js?v=24";
-import { itemPicker, fmtDate, fmtMoney } from "./inputs.js?v=24";
+import { api, can, session } from "./api.js?v=25";
+import { el, toast, errText, modal, today } from "./ui.js?v=25";
+import { itemPicker, fmtDate, fmtMoney } from "./inputs.js?v=25";
 
 const UNITS = ["кг", "шт", "сет"];
 const READY = { fresh: "печём под заказ", stock: "с витрины" };
@@ -14,6 +14,9 @@ const SETTINGS = [
   ["client_prepay_rule", "Предоплата: off / fresh / from_sum:N"], ["client_confirm_remind_min", "Напомнить продавцу через, мин"],
   ["client_confirm_client_notice_min", "Написать клиенту «скоро ответим» через, мин"],
   ["couriers", "Курьеры (через запятую)"], ["kaspi_details_ru", "Реквизиты Kaspi (рус.)"], ["kaspi_details_kz", "Реквизиты Kaspi (каз.)"],
+  ["client_delivery_text", "Доставка - как сказать клиенту (например: по Темиртау бесплатная)"],
+  ["client_payment_methods", "Оплата при получении (через запятую)"],
+  ["client_faq", "Частые вопросы клиентов - что бот отвечает (адрес, халяль, хранение, как готовить...)", "area"],
 ];
 const TABS = [["menu", "Меню заказов"], ["orders", "Заказы"], ["settings", "Настройки"]];
 let root, body, tabsBar, tab = "menu";
@@ -141,7 +144,9 @@ function drawSettings(s) {
   const edit = canSettings();
   const f = {};
   const card = el("div", { class: "card" });
-  for (const [k, title] of SETTINGS) card.append(el("label", {}, title, (f[k] = el("input", { value: s[k] ?? "", disabled: !edit }))));
+  for (const [k, title, kind] of SETTINGS) card.append(el("label", {}, title, (f[k] = kind === "area"
+    ? el("textarea", { rows: 12, maxlength: 6000, disabled: !edit }, s[k] ?? "")
+    : el("input", { value: s[k] ?? "", disabled: !edit }))));
   if (edit) card.append(el("div", { class: "actions" }, el("button", { onclick: async (e) => {
     const values = {}; for (const [k] of SETTINGS) if (String(f[k].value).trim() !== String(s[k] ?? "")) values[k] = f[k].value.trim();
     if (!Object.keys(values).length) { toast("Ничего не изменилось"); return; }

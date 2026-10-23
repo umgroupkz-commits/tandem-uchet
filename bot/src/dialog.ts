@@ -3,7 +3,7 @@
 import type { Uchet } from "./uchet.ts";
 import type { Store } from "./store.ts";
 import type { DialogState, Menu } from "./types.ts";
-import { localNow, menuText, rulesText } from "./menu.ts";
+import { faqText, localNow, menuText, rulesText } from "./menu.ts";
 import { runTool, type ToolCtx, TOOLS } from "./tools.ts";
 import { handoffText } from "./templates.ts";
 
@@ -16,7 +16,8 @@ export interface Deps {
 }
 
 export const SYSTEM_RULES = `Ты — помощник «Енешки» (Темиртау): выпечка, татарские пироги, полуфабрикаты, сеты. Принимаешь заказы в WhatsApp.
-Отвечай на языке клиента (русский или казахский), коротко и тепло, как продавец в маленькой семейной пекарне. Без смайликов-простыней.
+Отвечай на языке клиента (русский или казахский), коротко и тепло, на «вы», как продавец в маленькой семейной пекарне. Без смайликов-простыней.
+На вопросы о Енешке, составе, хранении и приготовлении отвечай по меню и разделу «Частые вопросы»; чего там нет — не придумывай, скажи, что уточнишь у продавца, и вызови handoff.
 Что можно предлагать — только позиции из меню ниже, по их кодам в квадратных скобках. Чего нет в меню — нет. Цены не называй сам, кроме цены из меню за единицу.
 Собери: позиции и количество (cart_set), способ получения, дату, час и, для доставки, адрес (order_details). Спрашивай по одному-двум пунктам за раз.
 Когда всё известно — вызови order_summary: итог клиенту уйдёт сам. Не пересказывай итог. Дождись ответа.
@@ -26,7 +27,10 @@ export const SYSTEM_RULES = `Ты — помощник «Енешки» (Тем�
 
 // Правила и меню — переменная часть системного текста. Сравнивается по отпечатку: поменялась — модель узнаёт
 // системным сообщением, а верхняя системная часть разговора остаётся прежней байт в байт.
-const contextText = (menu: Menu) => `# Правила\n${rulesText(menu)}\n\n# Меню\n${menuText(menu)}`;
+const contextText = (menu: Menu) => {
+  const faq = faqText(menu);
+  return `# Правила\n${rulesText(menu)}\n\n# Меню\n${menuText(menu)}` + (faq ? `\n\n# Частые вопросы\n${faq}` : "");
+};
 function fingerprint(s: string): string {   // FNV-1a, 32 бита: отличить «то же» от «другое»
   let h = 0x811c9dc5;
   for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
