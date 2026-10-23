@@ -1,6 +1,6 @@
 -- Полный снимок схемы учёта Тандем KZ (схема tandem + функции public.tandem_*).
--- Снят каталогом PostgreSQL 2026-10-16 запросом db/schema/snapshot-query.sql (search_path = public) со стенда, идентичного
--- боевой базе после 0051 (тела всех 120 функций сверены по md5 с живой базой) и собран tools/build-schema-snapshot.mjs. Данных не содержит.
+-- Снят каталогом PostgreSQL 2026-10-23 запросом db/schema/snapshot-query.sql (search_path = public) со стенда, идентичного
+-- боевой базе после 0052 (тела всех 120 функций сверены по md5 с живой базой) и собран tools/build-schema-snapshot.mjs. Данных не содержит.
 -- Назначение: поднять пустую базу на собственном сервере одной командой
 --   psql -v ON_ERROR_STOP=1 -f db/schema/tandem_full.sql
 -- затем db/schema/tandem_seed.sql. Проверяется подъёмом в Docker и дымовым тестом (server/README.md).
@@ -4862,6 +4862,10 @@ begin
         if v = '' or exists (select 1 from unnest(string_to_array(replace(v, ' ', ''), ',')) p(id)
                               where not exists (select 1 from tandem.points x where x.id = p.id)) then
           return tandem.err('validation', 'Точки выдачи — коды существующих точек через запятую'); end if;
+      elsif k in ('client_delivery_text', 'client_payment_methods') then
+        if length(v) > 300 then return tandem.err('validation', 'Не длиннее 300 знаков: ' || k); end if;
+      elsif k = 'client_faq' then
+        if length(v) > 6000 then return tandem.err('validation', 'Частые вопросы - не длиннее 6000 знаков'); end if;
       elsif k in ('kaspi_details_ru', 'kaspi_details_kz', 'couriers') then
         if length(v) > 500 then return tandem.err('validation', 'Не длиннее 500 знаков: ' || k); end if;
       else
