@@ -12,11 +12,14 @@ const o = { id: 1, no: 12, lang: "ru", client_name: "Айгуль", kind: "deliv
 
 Deno.test("шаблоны: итог по-русски — позиции, сумма, доставка, дата, вопрос", () => {
   const t = summaryText(q, "ru", "Айгуль");
-  for (const s of ["Айгуль", "Пирог с мясом — 1,5 кг", "6 825 ₸", "Итого: 9 300 ₸", "Доставка бесплатно", "18.10", "18:00", "ул. Мира 12", "Всё верно?"]) assert(t.includes(s), s);
+  for (const s of ["Айгуль", "Пирог с мясом - 1,5 кг", "6 825 ₸", "Итого: 9 300 ₸", "Доставка: ул. Мира 12", "18.10", "18:00", "Всё верно?"]) assert(t.includes(s), s);
+  assert(!t.includes("бесплатно"), "условия доставки - в настройках учёта, итог их не обещает");
 });
 Deno.test("шаблоны: итог по-казахски — казахское название, где есть", () => {
   const t = summaryText(q, "kz", "Айгүл");
   assert(t.includes("Етті бәліш") && t.includes("Манты с говядиной") && t.includes("9 300 ₸"));
+  assert(t.includes("Жеткізу: ул. Мира 12") && !t.includes("тегін"), t);
+  assert(!/\d-(ге|ке|ға|қа|ден|тен|дан|тан)/.test(t), "после времени без падежных окончаний: " + t);
 });
 Deno.test("шаблоны: статусы содержат номер заказа и имя — тексты разные у разных клиентов", () => {
   const c = { ...o, status: "confirmed" } as Order;
@@ -30,11 +33,21 @@ Deno.test("шаблоны: предоплата — реквизиты из на
 Deno.test("шаблоны: отказ и отмена — с причиной", () => {
   assert(statusText({ ...o, status: "rejected", reason: "нет начинки" }, MENU.settings)!.includes("нет начинки"));
 });
+Deno.test("шаблоны: в текстах клиенту нет длинных и средних тире (правило владельца)", () => {
+  const all = [summaryText(q, "ru", "А"), summaryText(q, "kz", "А"), submittedText(1, "ru", true, "09:00"), submittedText(1, "kz", false, "09:00"),
+    soonText({ ...o, status: "new" }), soonText({ ...o, lang: "kz", status: "new" } as Order),
+    ...["confirmed", "awaiting_prepay", "paid", "on_the_way", "awaiting_pickup", "rejected", "cancelled"].flatMap((st) =>
+      ["ru", "kz"].map((lang) => statusText({ ...o, lang, status: st, reason: "причина" } as Order, MENU.settings)!)),
+    ...(["complaint", "files", "human", "failed"] as const).flatMap((k) => [handoffText("ru", k), handoffText("kz", k)])];
+  for (const t of all) assert(!/[–—]/.test(t), t);
+});
 Deno.test("шаблоны: внутренние статусы клиенту не пишутся", () => {
   assertEquals(statusText({ ...o, status: "cooking" }, MENU.settings), null);
 });
 Deno.test("шаблоны: «передал продавцу» вне часов — подтвердим утром", () => {
   assert(submittedText(12, "ru", false, "09:00").includes("утром"));
+  const k = submittedText(12, "kz", false, "09:00");
+  assert(k.includes("09:00") && !/\d-(ге|ке|ға|қа|ден|тен|дан|тан)/.test(k), k);
 });
 Deno.test("шаблоны: без имени — с заглавной буквы", () => {
   const n = { ...o, client_name: null } as Order;
@@ -58,6 +71,6 @@ Deno.test("шаблоны: передача продавцу — с именем
   assert(handoffText("kz", "complaint", "Айгүл").startsWith("Айгүл, "));
 });
 Deno.test("шаблоны: файлы, голосовые и стикеры — своя фраза", () => {
-  assert(handoffText("ru", "files", null).includes("Файлы, голосовые и стикеры пока не разбираю — передаю продавцу"));
+  assert(handoffText("ru", "files", null).includes("Файлы, голосовые и стикеры пока не разбираю, передаю продавцу"));
   assert(handoffText("kz", "files", null).length > 10);
 });

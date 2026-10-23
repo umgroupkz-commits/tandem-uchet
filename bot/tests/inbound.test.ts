@@ -155,7 +155,7 @@ for (const kind of ["image", "video", "voice", "document", "sticker", "что-т
     const { inb, d } = make(m, api({ msgs: [msg("m1", "in", kind === "image" ? "вот такой торт" : null, "2026-10-17T05:00:00Z", "client", { type: kind, attachment: { kind } })] }));
     await inb.handle(await signed(ev("e1"))); await inb.idle();
     assertEquals(m.requests.length, 0);
-    assert(d.uzelF.sent[0].text.startsWith("Айгуль, файлы, голосовые и стикеры пока не разбираю — передаю продавцу"), d.uzelF.sent[0]?.text);
+    assert(d.uzelF.sent[0].text.startsWith("Айгуль, файлы, голосовые и стикеры пока не разбираю, передаю продавцу"), d.uzelF.sent[0]?.text);
     assertEquals(d.uzelF.handoffs.length, 1);
   });
 }
