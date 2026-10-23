@@ -1,0 +1,49 @@
+# Бот приёма заказов Енешки на сервере Енешки, рядом с установкой «Узла» (по образцу бота «Полежима»):
+# отдельная папка ~/bot-eneshka, свой compose-проект и своя маленькая база, портов наружу нет.
+# Вход снаружи - поддомен через Caddy «Узла» (deploy/sayt.sh «Узла», сеть uzel-sites).
+# Образ собирается на машине владельца: docker build -t tandem.invalid/eneshka-bot:<версия> bot
+# и передаётся: docker save tandem.invalid/eneshka-bot:<версия> | ssh <сервер> docker load
+# Ключи - только в ~/bot-eneshka/bot.env (права 600), в репозиторий и в чат не попадают.
+name: bot-eneshka
+
+services:
+  bot:
+    image: tandem.invalid/eneshka-bot:${BOT_VERSIYA:-mestnaya}
+    env_file: ./bot.env
+    environment:
+      DATABASE_URL: postgres://bot:${BOT_DB_PASSWORD:?нужен BOT_DB_PASSWORD в .env}@db:5432/bot
+    depends_on:
+      db: { condition: service_healthy }
+    restart: unless-stopped
+    mem_limit: 160m
+    networks:
+      default: {}
+      uzel-sites: { aliases: [bot-eneshka] }   # Caddy «Узла» ищет бота по этому имени: reverse_proxy bot-eneshka:8080
+    healthcheck:
+      test: ["CMD", "deno", "eval", "const r = await fetch('http://127.0.0.1:8080/health'); if (!r.ok) Deno.exit(1)"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: bot
+      POSTGRES_DB: bot
+      POSTGRES_PASSWORD: ${BOT_DB_PASSWORD:?нужен BOT_DB_PASSWORD в .env}
+    command: ["postgres", "-c", "shared_buffers=16MB", "-c", "max_connections=20", "-c", "work_mem=2MB"]
+    volumes: [db:/var/lib/postgresql/data]
+    restart: unless-stopped
+    mem_limit: 128m
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "bot", "-d", "bot"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  db:
+
+networks:
+  uzel-sites:
+    external: true
