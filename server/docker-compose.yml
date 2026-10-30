@@ -17,7 +17,9 @@ services:
       retries: 20
     restart: unless-stopped
   proxy:
-    build: .
+    build:
+      context: ..
+      dockerfile: server/Dockerfile
     environment:
       # Пароль — отдельной переменной, не внутри postgres://…: знаки / # ? + в нём ломали разбор адреса.
       PGHOST: db
@@ -26,6 +28,11 @@ services:
       PGPASSWORD: ${DB_PASSWORD}
       PORT: "8787"
       CORS_ORIGIN: ${CORS_ORIGIN:-*}
+      # 0053: фискализация кассы через Webkassa (пусто - фискальные действия отвечают «не настроено»)
+      WEBKASSA_BASE: ${WEBKASSA_BASE:-}
+      WEBKASSA_API_KEY: ${WEBKASSA_API_KEY:-}
+      WEBKASSA_LOGIN: ${WEBKASSA_LOGIN:-}
+      WEBKASSA_PASSWORD: ${WEBKASSA_PASSWORD:-}
     depends_on:
       db: { condition: service_healthy }
     ports: ["127.0.0.1:${PROXY_PORT:-8787}:8787"]
