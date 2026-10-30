@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#1F3A68">
+<title>Тандем KZ - проверка кассы с фискальным чеком</title>
+<!-- Страница для сотрудников: ссылка на обучение (test.html#kassa), уроки про фискальный чек (0053-0058) и
+     проверка по списку с отчётом для WhatsApp. Отметки - только в браузере сотрудника (localStorage). -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Раскладка: одна колонка текста ~68 знаков, слева шаги и проверки, лента чека - как образец того, что увидит продавец */
+:root {
+  --bg: #F4F6F8; --surface: #FFFFFF; --ink: #17212F; --ink2: #4A5566; --muted: #6E7887;
+  --line: #DCE2E9; --accent: #1F3A68; --accent2: #2D5AA0; --ok: #0B6B4F; --okbg: #E3F3EC;
+  --bad: #B4453C; --badbg: #FBEAE8; --paper: #FFFDF6; --paperline: #E6E0CD;
+  --f-body: "Golos Text", "Segoe UI", system-ui, sans-serif;
+  --f-mono: "JetBrains Mono", "Consolas", ui-monospace, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #11161D; --surface: #18202A; --ink: #E6EBF1; --ink2: #B6C0CC; --muted: #8A95A3;
+  --line: #2A3542; --accent: #9DB8E6; --accent2: #B9CDF0; --ok: #6FD0A8; --okbg: #143528;
+  --bad: #F09A91; --badbg: #3A1D1A; --paper: #1E2630; --paperline: #34404D; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #11161D; --surface: #18202A; --ink: #E6EBF1; --ink2: #B6C0CC; --muted: #8A95A3;
+  --line: #2A3542; --accent: #9DB8E6; --accent2: #B9CDF0; --ok: #6FD0A8; --okbg: #143528;
+  --bad: #F09A91; --badbg: #3A1D1A; --paper: #1E2630; --paperline: #34404D; color-scheme: dark }
+body { background: var(--bg); color: var(--ink); font: 16px/1.55 var(--f-body); }
+.wrap { max-width: 880px; margin: 0 auto; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 28px 56px; display: grid; gap: 28px; }
+h1, h2 { text-wrap: balance; margin: 0; line-height: 1.2; }
+h1 { font-size: clamp(26px, 5vw, 36px); font-weight: 700; letter-spacing: -0.01em; }
+h2 { font-size: 21px; font-weight: 650; }
+p { margin: 0; }
+.eyebrow { font-size: 12.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+.lead { font-size: 17.5px; color: var(--ink2); max-width: 66ch; }
+.hero { display: grid; grid-template-columns: 1fr auto; gap: 24px; align-items: start; }
+.hero > div { display: grid; gap: 12px; min-width: 0; }
+@media (max-width: 680px) { .hero { grid-template-columns: 1fr; } .receipt { justify-self: start; } }
+.btn { display: inline-flex; align-items: center; gap: 8px; padding: 12px 18px; border-radius: 10px; background: var(--accent); color: var(--bg); font-weight: 600; text-decoration: none; border: 0; font: 600 16px var(--f-body); cursor: pointer; width: fit-content; }
+.btn:hover { background: var(--accent2); }
+.btn:focus-visible, button:focus-visible, input:focus-visible, a:focus-visible { outline: 3px solid var(--accent2); outline-offset: 2px; }
+.btn.ghost { background: transparent; color: var(--accent); border: 1.5px solid var(--accent); }
+.receipt { width: 210px; background: var(--paper); border: 1px solid var(--paperline); border-radius: 4px; padding: 14px 14px 18px; font: 11.5px/1.45 var(--f-mono); color: var(--ink2); box-shadow: 0 1px 0 var(--paperline); }
+.receipt b { color: var(--ink); font-weight: 600; }
+.receipt hr { border: 0; border-top: 1px dashed var(--paperline); margin: 7px 0; }
+.receipt .row { display: flex; justify-content: space-between; gap: 8px; }
+.receipt .qr { width: 64px; height: 64px; margin: 10px auto 4px; display: block; }
+.receipt .cap { text-align: center; font-size: 10.5px; color: var(--muted); }
+section { display: grid; gap: 14px; }
+ol.steps { margin: 0; padding-left: 22px; display: grid; gap: 10px; max-width: 70ch; }
+ol.steps li::marker { color: var(--accent); font-weight: 700; }
+.note { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; color: var(--ink2); max-width: 70ch; }
+.note b { color: var(--ink); }
+.lessons { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; }
+.lesson { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; display: grid; gap: 4px; min-width: 0; }
+.lesson .n { font: 600 12px var(--f-mono); color: var(--accent); }
+.lesson .t { font-weight: 600; }
+.lesson .d { font-size: 14px; color: var(--muted); }
+.who { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+.who label { font-weight: 600; }
+.who input { flex: 1 1 220px; min-width: 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--ink); font: 16px var(--f-body); }
+.checks { display: grid; gap: 10px; }
+.check { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; display: grid; grid-template-columns: 34px 1fr; gap: 6px 12px; }
+.check.ok { border-color: var(--ok); }
+.check.bad { border-color: var(--bad); }
+.check .num { font: 600 15px var(--f-mono); color: var(--muted); padding-top: 1px; }
+.check .body { display: grid; gap: 6px; min-width: 0; }
+.check .do { font-weight: 600; }
+.check .want { color: var(--ink2); font-size: 15px; }
+.check .want::before { content: "Должно получиться: "; color: var(--muted); }
+.marks { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 4px; }
+.marks button { padding: 7px 12px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--ink2); font: 500 14px var(--f-body); cursor: pointer; }
+.marks button[aria-pressed="true"].y { background: var(--okbg); border-color: var(--ok); color: var(--ok); font-weight: 600; }
+.marks button[aria-pressed="true"].n { background: var(--badbg); border-color: var(--bad); color: var(--bad); font-weight: 600; }
+.marks input { flex: 1 1 200px; min-width: 0; padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px; background: transparent; color: var(--ink); font: 14px var(--f-body); }
+.marks input[hidden] { display: none; }
+.report { display: grid; gap: 10px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
+.report .sum { color: var(--ink2); font-variant-numeric: tabular-nums; }
+.report textarea { width: 100%; min-height: 150px; box-sizing: border-box; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--ink); font: 13px/1.45 var(--f-mono); resize: vertical; }
+.copied { color: var(--ok); font-weight: 600; }
+ul.plain { margin: 0; padding-left: 20px; display: grid; gap: 8px; max-width: 70ch; color: var(--ink2); }
+ul.plain b { color: var(--ink); }
+.foot { color: var(--muted); font-size: 14px; border-top: 1px solid var(--line); padding-top: 16px; }
+code { font: 14px var(--f-mono); background: var(--surface); border: 1px solid var(--line); border-radius: 5px; padding: 0 5px; }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+*{box-sizing:border-box} [hidden]{display:none!important} body{margin:0}
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <header class="hero">
+    <div>
+      <span class="eyebrow">Тандем · касса · сборка 27</span>
+      <h1>Обучение на кассе с фискальным чеком</h1>
+      <p class="lead">Касса теперь сама пробивает каждый чек в налоговой через Webkassa. Пройдите уроки обучения, затем проверьте всё по списку ниже и отправьте отчёт. Чеки «Учебной кассы» уходят в тестовую кассу Webkassa и в настоящую налоговую не попадают, поэтому пробивать можно сколько угодно.</p>
+      <a class="btn" id="open" href="test.html#kassa">Открыть обучение →</a>
+    </div>
+    <div class="receipt" aria-label="Так выглядит фискальный чек">
+      <div class="cap">ФИСКАЛЬНЫЙ ЧЕК</div><hr>
+      <div class="row"><span>Манты</span><span>220,00</span></div>
+      <div class="row"><span>Пирожки × 1</span><span>170,00</span></div><hr>
+      <div class="row"><b>ИТОГО</b><b>390,00</b></div>
+      <div class="row"><span>Наличные</span><span>390,00</span></div><hr>
+      <div>ФП: <b>1384401321036</b></div>
+      <svg class="qr" viewBox="0 0 21 21" aria-hidden="true"><rect width="21" height="21" fill="var(--paper)"/><g fill="var(--ink)"><rect x="0" y="0" width="7" height="7"/><rect x="14" y="0" width="7" height="7"/><rect x="0" y="14" width="7" height="7"/></g><g fill="var(--paper)"><rect x="1" y="1" width="5" height="5"/><rect x="15" y="1" width="5" height="5"/><rect x="1" y="15" width="5" height="5"/></g><g fill="var(--ink)"><rect x="2" y="2" width="3" height="3"/><rect x="16" y="2" width="3" height="3"/><rect x="2" y="16" width="3" height="3"/><rect x="9" y="1" width="2" height="2"/><rect x="8" y="5" width="3" height="2"/><rect x="10" y="9" width="3" height="3"/><rect x="15" y="10" width="2" height="2"/><rect x="18" y="13" width="2" height="3"/><rect x="9" y="14" width="2" height="2"/><rect x="12" y="17" width="3" height="2"/><rect x="17" y="17" width="3" height="3"/><rect x="1" y="9" width="3" height="2"/><rect x="5" y="11" width="2" height="2"/></g></svg>
+      <div class="cap">проверка чека на сайте ОФД</div>
+    </div>
+  </header>
+
+  <section>
+    <h2>Как начать</h2>
+    <ol class="steps">
+      <li>Нажмите «Открыть обучение». Удобнее с планшета у кассы или с компьютера.</li>
+      <li>Введите код обучения - его даёт руководитель. Появятся учебные входы с кнопкой «Копировать».</li>
+      <li>Роль «Продавец на кассе» откроется сама. Нажмите «Начать» у урока: программа подсвечивает кнопку и объясняет, что нажать.</li>
+      <li>Внизу экрана входа в кассу должно быть написано «сборка 27». Другой номер - обновите страницу.</li>
+      <li>Есть чековый принтер на 58 или 80 мм - подключите его как обычный принтер. Нет - в окне печати выберите «Сохранить как PDF».</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Уроки про фискальный чек</h2>
+    <p class="lead" style="font-size:16px">Сначала уроки 1-5 по порядку, если ещё не проходили. Новое про налоговую - в этих четырёх:</p>
+    <div class="lessons">
+      <div class="lesson"><span class="n">урок 6</span><span class="t">Ошибка в чеке</span><span class="d">Пробитый чек не исправляют: отмена, касса пробивает чек возврата, затем новый чек.</span></div>
+      <div class="lesson"><span class="n">урок 8</span><span class="t">Закрытие смены</span><span class="d">Касса изымает остаток наличных в Webkassa и снимает Z-отчёт.</span></div>
+      <div class="lesson"><span class="n">урок 9</span><span class="t">Чек после закрытия</span><span class="d">Чек пробивается в новую смену, смену закрывают заново.</span></div>
+      <div class="lesson"><span class="n">урок 10</span><span class="t">Фискальный чек</span><span class="d">Пометки у чека, печать с QR, X-отчёт, размен и изъятие.</span></div>
+    </div>
+  </section>
+
+  <section aria-labelledby="h-checks">
+    <h2 id="h-checks">Проверьте сами</h2>
+    <div class="who"><label for="tester">Кто проверяет</label><input id="tester" type="text" placeholder="Фамилия и имя" autocomplete="name"></div>
+    <div class="checks" id="checks"></div>
+  </section>
+
+  <section class="report" aria-labelledby="h-report">
+    <h2 id="h-report">Отчёт</h2>
+    <p class="sum" id="sum">Отметьте проверки выше.</p>
+    <textarea id="rep" readonly aria-label="Текст отчёта"></textarea>
+    <div class="marks"><button class="btn" id="copy" type="button">Скопировать отчёт</button><span id="copied" class="copied" hidden>Скопировано - вставьте в WhatsApp</span></div>
+    <p style="color:var(--muted);font-size:14px">Отметки хранятся только в этом браузере. Ошибку опишите ещё и кнопкой «✎ Замечание» в шапке кассы: экран и номер сборки приложатся сами, допишите номер чека и текст сообщения.</p>
+  </section>
+
+  <section>
+    <h2>Для администратора и собственника</h2>
+    <ul class="plain">
+      <li><b>Склады → Точки продаж.</b> У «Учебной кассы» пометка «фискальный чек». В карточке точки: галочка «пробивать фискальные чеки (Webkassa)», номер кассы, НДС, ширина ленты. Настройки «Учебной кассы» не меняйте: на них идут уроки.</li>
+      <li><b>Номенклатура → «Чай пиала пакетированный 100штук».</b> Блок «Для фискального чека»: штрихкод 4870002326226 и «В чеке: товар». По штрихкоду Webkassa сама находит НТИН и печатает его в чеке.</li>
+      <li><b>Склад → Готовность.</b> Проверка «Товары без НТИН и штрихкода» появится, когда фискальный чек включат у рабочей точки.</li>
+      <li>Учебные учётки настройки только показывают, сохранить их можно своей учёткой администратора или собственника.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Что в проверке не настоящее</h2>
+    <ul class="plain">
+      <li>Реквизиты на ленте (организация, ИИН, адрес в Алматы, кассир) - тестового кабинета Webkassa. На рабочей кассе будут ваши.</li>
+      <li>QR-код ведёт на тестовый сайт ОФД.</li>
+      <li>Тестовая Webkassa иногда молчит пару минут: тогда чеки «не пробит в налоговой» и пробиваются позже сами.</li>
+    </ul>
+  </section>
+
+  <p class="foot"><a href="test.html">Все уроки обучения</a> · <a href="help.html">Памятки по ролям</a> · <a href="kassa.html">Касса</a></p>
+</div>
+
+<script>
+const CHECKS = [
+  ["Пробейте чек наличными", "сначала «Чек пробит · …», через пару секунд «Чек пробит в налоговой · ФП …». Во вкладке «Смена» у чека зелёная пометка «в налоговой»."],
+  ["У этого чека нажмите «Печать чека»", "на ленте организация, смена, ФП, позиции, итог и QR-код; QR с телефона открывает чек на сайте ОФД."],
+  ["Пробейте чеки Kaspi QR, картой и переводом", "все с пометкой «в налоговой»."],
+  ["Пробейте чек со скидкой: нажмите на цену в строке чека, «−10 %»", "на ленте цена и скидка, итог равен сумме чека в кассе."],
+  ["Продайте весовой товар, 0,35 кг", "на ленте 0,35 кг, сумма как в кассе."],
+  ["Отмените пробитый чек (урок 6)", "«Возврат пробит в налоговой · ФП …», у чека «отменён» и «возврат пробит», «Печать возврата» печатает чек возврата."],
+  ["Попробуйте исправить пробитый чек", "кнопки «Исправить» у него нет, только «Отменить чек»."],
+  ["Выключите интернет, пробейте чек, включите интернет", "без связи «Чек сохранён на планшете»; со связью чек сам уходит и получает «в налоговой»."],
+  ["Во вкладке «Смена» нажмите «X-отчёт: что пробито в налоговой»", "продажи и возвраты по способам оплаты совпадают с итогами вверху «Смены»."],
+  ["«Внести размен», 5 000", "«Внесено 5 000 ₸ · наличных в Webkassa …»."],
+  ["«Изъять наличные»: сначала без «на что», потом 500 с «на что»", "без «на что» не проходит; с ним «Изъято 500 ₸», наличных в Webkassa на 500 меньше."],
+  ["Закройте смену (урок 8)", "«Изъято из кассы Webkassa … ₸ (выручка сдана). Смена Webkassa закрыта, Z-отчёт по смене №…»; X-отчёт после этого - наличных 0."],
+  ["Закройте смену ещё раз, ничего не продавая", "«Смена Webkassa уже была закрыта», без ошибки."],
+  ["Продайте после закрытия (урок 9) и закройте смену заново", "чек «в налоговой», при повторном закрытии новый Z-отчёт."],
+];
+const KEY = "tandem_fiscal_checklist_v1";
+let st = { tester: "", marks: {} };
+try { st = Object.assign(st, JSON.parse(localStorage.getItem(KEY) || "{}")); } catch (e) {}
+const save = () => { try { localStorage.setItem(KEY, JSON.stringify(st)); } catch (e) {} };
+const $ = (id) => document.getElementById(id);
+const tester = $("tester"); tester.value = st.tester || "";
+tester.addEventListener("input", () => { st.tester = tester.value; save(); report(); });
+
+const box = $("checks");
+CHECKS.forEach(([doIt, want], i) => {
+  const m = st.marks[i] || {};
+  const card = document.createElement("div"); card.className = "check" + (m.v === "y" ? " ok" : m.v === "n" ? " bad" : "");
+  card.innerHTML = `<span class="num">${String(i + 1).padStart(2, "0")}</span><div class="body"><span class="do"></span><span class="want"></span>
+    <div class="marks"><button type="button" class="y" aria-pressed="false">Получилось</button><button type="button" class="n" aria-pressed="false">Не так</button>
+    <input type="text" id="c${i}" placeholder="Что не так: что нажали, что увидели" hidden></div></div>`;
+  card.querySelector(".do").textContent = doIt;
+  card.querySelector(".want").textContent = want;
+  const [y, n] = card.querySelectorAll("button"), inp = card.querySelector("input");
+  const paint = () => { const v = (st.marks[i] || {}).v; y.setAttribute("aria-pressed", String(v === "y")); n.setAttribute("aria-pressed", String(v === "n"));
+    inp.hidden = v !== "n"; card.className = "check" + (v === "y" ? " ok" : v === "n" ? " bad" : ""); };
+  inp.value = m.c || "";
+  const set = (v) => { const cur = st.marks[i] || {}; st.marks[i] = { ...cur, v: cur.v === v ? null : v }; save(); paint(); report(); if (st.marks[i].v === "n") inp.focus(); };
+  y.addEventListener("click", () => set("y")); n.addEventListener("click", () => set("n"));
+  inp.addEventListener("input", () => { st.marks[i] = { ...(st.marks[i] || {}), c: inp.value }; save(); report(); });
+  paint(); box.append(card);
+});
+
+function report() {
+  const ok = [], bad = [], left = [];
+  CHECKS.forEach(([doIt], i) => { const m = st.marks[i] || {};
+    if (m.v === "y") ok.push(i + 1); else if (m.v === "n") bad.push(`${i + 1}. ${doIt}${m.c ? " - " + m.c : ""}`); else left.push(i + 1); });
+  $("sum").textContent = `Получилось: ${ok.length} · не так: ${bad.length} · не проверено: ${left.length} из ${CHECKS.length}`;
+  const lines = [`Проверка фискального чека, касса Тандема (сборка 27)`, `Проверял(а): ${st.tester || "-"}`, ``,
+    `Получилось: ${ok.length ? ok.join(", ") : "-"}`, `Не так: ${bad.length ? "" : "-"}`, ...bad, ``, `Не проверено: ${left.length ? left.join(", ") : "-"}`];
+  $("rep").value = lines.join("\n");
+}
+report();
+$("copy").addEventListener("click", () => {
+  const t = $("rep").value, done = () => { $("copied").hidden = false; setTimeout(() => { $("copied").hidden = true; }, 2500); };
+  const fallback = () => { $("rep").focus(); $("rep").select(); };
+  try { navigator.clipboard.writeText(t).then(done, fallback); } catch (e) { fallback(); }
+});
+</script>
+</body>
+</html>
