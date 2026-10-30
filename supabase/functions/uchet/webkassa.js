@@ -28,7 +28,7 @@ export function createWebkassa(cfg, { fetchImpl = fetch, timeoutMs = 25000 } = {
   if (cfg.mode === "sim") return simulator();
   if (!cfg.apiKey || !cfg.login || !cfg.password) {
     const fail = async () => { throw new WebkassaError("Касса Webkassa не настроена: нет ключа, логина или пароля на сервере"); };
-    return { authorize: fail, check: fail, money: fail, xReport: fail, zReport: fail, printFormat: fail, byNumber: fail, cashboxes: fail, refUnits: fail };
+    return { authorize: fail, check: fail, money: fail, xReport: fail, zReport: fail, printFormat: fail, byNumber: fail, history: fail, cashboxes: fail, refUnits: fail };
   }
 
   async function post(path, body, extraHeaders = {}) {
@@ -80,14 +80,19 @@ export function createWebkassa(cfg, { fetchImpl = fetch, timeoutMs = 25000 } = {
       { CashboxUniqueNumber: cashbox, ExternalCheckNumber: externalNumber, PaperKind: paperKind },
       { "Accept-Language": "ru-RU", "Secondary-Language": "kk-KZ" }),
     byNumber: (cashbox, number, shift) => withToken("/api/v4/Check/HistoryByNumber", { CashboxUniqueNumber: cashbox, Number: number, ShiftNumber: shift }),
+    history: (cashbox, shift, skip = 0, take = 50) => withToken("/api/v4/Check/History", { CashboxUniqueNumber: cashbox, ShiftNumber: shift, Skip: skip, Take: take }),
     cashboxes: () => withToken("/api/v4/Cashboxes", {}),
     refUnits: () => withToken("/api/v4/references/RefUnits", {}),
   };
 }
 
+// Код 2 «Срок действия сессии истек»: у пользователя Webkassa одна сессия, новый вход (другой сервер,
+// проверка) закрывает прежнюю - тогда входим заново и повторяем запрос один раз.
 function isAuthError(e) {
-  return e.status === 401 || /токен|token|авториз|authoriz/i.test(e.message || "");
+  return e.code === 2 || e.status === 401 || /сесси|токен|token|авториз|authoriz/i.test(e.message || "");
 }
+// Код 14 «Чек с внешним номером … уже присутствует»: чек уже пробит (ответ на первую попытку потерялся).
+export const isAlreadyIssued = (e) => !!e && e.code === 14;
 
 // Имитация Webkassa: те же формы ответов, без сети. Пробитый чек запоминается по ExternalCheckNumber, так
 // что повтор возвращает тот же фискальный признак - как настоящая касса.
@@ -113,6 +118,8 @@ function simulator() {
     xReport: async () => ({ ShiftNumber: shift, DateTime: now() }),
     zReport: async () => { const d = { ShiftNumber: shift, DateTime: now() }; shift++; order = 0; return d; },
     printFormat: async (_c, ext) => { const d = issued.get(ext); return { Lines: d ? [{ Value: "ИМИТАЦИЯ ЧЕКА" }, { Value: "ФП " + d.CheckNumber }] : [] }; },
-    byNumber: async () => null, cashboxes: async () => ({ List: [{ UniqueNumber: "SIM" }] }), refUnits: async () => [],
+    byNumber: async () => null,
+    history: async () => ({ Items: [...issued.entries()].map(([ext, d]) => ({ ...d, Number: d.CheckNumber, ExternalCheckNumber: ext })) }),
+    cashboxes: async () => ({ List: [{ UniqueNumber: "SIM" }] }), refUnits: async () => [],
   };
 }

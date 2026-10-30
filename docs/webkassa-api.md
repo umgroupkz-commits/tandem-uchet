@@ -57,3 +57,23 @@ doc/Webkassa). Там же: описание API General v35/v39 (PDF, скан)
 карточке товара - выгрузка iiko отдаёт его в `products[].barcodes[]` (тип штрихкода), так что проставленные
 в iiko коды программа может забирать сама. Один товар - один НТИН (разные вкусы - разные позиции или
 модификаторы).
+
+## Проверено на тестовом стенде 30.10.2026 (касса SWK00036558, tools/webkassa-probe.mjs)
+
+- Ответы обёрнуты: `{ "Data": {...} }` или `{ "Errors": [ { "Code", "Text" } ] }` (HTTP 200 и при ошибке).
+- Чек продажи: `CheckNumber` (фискальный признак), `DateTime` (`ДД.ММ.ГГГГ чч:мм:сс`), `DateTimeUTC`,
+  `OfflineMode`, `CashboxOfflineMode`, `Cashbox.{UniqueNumber, RegistrationNumber (РНМ), IdentityNumber,
+  Address, Ofd}`, `Organization`, `CheckOrderNumber`, `ShiftNumber`, `EmployeeName`, `TicketUrl` (чек на
+  сайте ОФД), `TicketPrintUrl`, `Total`, `ExternalCheckNumber`. НТИН печатается в чеке строкой `NTIN:…`.
+- Возврат (`OperationType` 3 + `ReturnBasisDetails` из ответа продажи) - проходит.
+- `Ticket/PrintFormat` - `Lines[]` `{Order, Type, Value, Style}`, 36 символов в строке на 58 мм.
+- Внесение/изъятие, X-отчёт, Z-отчёт - проходят; Z закрывает смену (`ShiftNumber`, `CloseOn`, суммы).
+- `Check/History` (`ShiftNumber`, `Skip`, `Take`) отдаёт чеки смены с `ExternalCheckNumber`, `Number`,
+  `RegistratedOn`, `TicketUrl` - по нему находим чек, уже пробитый при потерянном ответе.
+- `Check/GetTicketByExternalCheckNumber` на стенде нет (404).
+- Коды ошибок: **2** «Срок действия сессии истек» - у пользователя одна сессия, новый вход закрывает
+  прежнюю: войти заново и повторить; **10** «Касса не имеет активной лицензии» - на стенде лечится пунктом
+  «Добавить лицензию» в меню кассы кабинета интегратора; **14** «Чек с внешним номером … уже присутствует» -
+  чек уже пробит, взять его из `Check/History`; **19** «Чек с внешним номером … не найден».
+- В кабинете интегратора у тестовой кассы есть сценарии: офлайн-режим, офлайн на 72 часа, лицензии
+  истекли, «Смена > 24ч» - для проверки ошибок.
