@@ -1,7 +1,7 @@
 // Вкладка «Заказы» кассы (0050): заказы клиентов из WhatsApp-бота. Новый заказ продавец подтверждает
 // здесь или в Telegram — кто первым; дальше ведёт статусы до выдачи. «Выдан»/«Доставлен» пробивает чек
 // на сервере (uid заказа), очередь чеков планшета не участвует.
-import { el, fmt, toast } from "../office/ui.js?v=25";
+import { el, fmt, toast } from "../office/ui.js?v=26";
 
 const POLL = 20000;
 const PAY = { cash: "Наличные", kaspi_qr: "Kaspi QR", transfer: "Перевод", card: "Карта" };
@@ -90,6 +90,8 @@ async function move(o, to) {
   try { r = await C.call("corder_status", { ...p, seller: C.seller() }); } catch (e) { toast("Нет связи — статус не изменён", "bad"); return; }
   if (!r.ok) { toast(r.message || "Не получилось — повторите", "bad"); load(); return; }
   toast(`№${o.no}: ${r.order.status_name}`); load();
+  // 0053: чек заказа (uid заказа) создал сервер - касса пробивает его в налоговой, как свой
+  if (PAYTO.has(to) && C.onCheck) C.onCheck(o.uid, to);
 }
 
 function payDialog(o) {

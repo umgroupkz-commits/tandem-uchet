@@ -24,7 +24,10 @@ export async function handleFiscal(action, payload, deps) {
   try {
     if (op === "x") return { ok: true, report: await wk.xReport(prep.cashbox) };
     if (op === "z") {
-      const d = await wk.zReport(prep.cashbox);
+      let d;
+      // Повторное закрытие дня (поздний чек, исправление): смена Webkassa уже закрыта первым Z - это не ошибка.
+      try { d = await wk.zReport(prep.cashbox); }
+      catch (e) { if (e && e.code === 12) return { ok: true, already: true }; throw e; }
       await deps.store(point, null, "z", true, { ...d, report_date: payload.date || prep.date }, null);
       return { ok: true, report: d };
     }

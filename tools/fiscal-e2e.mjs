@@ -1,6 +1,8 @@
 // Сквозная проверка фискализации через сервер учёта на «Учебной кассе» (касса Webkassa тестового стенда):
 // чек → fiscal_check → повтор без второго чека → печатная форма → отмена → чек возврата → X-отчёт.
 // Код учебной кассы берётся по коду обучения (TANDEM_TRAINING_CODE) и не печатается.
+// Фискальный чек у «Учебной кассы» по умолчанию выключен (урок 6 обучалки исправляет пробитый чек, а пробитый
+// в налоговой не исправляется): на время проверки включите его в Склады → Точки продаж → «Учебная касса».
 // Запуск: TANDEM_TRAINING_CODE=… node tools/fiscal-e2e.mjs [--z]   (--z - в конце закрыть смену Z-отчётом)
 import crypto from "node:crypto";
 
@@ -14,6 +16,7 @@ if (!ti.ok) { console.log("нет учёток:", ti.error); process.exit(2); }
 const who = { point_id: ti.creds.kassa.point, pin: ti.creds.kassa.pin };
 const login = await call("login", who);
 ok("вход в учебную кассу, фискализация включена", login.ok && login.point && login.point.fiscal === true, JSON.stringify(login.point || login.error));
+if (!(login.point && login.point.fiscal)) { console.log("у «Учебной кассы» выключен фискальный чек - включите его на время проверки"); process.exit(2); }
 
 const menu = await call("items", who);
 const goods = (menu.items || []).filter((i) => Number(i.price) > 0).slice(0, 2);

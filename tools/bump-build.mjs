@@ -1,7 +1,7 @@
 // Номер сборки — одной командой: node tools/bump-build.mjs [N]. Без N — следующая за текущей.
 // Статические import не умеют подставлять переменную в "?v=", поэтому номер живёт в файлах
 // буквально; этот скрипт — единственное место, где его меняют. Меняет все "?v=N" в страницах и
-// модулях, константу BUILD и надпись «сборка N».
+// модулях, константу BUILD и надпись «· сборка N».
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -18,7 +18,8 @@ for (const f of files) {
   const before = fs.readFileSync(p, "utf8");
   const after = before.replace(/\?v=\d+/g, "?v=" + next)
     .replace(/export const BUILD = \d+;/, "export const BUILD = " + next + ";")
-    .replace(/сборка \d+/g, "сборка " + next);
+    // только видимая надпись «· сборка N»: «(сборка 21)» в комментариях - история, её не трогаем
+    .replace(/· сборка \d+/g, "· сборка " + next);
   if (after !== before) { fs.writeFileSync(p, after); touched++; }
 }
 console.log(`сборка ${cur} → ${next}, файлов изменено: ${touched}`);

@@ -1,5 +1,5 @@
-import { api, can } from "./api.js?v=25";
-import { el, toast, modal, errText, saveFailed, confirmDlg, fmt } from "./ui.js?v=25";
+import { api, can } from "./api.js?v=26";
+import { el, toast, modal, errText, saveFailed, confirmDlg, fmt } from "./ui.js?v=26";
 
 let root, data, pts;
 // Склады — по алфавиту, выключенные внизу: «Учебный склад кухни» стоял последним из 30 в порядке точек.
@@ -48,7 +48,9 @@ async function load() {
       // строке — карточку точки. Склад не определился однозначно — строка ведёт в карточку точки, как раньше.
       const st = storeOf(x);
       pt.append(el("tr", { class: "row" + (x.active ? "" : " off"), onclick: () => editPoint(x) },
-        el("td", {}, x.name), el("td", {}, MODES[x.mode] || x.mode), el("td", {}, x.legal_entity || ""),
+        el("td", {}, x.name), el("td", {}, MODES[x.mode] || x.mode,
+          x.fiscal_enabled ? [" ", el("span", { class: "tag ok", title: "Касса Webkassa " + (x.fiscal_cashbox || "") }, "фискальный чек")] : null),
+        el("td", {}, x.legal_entity || ""),
         el("td", {}, !x.store_name ? el("span", { class: "tag bad" }, "нет склада")
             : st ? el("button", { class: "link cell", title: "Открыть карточку склада", onclick: (e) => { e.stopPropagation(); edit(st); } }, x.store_name)
             : x.store_name,
@@ -124,7 +126,7 @@ function edit(s) {
     ...data.points.map((p) => el("option", { value: p.id, selected: s && p.id === s.point_id }, p.name)));
   const def = el("input", { type: "checkbox", checked: s ? s.is_default : false, disabled: ro });
   const active = el("input", { type: "checkbox", checked: s ? s.active : true, disabled: ro });
-  // Учебный склад (сборка 25): приходы на него не меняют учётную цену позиции. Флажок — только если
+  // Учебный склад (сборка 21): приходы на него не меняют учётную цену позиции. Флажок — только если
   // сервер уже знает поле (stores_list отдаёт training): старый сервер молча не сохранил бы отметку.
   const knowsTraining = data.stores.some((x) => "training" in x);
   const training = el("input", { type: "checkbox", checked: !!(s && s.training), disabled: ro });
@@ -191,6 +193,21 @@ function editPoint(x) {
   const chosen = new Set(x ? x.item_categories : []);
   const cats = el("div", { class: "cats" }, ...pts.categories.map((c) => el("label", { class: "chk" },
     el("input", { type: "checkbox", checked: chosen.has(c), disabled: ro, onchange: (e) => { e.target.checked ? chosen.add(c) : chosen.delete(c); } }), " " + c)));
+  // 0054: фискальный чек (Webkassa). Сервер без этих настроек (до 0054) их не отдаёт - тогда и не шлём.
+  const fk = !x || "fiscal_enabled" in x;
+  const fOn = el("input", { type: "checkbox", checked: !!(x && x.fiscal_enabled), disabled: ro });
+  const fBox = el("input", { value: (x && x.fiscal_cashbox) || "", readonly: ro, placeholder: "например SWK00036558", autocomplete: "off" });
+  const fVat = el("select", { disabled: ro }, ...[["", "без НДС"], ["12", "12 %"], ["16", "16 %"]].map(([v, t]) =>
+    el("option", { value: v, selected: String((x && x.fiscal_vat) ?? "") === v }, t)));
+  const fPaper = el("select", { disabled: ro }, ...[["58", "58 мм"], ["80", "80 мм"]].map(([v, t]) =>
+    el("option", { value: v, selected: String((x && x.fiscal_paper) || 58) === v }, t)));
+  const fiscal = fk ? el("div", { class: "card", style: "padding:10px 14px;margin:12px 0 0" },
+    el("div", { class: "actions", style: "margin-top:0" }, el("label", {}, fOn, " пробивать фискальные чеки (Webkassa)")),
+    el("div", { class: "dim" }, "Только для режима «касса»: каждый чек кассы уходит в налоговую через Webkassa, покупателю печатается чек с QR-кодом. Пока галочка не стоит, касса работает без фискализации."),
+    el("div", { class: "grid2" },
+      el("div", {}, el("label", {}, "Заводской номер кассы Webkassa"), fBox),
+      el("div", {}, el("label", {}, "НДС в чеке"), fVat),
+      el("div", {}, el("label", {}, "Ширина чековой ленты"), fPaper))) : "";
   const err = el("div", { class: "err" });
   // Пустые места — пустой строкой, а не null: родной append печатал null текстом («nullnull» под заголовком).
   const u = x ? unbound(x) : null;
@@ -203,12 +220,14 @@ function editPoint(x) {
     el("div", { class: "dim" }, "Код, по которому продавцы входят на экран точки и в кассу. Сменили — сообщите его точке."),
     el("label", {}, "Группы меню на экране точки"),
     el("div", { class: "dim" }, "Ничего не отмечено — точка видит всё, что в продаже."), cats,
+    fiscal,
     el("div", { class: "actions" }, el("label", {}, active, " точка работает")), err,
     el("div", { class: "actions" },
       ro ? null : el("button", { onclick: async (e) => {
         e.target.disabled = true;
         const r = await api("store_point_save", { id: x ? x.id : id.value.trim(), name: name.value, mode: mode.value, legal_entity: le.value,
-          pin: pin.value.trim(), active: active.checked, item_categories: [...chosen] });
+          pin: pin.value.trim(), active: active.checked, item_categories: [...chosen],
+          ...(fk ? { fiscal_enabled: fOn.checked, fiscal_cashbox: fBox.value.trim(), fiscal_vat: fVat.value, fiscal_paper: fPaper.value } : {}) });
         e.target.disabled = false;
         if (!r.ok) { err.textContent = errText(r); return; }
         toast("Сохранено"); m.close(); load();

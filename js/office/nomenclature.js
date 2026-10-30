@@ -1,10 +1,10 @@
-import { api, can } from "./api.js?v=25";
-import { el, fmt, toast, debounce, modal, confirmDlg, errText, saveFailed } from "./ui.js?v=25";
-import { loadXlsx } from "./stock.js?v=25";
-import { numInput, parseNum, fmtDate, fmtMoney } from "./inputs.js?v=25";
+import { api, can } from "./api.js?v=26";
+import { el, fmt, toast, debounce, modal, confirmDlg, errText, saveFailed } from "./ui.js?v=26";
+import { loadXlsx } from "./stock.js?v=26";
+import { numInput, parseNum, fmtDate, fmtMoney } from "./inputs.js?v=26";
 // hooks.editDoc ставит stock.js при загрузке (он уже импортирован выше ради loadXlsx): ссылка на приход
 // из карточки открывает тот же документ, что и журнал склада.
-import { hooks, stores, setStores } from "./stock-common.js?v=25";
+import { hooks, stores, setStores } from "./stock-common.js?v=26";
 
 const TYPES = { goods: "товар", dish: "блюдо", prepared: "полуфабрикат", service: "услуга" };
 let groups = [], state = { q: "", group_id: "", item_type: "", active: "true", page: 1 };
@@ -157,6 +157,16 @@ async function editItem(code) {
   f.active = el("input", { type: "checkbox", checked: item.active, disabled: ro });
   f.for_sale = el("input", { type: "checkbox", checked: item.for_sale, disabled: ro });
   m.root.append(el("div", { class: "actions" }, el("label", {}, f.active, " активна"), el("label", {}, f.for_sale, " продаётся на точках")));
+  // 0054: для фискального чека (Webkassa). Сервер до 0054 этих полей не знает - тогда блока нет и они не уходят.
+  const fiscalKnown = !code || "ntin" in item;
+  if (fiscalKnown) {
+    m.root.append(el("h2", { style: "margin-top:16px" }, "Для фискального чека"), el("div", { class: "grid2" },
+      field("ntin", "НТИН", el("input", { value: item.ntin || "", readonly: ro, inputmode: "numeric", autocomplete: "off",
+        title: "Национальный товарный идентификационный номер из Национального каталога товаров" })),
+      field("gtin", "GTIN (штрихкод)", el("input", { value: item.gtin || "", readonly: ro, inputmode: "numeric", autocomplete: "off" })),
+      field("position_type", "В чеке", select({ 0: "товар", 2: "услуга" }, String(item.position_type ?? 0), () => {}, ro))),
+      el("div", { class: "dim", style: "margin-top:4px" }, "НТИН нужен товару на перепродажу на точке с фискальным чеком - его дают поставщик или карточка товара в Национальном каталоге."));
+  }
   if (code) {
     const pt = el("table");
     pt.append(el("tr", {}, el("th", {}, "Точка"), el("th", { class: "num" }, "Цена точки"),
@@ -226,7 +236,8 @@ async function editItem(code) {
     const p = { code: code || undefined, name: f.name.value, artikul: f.artikul.value, item_type: f.item_type.value, unit_id: f.unit_id.value,
       group_id: groupChanged ? f.group_id.value || null : undefined, price: n.price, pack_factor: n.pack_factor, pack_unit: f.pack_unit.value,
       pack_price: n.pack_price, note: f.note.value, cost_price: costChanged ? n.cost_price : undefined,
-      active: f.active.checked, for_sale: f.for_sale.checked };
+      active: f.active.checked, for_sale: f.for_sale.checked,
+      ...(fiscalKnown ? { ntin: f.ntin.value.replace(/\s+/g, ""), gtin: f.gtin.value.replace(/\s+/g, ""), position_type: f.position_type.value } : {}) };
     // Кнопка выключена до ответа: второе нажатие новой позиции заводило дубль с другим кодом.
     const b = e.target; b.disabled = true;
     const r = await api("item_save", p);

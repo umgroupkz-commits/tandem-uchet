@@ -108,10 +108,11 @@ header.top{display:flex;align-items:center;gap:10px;padding:6px 14px;background:
 .chead b{font-size:15.5px}.chead .sum{margin-left:auto;font-weight:700;font-variant-numeric:tabular-nums}
 .pill{font-size:12px;padding:2px 9px;border-radius:999px;background:#EEF2F8;color:var(--accent)}
 .pill.warn{background:var(--warnbg);color:var(--warn)}.pill.bad{background:var(--badbg);color:var(--bad)}
+.pill.ok{background:var(--okbg);color:var(--ok)}   /* 0053: чек пробит в налоговой */
 .clines{margin:6px 0 0;padding:0;list-style:none;font-size:14px;color:var(--ink2)}
 .clines li{display:flex;justify-content:space-between;gap:10px;padding:2px 0}
 .clines li span:last-child{white-space:nowrap;font-variant-numeric:tabular-nums}
-.cact{display:flex;gap:8px;margin-top:8px}
+.cact{display:flex;gap:8px;margin-top:8px;flex-wrap:wrap}
 
 .toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:var(--ink);color:#fff;padding:12px 18px;border-radius:10px;font-size:15px;z-index:30;max-width:90%}
 .toast.bad{background:var(--bad)}
@@ -204,3 +205,7 @@ button.ghost{background:#fff;color:var(--ink2)}
 .overlay .card input:not([type=checkbox]){min-height:40px;padding:6px 10px;border:1px solid var(--line);border-radius:8px;font-size:16px}
 .overlay .card .actions{display:flex;gap:8px;margin-top:12px}
 .overlay .card .actions button{flex:1;margin:0}
+/* 0053: полоса фискализации в «Смене» */
+.fiscalbar .shiftbar{align-items:center;margin-top:0}
+.chkopt{display:flex;align-items:center;gap:8px;font-size:14px;color:var(--ink2);min-height:40px;cursor:pointer}
+.chkopt input{width:20px;height:20px;margin:0}
