@@ -1,6 +1,6 @@
-import { api, session, setSession, can, BUILD } from "./api.js?v=26";
-import { el, toast, errText, modal } from "./ui.js?v=26";
-import { fmtDateTime } from "./inputs.js?v=26";
+import { api, session, setSession, can, BUILD } from "./api.js?v=27";
+import { el, toast, errText, modal } from "./ui.js?v=27";
+import { fmtDateTime } from "./inputs.js?v=27";
 
 // Замечания разбирают администратор и собственник (сервер 0044 проверяет роль, а не права раздела:
 // в role_permissions такого раздела нет).

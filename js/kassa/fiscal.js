@@ -2,7 +2,7 @@
 // чеки» (вход отдаёт point.fiscal). Чек сначала сохраняется у нас (очередь app.js), затем сервер
 // пробивает его в Webkassa действием fiscal_check; не пробитый чек виден продавцу и пробивается повторно.
 // Печать - печатная форма Webkassa (fiscal_print) на чековый принтер из браузера, с QR-кодом чека.
-import { el, toast } from "../office/ui.js?v=26";
+import { el, toast } from "../office/ui.js?v=27";
 
 let C = null;   // {call(action, payload), point(), store, redraw()}
 const QR_LIB = "https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js";
@@ -11,7 +11,12 @@ const autoKey = "tandem_kassa_autoprint";
 
 export function initFiscal(ctx) { C = ctx; }
 export const fiscalOn = () => !!(C && C.point() && C.point().fiscal);
-export const autoPrint = () => C.store.get(autoKey, true) !== false;
+// Печать сразу после оплаты: по умолчанию включена, на учебной точке выключена - окно печати мешало бы урокам.
+export const autoPrint = () => { const v = C.store.get(autoKey, null); return v === null ? !(C.point() && C.point().training) : v !== false; };
+// Ответ сервера: текст ошибки - error, у отказов базы (tandem.err) - message.
+const errText = (r, d) => (r && (r.message || r.error)) || d;
+// Смена Webkassa была открыта дольше суток - сервер закрыл её сам (Z-отчёт) и повторил операцию.
+const autoZText = (r) => (r && r.auto_z ? ". Смена Webkassa была открыта больше суток - закрыта сама" + (r.auto_z === true ? "" : " (Z №" + r.auto_z + ")") : "");
 export function setAutoPrint(v) { C.store.set(autoKey, !!v); }
 
 // Не пробитые в налоговой: uid → {op, tries}. Переживают закрытие вкладки, пробиваются при связи.
@@ -33,25 +38,31 @@ export async function fiscalize(uid, { op = "sale", print = false, quiet = false
     const q = pending(); delete q[uid]; setPending(q);
     if (r.skip) return r;
     const f = r.fiscal || {};
-    if (!quiet) toast(op === "return" ? "Возврат пробит в налоговой" + (f.return_number ? " · ФП " + f.return_number : "")
-      : "Чек пробит в налоговой" + (f.number ? " · ФП " + f.number : ""));
+    if (!quiet || r.auto_z) toast((op === "return" ? "Возврат пробит в налоговой" + (f.return_number ? " · ФП " + f.return_number : "")
+      : "Чек пробит в налоговой" + (f.number ? " · ФП " + f.number : "")) + autoZText(r));
     if (print) printReceipt(uid, op === "return" ? "return" : "sale", f);
     return r;
   }
   // Отказ Webkassa или сервера: чек остаётся в списке «не пробит», текст ошибки - продавцу.
-  if (!quiet) toast((r && r.error) || "Чек не пробит в налоговой", "bad");
+  if (!quiet) toast(errText(r, "Чек не пробит в налоговой"), "bad");
   if (r && !r.network && r.error === "Нет доступа") { const q = pending(); delete q[uid]; setPending(q); }
   return r;
 }
 
-// Повторить всё, что не пробилось (после досылки чеков, при появлении связи, по таймеру).
+// Повторить всё, что не пробилось (после досылки чеков, при появлении связи, по таймеру). Ответ - сколько
+// чеков пробилось за этот проход (0 - ничего нового: экран можно не перерисовывать).
 let retrying = false;
 export async function retryPending() {
-  if (!fiscalOn() || retrying) return;
+  if (!fiscalOn() || retrying) return 0;
   retrying = true;
+  let done = 0;
   try {
-    for (const [uid, v] of Object.entries(pending())) await fiscalize(uid, { op: v.op, quiet: true });
+    for (const [uid, v] of Object.entries(pending())) {
+      const r = await fiscalize(uid, { op: v.op, quiet: true });
+      if (r && r.ok && !r.skip) done++;
+    }
   } finally { retrying = false; }
+  return done;
 }
 
 // Печать: строки печатной формы Webkassa моноширинным шрифтом на ширину ленты; ссылка на чек в ОФД -
@@ -59,7 +70,7 @@ export async function retryPending() {
 export async function printReceipt(uid, which = "sale", fiscal = null) {
   let r;
   try { r = await C.call("fiscal_print", { uid, which }); } catch (e) { toast("Нет связи - печатная форма не получена", "bad"); return; }
-  if (!r || !r.ok) { toast((r && r.error) || "Печатная форма не получена", "bad"); return; }
+  if (!r || !r.ok) { toast(errText(r, "Печатная форма не получена"), "bad"); return; }
   const lines = r.lines || [];
   const url = lines.find((l) => /^https?:\/\//i.test(l.trim())) || (fiscal && (which === "return" ? fiscal.return_url : fiscal.url)) || "";
   let qrSvg = "";
@@ -87,14 +98,26 @@ function loadQr() {
 export async function xReport() {
   let r;
   try { r = await C.call("fiscal_x", {}); } catch (e) { toast("Нет связи с сервером", "bad"); return null; }
-  if (!r || !r.ok) { toast((r && r.error) || "X-отчёт не получен", "bad"); return null; }
+  if (!r || !r.ok) { toast(errText(r, "X-отчёт не получен"), "bad"); return null; }
   return r.report;
+}
+
+// Внесение (in) и изъятие (out) наличных в Webkassa. ext - номер операции: повтор с тем же номером (ответ
+// потерялся, нажали ещё раз) не задвоит. Ответ: {ok, cash - наличных в Webkassa после операции} или ошибка.
+export async function moneyOp(kind, sum, reason, ext) {
+  let r;
+  try { r = await C.call("fiscal_money", { kind, sum, reason, ext, seller: C.seller ? C.seller() : null }); }
+  catch (e) { return { ok: false, error: "Нет связи с сервером. Нажмите ещё раз, когда связь появится - операция не задвоится", network: true }; }
+  if (!r || !r.ok) return { ok: false, error: errText(r, "Операция не проведена") };
+  if (r.auto_z) r.note = autoZText(r).replace(/^\. /, "");
+  return r;
 }
 
 // Пометка и кнопки чека в списке смены. c.fiscal - из check_list; null - чек не пробивался.
 export function fiscalBadges(c, { onAct } = {}) {
-  if (!C || !c || c.state) return { pills: [], acts: [], note: null };
-  const f = c.fiscal || {};
+  const f = (c && c.fiscal) || {};
+  // 0058: чек пробит до включения фискализации у точки - в налоговую он не идёт, пометок нет
+  if (!C || !c || c.state || f.status === "off") return { pills: [], acts: [], note: null };
   // Фискализацию у точки выключили, а чек пробит раньше: он по-прежнему не исправляется - пусть видно почему.
   if (!fiscalOn()) return { pills: f.status === "ok" && c.status !== "void" ? [el("span", { class: "pill ok" }, "в налоговой")] : [], acts: [], note: null };
   const pend = pending()[c.uid];
@@ -113,7 +136,8 @@ export function fiscalBadges(c, { onAct } = {}) {
     pills.push(el("span", { class: "pill ok", title: "Фискальный признак " + (f.number || "") + (f.offline ? " · автономный режим" : "") }, "в налоговой"));
     acts.push(el("button", { onclick: () => printReceipt(c.uid, "sale", f) }, "Печать чека"));
   } else {
-    pills.push(el("span", { class: "pill bad" }, pend ? "не пробит, повторяю" : "не пробит в налоговой"));
+    pills.push(f.status === "pending" ? el("span", { class: "pill warn" }, "пробивается…")
+      : el("span", { class: "pill bad" }, pend ? "не пробит, повторяю" : "не пробит в налоговой"));
     if (f.error) note = "Не пробит в налоговой: " + f.error;
     acts.push(el("button", { onclick: async () => { await fiscalize(c.uid, { print: autoPrint() }); onAct && onAct(); } }, "Пробить в налоговой"));
   }

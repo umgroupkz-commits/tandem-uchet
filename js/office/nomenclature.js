@@ -1,10 +1,10 @@
-import { api, can } from "./api.js?v=26";
-import { el, fmt, toast, debounce, modal, confirmDlg, errText, saveFailed } from "./ui.js?v=26";
-import { loadXlsx } from "./stock.js?v=26";
-import { numInput, parseNum, fmtDate, fmtMoney } from "./inputs.js?v=26";
+import { api, can } from "./api.js?v=27";
+import { el, fmt, toast, debounce, modal, confirmDlg, errText, saveFailed } from "./ui.js?v=27";
+import { loadXlsx } from "./stock.js?v=27";
+import { numInput, parseNum, fmtDate, fmtMoney } from "./inputs.js?v=27";
 // hooks.editDoc ставит stock.js при загрузке (он уже импортирован выше ради loadXlsx): ссылка на приход
 // из карточки открывает тот же документ, что и журнал склада.
-import { hooks, stores, setStores } from "./stock-common.js?v=26";
+import { hooks, stores, setStores } from "./stock-common.js?v=27";
 
 const TYPES = { goods: "товар", dish: "блюдо", prepared: "полуфабрикат", service: "услуга" };
 let groups = [], state = { q: "", group_id: "", item_type: "", active: "true", page: 1 };
@@ -165,7 +165,7 @@ async function editItem(code) {
         title: "Национальный товарный идентификационный номер из Национального каталога товаров" })),
       field("gtin", "GTIN (штрихкод)", el("input", { value: item.gtin || "", readonly: ro, inputmode: "numeric", autocomplete: "off" })),
       field("position_type", "В чеке", select({ 0: "товар", 2: "услуга" }, String(item.position_type ?? 0), () => {}, ro))),
-      el("div", { class: "dim", style: "margin-top:4px" }, "НТИН нужен товару на перепродажу на точке с фискальным чеком - его дают поставщик или карточка товара в Национальном каталоге."));
+      el("div", { class: "dim", style: "margin-top:4px" }, "НТИН нужен товару на перепродажу на точке с фискальным чеком - его дают поставщик или карточка товара в Национальном каталоге. Есть штрихкод с упаковки - впишите его в GTIN: по нему Webkassa найдёт НТИН сама."));
   }
   if (code) {
     const pt = el("table");

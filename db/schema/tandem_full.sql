@@ -1,6 +1,6 @@
 -- Полный снимок схемы учёта Тандем KZ (схема tandem + функции public.tandem_*).
--- Снят каталогом PostgreSQL 2026-10-23 запросом db/schema/snapshot-query.sql (search_path = public) со стенда, идентичного
--- боевой базе после 0052 (тела всех 120 функций сверены по md5 с живой базой) и собран tools/build-schema-snapshot.mjs. Данных не содержит.
+-- Снят из боевой базы каталогом PostgreSQL 2026-10-30 запросом db/schema/snapshot-query.sql
+-- и собран tools/build-schema-snapshot.mjs. Данных не содержит.
 -- Назначение: поднять пустую базу на собственном сервере одной командой
 --   psql -v ON_ERROR_STOP=1 -f db/schema/tandem_full.sql
 -- затем db/schema/tandem_seed.sql. Проверяется подъёмом в Docker и дымовым тестом (server/README.md).
@@ -94,7 +94,22 @@ create table if not exists tandem.checks (
   created_at timestamp with time zone default now() not null,
   updated_at timestamp with time zone default now() not null,
   first_total numeric,
-  first_pay_kind text
+  first_pay_kind text,
+  fiscal_status text,
+  fiscal_number text,
+  fiscal_dt text,
+  fiscal_rnm text,
+  fiscal_shift integer,
+  fiscal_url text,
+  fiscal_offline boolean,
+  fiscal_error text,
+  fiscal_tries integer default 0 not null,
+  fiscal_at timestamp with time zone,
+  fiscal_return_status text,
+  fiscal_return_number text,
+  fiscal_return_url text,
+  fiscal_return_error text,
+  fiscal_return_at timestamp with time zone
 );
 
 create table if not exists tandem.client_order_events (
@@ -190,7 +205,10 @@ create table if not exists tandem.daily_reports (
   card numeric default 0 not null,
   closed_at timestamp with time zone,
   first_saved_at timestamp with time zone,
-  saved_at timestamp with time zone
+  saved_at timestamp with time zone,
+  fiscal_z_at timestamp with time zone,
+  fiscal_z_shift integer,
+  fiscal_z_error text
 );
 
 create table if not exists tandem.doc_counters (
@@ -257,6 +275,23 @@ create table if not exists tandem.feedback (
   answer text
 );
 
+create table if not exists tandem.fiscal_money (
+  id bigint generated always as identity not null,
+  point_id text not null,
+  ext text not null,
+  kind text not null,
+  sum numeric(14,2) not null,
+  reason text,
+  seller text,
+  auto boolean default false not null,
+  ok boolean default false not null,
+  error text,
+  shift integer,
+  data jsonb,
+  created_at timestamp with time zone default now() not null,
+  done_at timestamp with time zone
+);
+
 create table if not exists tandem.item_aliases (
   alias text not null,
   item_code text not null,
@@ -318,7 +353,10 @@ create table if not exists tandem.items (
   cost_source text,
   code_1c text,
   k_1c numeric,
-  training boolean default false not null
+  training boolean default false not null,
+  ntin text,
+  gtin text,
+  position_type smallint default 0 not null
 );
 
 create table if not exists tandem.order_lines (
@@ -383,7 +421,12 @@ create table if not exists tandem.points (
   item_scopes text[] default '{}'::text[],
   item_categories text[],
   default_store_id uuid,
-  training boolean default false not null
+  training boolean default false not null,
+  fiscal_enabled boolean default false not null,
+  fiscal_cashbox text,
+  fiscal_vat numeric,
+  fiscal_paper smallint default 58 not null,
+  fiscal_since timestamp with time zone
 );
 
 create table if not exists tandem.realization_clients (
@@ -577,6 +620,10 @@ END);
 alter table tandem.feedback add constraint feedback_pkey PRIMARY KEY (id);
 alter table tandem.feedback add constraint feedback_source_check CHECK ((source = ANY (ARRAY['office'::text, 'stock'::text, 'kassa'::text, 'point'::text, 'order'::text, 'owner'::text, 'driver'::text])));
 alter table tandem.feedback add constraint feedback_status_check CHECK ((status = ANY (ARRAY['new'::text, 'done'::text])));
+alter table tandem.fiscal_money add constraint fiscal_money_ext_key UNIQUE (ext);
+alter table tandem.fiscal_money add constraint fiscal_money_kind_check CHECK ((kind = ANY (ARRAY['in'::text, 'out'::text])));
+alter table tandem.fiscal_money add constraint fiscal_money_pkey PRIMARY KEY (id);
+alter table tandem.fiscal_money add constraint fiscal_money_sum_check CHECK ((sum > (0)::numeric));
 alter table tandem.item_aliases add constraint item_aliases_pkey PRIMARY KEY (alias);
 alter table tandem.item_groups add constraint item_groups_iiko_id_key UNIQUE (iiko_id);
 alter table tandem.item_groups add constraint item_groups_pkey PRIMARY KEY (id);
@@ -677,6 +724,7 @@ alter table tandem.documents add constraint documents_posted_by_fkey FOREIGN KEY
 alter table tandem.documents add constraint documents_store_from_fkey FOREIGN KEY (store_from) REFERENCES tandem.stores(id);
 alter table tandem.documents add constraint documents_store_to_fkey FOREIGN KEY (store_to) REFERENCES tandem.stores(id);
 alter table tandem.documents add constraint documents_updated_by_fkey FOREIGN KEY (updated_by) REFERENCES tandem.users(id);
+alter table tandem.fiscal_money add constraint fiscal_money_point_id_fkey FOREIGN KEY (point_id) REFERENCES tandem.points(id);
 alter table tandem.item_groups add constraint item_groups_parent_id_fkey FOREIGN KEY (parent_id) REFERENCES tandem.item_groups(id);
 alter table tandem.item_prices add constraint item_prices_point_id_fkey FOREIGN KEY (point_id) REFERENCES tandem.points(id) ON DELETE CASCADE;
 alter table tandem.item_rank add constraint item_rank_point_id_fkey FOREIGN KEY (point_id) REFERENCES tandem.points(id) ON DELETE CASCADE;
@@ -773,13 +821,14 @@ begin
     end if;
     if exists (select 1 from tandem.points where id = v_point and pin = v_pin and active) then
       return jsonb_build_object('ok', true, 'role', 'point',
-        'point', (select jsonb_build_object('id',id,'name',name,'mode',mode)
+        'point', (select jsonb_build_object('id',id,'name',name,'mode',mode,
+                  'fiscal',(fiscal_enabled and mode = 'checks' and coalesce(btrim(fiscal_cashbox), '') <> ''),'fiscal_paper',fiscal_paper,'training',coalesce(training,false))
                   from tandem.points where id = v_point));
     end if;
     return jsonb_build_object('ok', false, 'error', 'Неверный код');
   end if;
 
-  if action in ('items','get_report','save_report','aliases','check_save','check_void','check_list','order_get','order_save','corder_list','corder_get','corder_status','corder_edit','cmenu_point_list','cmenu_stop') then
+  if action in ('items','get_report','save_report','aliases','check_save','check_void','check_list','fiscal_prepare','order_get','order_save','corder_list','corder_get','corder_status','corder_edit','cmenu_point_list','cmenu_stop') then
     -- 0048: учебный код сводки — только учебные точки
     if v_train and not coalesce(v_point = any(v_tp), false) then
       return jsonb_build_object('ok', false, 'error', 'Учебный код сводки открывает только учебные точки', 'code', 'forbidden');
@@ -1047,10 +1096,11 @@ begin
   end if;
 
   -- ---------- касса: чеки в течение дня ----------
-  if action in ('check_save','check_void','check_list') then
+  if action in ('check_save','check_void','check_list','fiscal_prepare') then
     if (select mode from tandem.points where id = v_point) is distinct from 'checks' then
       return jsonb_build_object('ok', false, 'error', 'У этой точки касса не включена');
     end if;
+    if action = 'fiscal_prepare' then return tandem.fiscal_prepare(v_point, payload); end if;
     if action = 'check_save' then return tandem.check_save(v_point, payload); end if;
     if action = 'check_void' then return tandem.check_void(v_point, payload); end if;
     return tandem.check_list(v_point, coalesce(tandem.to_date(payload->>'date'), v_today));
@@ -1260,6 +1310,85 @@ begin
 end $function$
 ;
 
+CREATE OR REPLACE FUNCTION public.tandem_fiscal_config()
+ RETURNS jsonb
+ LANGUAGE plpgsql
+ STABLE SECURITY DEFINER
+ SET search_path TO 'tandem', 'public'
+AS $function$
+declare v jsonb;
+begin
+  if to_regclass('vault.decrypted_secrets') is null then return '{}'::jsonb; end if;
+  execute $q$select coalesce(jsonb_object_agg(substr(name, 10), decrypted_secret), '{}'::jsonb)
+                from vault.decrypted_secrets where name like 'webkassa\_%'$q$ into v;
+  return v;
+end $function$
+;
+
+CREATE OR REPLACE FUNCTION public.tandem_fiscal_store(p_point text, p_uid uuid, p_op text, p_ok boolean, p_data jsonb, p_error text)
+ RETURNS jsonb
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO 'tandem', 'public'
+AS $function$
+declare
+  v_chk tandem.checks;
+  v_num text := coalesce(p_data->>'CheckNumber', p_data->>'Number');
+  v_url text := p_data->>'TicketUrl';
+  v_m tandem.fiscal_money;
+begin
+  if p_op = 'z' then
+    update tandem.daily_reports set fiscal_z_at = case when p_ok then now() else fiscal_z_at end,
+           fiscal_z_shift = case when p_ok then coalesce((p_data->>'ShiftNumber')::int, fiscal_z_shift) else fiscal_z_shift end,
+           fiscal_z_error = case when p_ok then null else left(p_error, 500) end
+     where point_id = p_point and report_date = coalesce((p_data->>'report_date')::date, tandem.local_now()::date);
+    return jsonb_build_object('ok', true);
+  end if;
+  -- 0056: внесение/изъятие. p_data: ext, kind, sum, reason, seller, auto и ответ Webkassa в response.
+  if p_op = 'money' then
+    insert into tandem.fiscal_money as m (point_id, ext, kind, sum, reason, seller, auto, ok, error, shift, data, done_at)
+      values (p_point, p_data->>'ext', p_data->>'kind', (p_data->>'sum')::numeric, p_data->>'reason', p_data->>'seller',
+              coalesce((p_data->>'auto')::boolean, false), p_ok, case when p_ok then null else left(p_error, 500) end,
+              (p_data->'response'->>'ShiftNumber')::int, p_data->'response', now())
+      on conflict (ext) do update set ok = m.ok or excluded.ok,
+              error = case when m.ok or excluded.ok then null else excluded.error end,
+              shift = coalesce(excluded.shift, m.shift), data = coalesce(excluded.data, m.data), done_at = now()
+      returning * into v_m;
+    return jsonb_build_object('ok', true, 'money', to_jsonb(v_m) - 'data');
+  end if;
+  select * into v_chk from tandem.checks where uid = p_uid and point_id = p_point for update;
+  if v_chk.id is null then return tandem.err('not_found', 'Чек не найден'); end if;
+  if p_op = 'sale' then
+    if v_chk.fiscal_status = 'ok' then return jsonb_build_object('ok', true, 'fiscal', tandem.fiscal_json(v_chk)); end if;
+    update tandem.checks set
+      fiscal_status = case when p_ok then 'ok' else 'error' end,
+      fiscal_number = case when p_ok then v_num end,
+      fiscal_dt = case when p_ok then coalesce(p_data->>'DateTime', p_data->>'RegistratedOn') end,
+      fiscal_rnm = case when p_ok then coalesce(p_data->'Cashbox'->>'RegistrationNumber', p_data->>'CashboxRegistrationNumber') end,
+      fiscal_shift = case when p_ok then (p_data->>'ShiftNumber')::int end,
+      fiscal_url = case when p_ok then v_url end,
+      fiscal_offline = case when p_ok then coalesce((p_data->>'OfflineMode')::boolean, (p_data->>'IsOffline')::boolean, false) end,
+      fiscal_error = case when p_ok then null else left(p_error, 500) end,
+      fiscal_tries = fiscal_tries + 1, fiscal_at = now(),
+      -- 0056: чек отменили, пока он пробивался, - продажа в налоговой есть, нужен чек возврата
+      fiscal_return_status = case when p_ok and status = 'void' then coalesce(fiscal_return_status, 'pending') else fiscal_return_status end
+     where id = v_chk.id returning * into v_chk;
+  elsif p_op = 'return' then
+    if v_chk.fiscal_return_status = 'ok' then return jsonb_build_object('ok', true, 'fiscal', tandem.fiscal_json(v_chk)); end if;
+    update tandem.checks set
+      fiscal_return_status = case when p_ok then 'ok' else 'error' end,
+      fiscal_return_number = case when p_ok then v_num end,
+      fiscal_return_url = case when p_ok then v_url end,
+      fiscal_return_error = case when p_ok then null else left(p_error, 500) end,
+      fiscal_return_at = case when p_ok then now() end
+     where id = v_chk.id returning * into v_chk;
+  else
+    return tandem.err('validation', 'Неизвестная операция');
+  end if;
+  return jsonb_build_object('ok', true, 'fiscal', tandem.fiscal_json(v_chk));
+end $function$
+;
+
 CREATE OR REPLACE FUNCTION public.tandem_gate(action text, payload jsonb DEFAULT '{}'::jsonb)
  RETURNS jsonb
  LANGUAGE plpgsql
@@ -1274,7 +1403,7 @@ declare
   v_res   jsonb;
   v_hash  text;
   v_owner text;
-  v_service boolean := action in ('migrate','test_cleanup','sync_items','sync_prices','recalc_ranks','set_packaging','set_short_list','bot_menu','bot_order_quote','bot_order_create','bot_order_events','bot_order_get','bot_order_cancel','bot_card_status','bot_client_history');
+  v_service boolean := action in ('migrate','fiscal_config_set','schema_snapshot','test_cleanup','sync_items','sync_prices','recalc_ranks','set_packaging','set_short_list','bot_menu','bot_order_quote','bot_order_create','bot_order_events','bot_order_get','bot_order_cancel','bot_card_status','bot_client_history');
   v_busy  jsonb := jsonb_build_object('ok', false, 'error', 'Слишком много неверных кодов. Подождите 5 минут', 'code', 'throttled');
   v_svc_ok   boolean := false;   -- служебное действие с верным ключом
   v_point_ok boolean := false;   -- верный код присланной активной точки
@@ -1378,6 +1507,8 @@ begin
     -- счётчика запирала бы следующий прогон и вход собственника.
     v_res := case action
       when 'migrate'        then public.tandem_migrate(v_owner, coalesce(payload->>'kind',''), coalesce(payload->'rows','[]'::jsonb))
+      when 'fiscal_config_set' then tandem.fiscal_config_set(payload)
+      when 'schema_snapshot' then tandem.schema_snapshot()
       when 'test_cleanup'   then public.tandem_test_cleanup(v_owner)
       when 'sync_items'     then public.tandem_sync_items(v_owner, coalesce(payload->'items','[]'::jsonb))
       when 'sync_prices'    then public.tandem_sync_prices(v_owner, coalesce(payload->'data','[]'::jsonb))
@@ -2594,6 +2725,9 @@ AS $function$
         'uid', c.uid, 'no', c.no, 'seller', c.seller, 'pay_kind', c.pay_kind, 'total', c.total,
         'status', c.status, 'void_reason', c.void_reason, 'edited', c.edited, 'created_at', c.created_at,
         'late', coalesce(c.created_at > r.closed_at, false),
+        'fiscal', case when c.fiscal_status is not null or c.fiscal_return_status is not null then tandem.fiscal_json(c)
+                     when c.created_at < (select p.fiscal_since from tandem.points p where p.id = c.point_id)
+                     then jsonb_build_object('status', 'off') end,
         'lines', (select coalesce(jsonb_agg(jsonb_build_object('item_code', l.item_code, 'item_name', l.item_name,
                     'qty', l.qty, 'price', l.price, 'price_list', l.price_list) order by l.id), '[]'::jsonb)
                   from tandem.check_lines l where l.check_id = c.id)) order by c.no desc), '[]'::jsonb)
@@ -2701,7 +2835,8 @@ begin
     -- K1: поздний чек (пробит после закрытия) закрытие не держит — в закрытом отчёте его нет.
     select closed_at into v_closed from tandem.daily_reports where point_id = p_point and report_date = v_date;
     if v_chk.created_at > v_closed then v_closed := null; end if;
-    if v_closed is not null or v_date < v_today - 2 then
+    if v_closed is not null or v_date < v_today - 2 or v_chk.fiscal_status = 'ok'
+         or (v_chk.fiscal_status = 'pending' and v_chk.fiscal_at > now() - interval '2 minutes') then
       select v_pay || '|' || string_agg(i.code || ':' || tandem.to_num(x->>'qty')::text || ':'
                                         || coalesce(tandem.to_num(x->>'price'), pp.price, case when not v_own then i.price end, 0)::text,
                                         ',' order by ord) into v_new
@@ -2712,6 +2847,12 @@ begin
         return jsonb_build_object('ok', true, 'check', (select jsonb_build_object('uid', uid, 'no', no, 'total', total,
                  'date', check_date, 'edited', edited) from tandem.checks where id = v_id));
       end if;
+      -- 0053: пробитый в налоговой чек не меняется - его отменяют (чек возврата) и пробивают новый.
+      if v_chk.fiscal_status = 'ok' then
+        return jsonb_build_object('ok', false, 'error', 'Чек уже пробит в налоговой: исправить его нельзя. Отмените чек (будет чек возврата) и пробейте заново'); end if;
+      -- 0056: ответ Webkassa ещё не пришёл - фискальный чек выйдет по прежним строкам
+      if v_chk.fiscal_status = 'pending' then
+        return jsonb_build_object('ok', false, 'error', 'Чек пробивается в налоговой: исправить его сейчас нельзя. Через минуту отмените его и пробейте заново'); end if;
       -- Начало «Смена закрыта» / «Чек слишком старый» не менять: по нему касса узнаёт отказ правки (LOCKED).
       if v_closed is not null then
         return jsonb_build_object('ok', false, 'error', 'Смена закрыта — этот чек уже в закрытом отчёте. Исправить или отменить его можно, '
@@ -2771,7 +2912,11 @@ begin
                                 || 'если собственник откроет смену: сводка по точкам → отчёт дня → «Открыть смену для исправления»'); end if;
     if v_chk.check_date < tandem.local_now()::date - 2 then
       return jsonb_build_object('ok', false, 'error', 'Чек слишком старый — исправление через офис'); end if;
-    update tandem.checks set status = 'void', updated_at = now(), void_reason = v_reason where id = v_chk.id;
+    -- 0056: продажа сейчас пробивается в налоговой - отмена подождёт ответа, иначе возврат не встанет в очередь
+    if v_chk.fiscal_status = 'pending' and v_chk.fiscal_at > now() - interval '2 minutes' then
+      return jsonb_build_object('ok', false, 'error', 'Чек пробивается в налоговой - отмените его через минуту'); end if;
+    update tandem.checks set status = 'void', updated_at = now(), void_reason = v_reason,
+           fiscal_return_status = case when fiscal_status = 'ok' then 'pending' end where id = v_chk.id;
     perform tandem.check_apply(p_point, v_chk.check_date);
   end if;
   return jsonb_build_object('ok', true);
@@ -3997,6 +4142,164 @@ begin
 end $function$
 ;
 
+CREATE OR REPLACE FUNCTION tandem.fiscal_body(p_chk tandem.checks, p_op text)
+ RETURNS jsonb
+ LANGUAGE plpgsql
+ STABLE
+ SET search_path TO 'tandem', 'public'
+AS $function$
+declare
+  v_pt  tandem.points;
+  v_pos jsonb;
+  v_vat numeric;
+begin
+  select * into v_pt from tandem.points where id = p_chk.point_id;
+  v_vat := nullif(v_pt.fiscal_vat, 0);
+  select coalesce(jsonb_agg(x.pos order by x.id), '[]'::jsonb) into v_pos from (
+    select l.id, jsonb_strip_nulls(jsonb_build_object(
+      'Count', l.qty,
+      'Price', case when coalesce(l.price_list, 0) > l.price then l.price_list else l.price end,
+      'Discount', case when coalesce(l.price_list, 0) > l.price then round(l.price_list * l.qty, 2) - round(l.price * l.qty, 2) else 0 end,
+      'Markup', 0,
+      'TaxType', case when v_vat is null then 0 else 100 end,
+      'TaxPercent', coalesce(v_vat, 0),
+      'Tax', case when v_vat is null then 0 else round(round(l.qty * l.price, 2) * v_vat / (100 + v_vat), 2) end,
+      'PositionName', left(l.item_name, 250),
+      'PositionCode', l.item_code,
+      'SectionCode', '1',
+      'UnitCode', case coalesce(i.unit_id, i.unit) when 'кг' then 166 when 'л' then 112 else 796 end,
+      'PositionType', coalesce(i.position_type, 0),
+      'NTIN', nullif(btrim(coalesce(i.ntin, '')), ''),
+      'GTIN', nullif(btrim(coalesce(i.gtin, '')), ''),
+      'WarehouseType', 0)) pos
+    from tandem.check_lines l left join tandem.items i on i.code = l.item_code
+    where l.check_id = p_chk.id and round(l.qty * l.price, 2) > 0) x;
+  return jsonb_strip_nulls(jsonb_build_object(
+    'CashboxUniqueNumber', v_pt.fiscal_cashbox,
+    'OperationType', case when p_op = 'return' then 3 else 2 end,
+    'Positions', v_pos,
+    'Payments', jsonb_build_array(jsonb_build_object('Sum', p_chk.total,
+       'PaymentType', case p_chk.pay_kind when 'cash' then 0 when 'card' then 1 else 4 end)),
+    'RoundType', 0,
+    'ExternalCheckNumber', p_chk.uid::text || case when p_op = 'return' then ':r' else '' end,
+    'ExternalOrderNumber', p_chk.point_id || '-' || to_char(p_chk.check_date, 'YYYYMMDD') || '-' || p_chk.no,
+    'ReturnBasisDetails', case when p_op = 'return' then jsonb_build_object(
+       'CheckNumber', p_chk.fiscal_number, 'DateTime', p_chk.fiscal_dt, 'RegistrationNumber', p_chk.fiscal_rnm,
+       'Total', p_chk.total, 'IsOffline', coalesce(p_chk.fiscal_offline, false)) end));
+end $function$
+;
+
+CREATE OR REPLACE FUNCTION tandem.fiscal_config_set(payload jsonb)
+ RETURNS jsonb
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO 'tandem', 'public'
+AS $function$
+declare k text; v text; v_id uuid; v_set text[] := '{}';
+begin
+  foreach k in array array['base', 'api_key', 'login', 'password', 'mode'] loop
+    v := nullif(btrim(coalesce(payload->>k, '')), '');
+    if v is null then continue; end if;
+    select id into v_id from vault.secrets where name = 'webkassa_' || k;
+    if v_id is null then perform vault.create_secret(v, 'webkassa_' || k, 'Webkassa: ' || k || ' (0053)');
+    else perform vault.update_secret(v_id, v); end if;
+    v_set := v_set || k;
+  end loop;
+  return jsonb_build_object('ok', true, 'set', to_jsonb(v_set));
+end $function$
+;
+
+CREATE OR REPLACE FUNCTION tandem.fiscal_json(c tandem.checks)
+ RETURNS jsonb
+ LANGUAGE sql
+ STABLE
+ SET search_path TO 'tandem', 'public'
+AS $function$
+  select jsonb_build_object('status', c.fiscal_status, 'number', c.fiscal_number, 'dt', c.fiscal_dt, 'url', c.fiscal_url,
+    'shift', c.fiscal_shift, 'offline', c.fiscal_offline, 'error', c.fiscal_error,
+    'return_status', c.fiscal_return_status, 'return_number', c.fiscal_return_number,
+    'return_url', c.fiscal_return_url, 'return_error', c.fiscal_return_error)
+$function$
+;
+
+CREATE OR REPLACE FUNCTION tandem.fiscal_prepare(p_point text, payload jsonb)
+ RETURNS jsonb
+ LANGUAGE plpgsql
+ SET search_path TO 'tandem', 'public'
+AS $function$
+declare
+  v_op  text := coalesce(nullif(payload->>'op', ''), 'sale');
+  v_pt  tandem.points;
+  v_uid uuid;
+  v_chk tandem.checks;
+  v_paper int;
+  v_kind text; v_sum numeric; v_ext text; v_m tandem.fiscal_money; v_left int;
+begin
+  select * into v_pt from tandem.points where id = p_point;
+  if not (coalesce(v_pt.fiscal_enabled, false) and v_pt.mode = 'checks' and coalesce(btrim(v_pt.fiscal_cashbox), '') <> '') then
+    return jsonb_build_object('ok', true, 'skip', true);
+  end if;
+  v_paper := case when v_pt.fiscal_paper = 80 then 0 else 3 end;
+  if v_op = 'z' then
+    select count(*) into v_left from tandem.checks c
+     where c.point_id = p_point and c.check_date = tandem.local_now()::date and c.status = 'active' and c.total > 0
+       and c.fiscal_status is distinct from 'ok'
+       and (c.fiscal_status is not null or c.created_at >= coalesce(v_pt.fiscal_since, '-infinity'::timestamptz));
+    if v_left > 0 then
+      return jsonb_build_object('ok', false, 'unfiscal', v_left, 'error', 'не пробиты в налоговой чеков - ' || v_left
+        || '. Пробейте их в кассе (вкладка «Смена», кнопка у чека) и закройте смену ещё раз');
+    end if;
+  end if;
+  if v_op in ('x', 'z') then
+    return jsonb_build_object('ok', true, 'op', v_op, 'cashbox', v_pt.fiscal_cashbox, 'date', tandem.local_now()::date);
+  end if;
+  if v_op = 'money' then
+    v_kind := payload->>'kind';
+    begin v_sum := round((payload->>'sum')::numeric, 2); exception when others then v_sum := null; end;
+    v_ext := left(btrim(coalesce(payload->>'ext', '')), 64);
+    if v_kind not in ('in', 'out') then return jsonb_build_object('ok', false, 'error', 'Внесение или изъятие?'); end if;
+    if v_sum is null or v_sum <= 0 or v_sum > 10000000 then return jsonb_build_object('ok', false, 'error', 'Сумма - больше нуля'); end if;
+    if v_ext = '' then return jsonb_build_object('ok', false, 'error', 'Нет номера операции'); end if;
+    if v_kind = 'out' and coalesce(btrim(payload->>'reason'), '') = '' then
+      return jsonb_build_object('ok', false, 'error', 'Напишите, на что изъяли наличные'); end if;
+    insert into tandem.fiscal_money (point_id, ext, kind, sum, reason, seller)
+      values (p_point, v_ext, v_kind, v_sum, nullif(left(btrim(coalesce(payload->>'reason', '')), 300), ''),
+              nullif(left(btrim(coalesce(payload->>'seller', '')), 120), ''))
+      on conflict (ext) do nothing;
+    select * into v_m from tandem.fiscal_money where ext = v_ext;
+    if v_m.point_id <> p_point then return jsonb_build_object('ok', false, 'error', 'Нет доступа'); end if;
+    if v_m.ok then return jsonb_build_object('ok', true, 'done', true, 'money', to_jsonb(v_m) - 'data'); end if;
+    return jsonb_build_object('ok', true, 'op', v_op, 'cashbox', v_pt.fiscal_cashbox, 'kind', v_m.kind, 'sum', v_m.sum, 'ext', v_m.ext);
+  end if;
+  if v_op not in ('sale', 'return', 'print') then return jsonb_build_object('ok', false, 'error', 'Неизвестная операция кассы'); end if;
+  begin v_uid := (payload->>'uid')::uuid; exception when others then v_uid := null; end;
+  select * into v_chk from tandem.checks where uid = v_uid and point_id = p_point;
+  if v_chk.id is null then return jsonb_build_object('ok', false, 'error', 'Чек не найден'); end if;
+  if v_op = 'print' then
+    if v_chk.fiscal_status is distinct from 'ok' then return jsonb_build_object('ok', false, 'error', 'Чек ещё не пробит в налоговой'); end if;
+    return jsonb_build_object('ok', true, 'op', v_op, 'cashbox', v_pt.fiscal_cashbox, 'paper', v_paper,
+      'ext', v_chk.uid::text || case when v_chk.fiscal_return_status = 'ok' and payload->>'which' = 'return' then ':r' else '' end);
+  end if;
+  if v_op = 'sale' then
+    if v_chk.fiscal_status = 'ok' then
+      return jsonb_build_object('ok', true, 'done', true, 'fiscal', tandem.fiscal_json(v_chk));
+    end if;
+    if v_chk.status <> 'active' then return jsonb_build_object('ok', true, 'skip', true, 'reason', 'Чек отменён'); end if;
+    if v_chk.total <= 0 then return jsonb_build_object('ok', true, 'skip', true, 'reason', 'Сумма чека 0'); end if;
+    -- 0056: чек пробивается - правка и отмена ждут ответа Webkassa (check_save, check_void)
+    update tandem.checks set fiscal_status = 'pending', fiscal_at = now() where id = v_chk.id returning * into v_chk;
+  else
+    if v_chk.fiscal_status is distinct from 'ok' then return jsonb_build_object('ok', true, 'skip', true, 'reason', 'Чек не был пробит'); end if;
+    if v_chk.fiscal_return_status = 'ok' then
+      return jsonb_build_object('ok', true, 'done', true, 'fiscal', tandem.fiscal_json(v_chk));
+    end if;
+    if v_chk.status <> 'void' then return jsonb_build_object('ok', false, 'error', 'Возврат пробивается для отменённого чека'); end if;
+  end if;
+  return jsonb_build_object('ok', true, 'op', v_op, 'cashbox', v_pt.fiscal_cashbox, 'paper', v_paper,
+    'shift_hint', v_chk.fiscal_shift, 'body', tandem.fiscal_body(v_chk, v_op));
+end $function$
+;
+
 CREATE OR REPLACE FUNCTION tandem.group_name_taken(p_group uuid, p_name text)
  RETURNS boolean
  LANGUAGE sql
@@ -5207,7 +5510,8 @@ begin
                  'group_name', g.name, 'active', i.active, 'for_sale', i.for_sale, 'price', i.price,
                  'note', i.note, 'pack_factor', i.pack_factor, 'pack_unit', i.pack_unit,
                  'pack_price', i.pack_price, 'has_chart', i.has_chart, 'iiko_code', i.iiko_code,
-                 'cost_price', i.cost_price, 'cost_date', i.cost_date, 'cost_source', i.cost_source)
+                 'cost_price', i.cost_price, 'cost_date', i.cost_date, 'cost_source', i.cost_source,
+                 'ntin', i.ntin, 'gtin', i.gtin, 'position_type', i.position_type)
                from tandem.items i left join tandem.item_groups g on g.id = i.group_id where i.code = v_code),
       'points', (select coalesce(jsonb_agg(jsonb_build_object(
                    'point_id', p.id, 'point_name', p.name, 'price', pp.price,
@@ -5228,6 +5532,13 @@ begin
     -- Имя обязательно только при создании: правка меняет ровно те поля, что переданы,
     -- иначе точечное «поставить учётную цену» требовало бы тащить с собой всю карточку.
     if v_code is null and v_name = '' then return tandem.err('validation', 'Название позиции пустое'); end if;
+    -- 0054: НТИН и GTIN - цифры (пустое снимает), вид позиции в чеке: 0 товар, 2 услуга
+    if coalesce(btrim(payload->>'ntin'), '') !~ '^([0-9]{8,14})?$' then
+      return tandem.err('validation', 'НТИН - только цифры, от 8 до 14'); end if;
+    if coalesce(btrim(payload->>'gtin'), '') !~ '^([0-9]{8,14})?$' then
+      return tandem.err('validation', 'GTIN (штрихкод) - только цифры, от 8 до 14'); end if;
+    if coalesce(nullif(payload->>'position_type', ''), '0') not in ('0', '2') then
+      return tandem.err('validation', 'Вид позиции в чеке - товар или услуга'); end if;
     if v_code is null then
       -- создание: тип и единица измерения обязательны
       if coalesce(payload->>'item_type','') not in ('goods','dish','prepared','service') then
@@ -5324,6 +5635,15 @@ begin
                            else cost_source end
       where code = v_code;
       if not found then return tandem.err('not_found', 'Позиция не найдена'); end if;
+    end if;
+    -- 0054: НТИН, GTIN и вид позиции - и у новой позиции, и при правке; ключ пришёл - применяется
+    -- (пустое снимает), не пришёл - не трогается.
+    if payload ? 'ntin' or payload ? 'gtin' or payload ? 'position_type' then
+      update tandem.items set
+        ntin = case when payload ? 'ntin' then nullif(btrim(payload->>'ntin'), '') else ntin end,
+        gtin = case when payload ? 'gtin' then nullif(btrim(payload->>'gtin'), '') else gtin end,
+        position_type = case when payload ? 'position_type' then coalesce(nullif(payload->>'position_type', '')::smallint, 0) else position_type end
+       where code = v_code;
     end if;
     return jsonb_build_object('ok', true, 'code', v_code);
   end if;
@@ -6501,7 +6821,9 @@ begin
       'points', (select coalesce(jsonb_agg(jsonb_build_object(
           'id', p.id, 'name', p.name, 'mode', p.mode, 'legal_entity', p.legal_entity, 'active', p.active,
           'sort_order', p.sort_order, 'item_categories', coalesce(to_jsonb(p.item_categories), '[]'::jsonb),
-          'store_name', s.name, 'has_pin', coalesce(p.pin, '') <> '') order by p.sort_order, p.name), '[]'::jsonb)
+          'store_name', s.name, 'has_pin', coalesce(p.pin, '') <> '',
+          'fiscal_enabled', p.fiscal_enabled, 'fiscal_cashbox', p.fiscal_cashbox, 'fiscal_vat', p.fiscal_vat,
+          'fiscal_paper', p.fiscal_paper) order by p.sort_order, p.name), '[]'::jsonb)
         from tandem.points p left join tandem.stores s on s.id = p.default_store_id
        where p.id not like 'zz\_%'),
       'categories', (select coalesce(jsonb_agg(c order by c), '[]'::jsonb)
@@ -6540,6 +6862,19 @@ begin
        and not exists (select 1 from tandem.checks c where c.point_id = v_point and c.check_date = tandem.local_now()::date) then
       return tandem.err('validation', 'Сегодня у точки уже есть отчёт — переключите режим завтра');
     end if;
+    -- 0054: фискальный чек (Webkassa). Ключи приходят только из формы, которая их знает: старая форма
+    -- без них настройки не трогает. Включённый требует режима «касса» и заводского номера кассы.
+    if payload ? 'fiscal_paper' and coalesce(payload->>'fiscal_paper', '') not in ('58', '80') then
+      return tandem.err('validation', 'Ширина ленты чека - 58 или 80 мм'); end if;
+    if nullif(payload->>'fiscal_vat', '') is not null and payload->>'fiscal_vat' not in ('0', '12', '16') then
+      return tandem.err('validation', 'Ставка НДС в чеке - 12 или 16 %, или без НДС'); end if;
+    if coalesce((payload->>'fiscal_enabled')::boolean, false) then
+      if payload->>'mode' <> 'checks' then
+        return tandem.err('validation', 'Фискальный чек пробивает только касса: переключите точку в режим «касса»'); end if;
+      if coalesce(btrim(case when payload ? 'fiscal_cashbox' then payload->>'fiscal_cashbox'
+                             else (select fiscal_cashbox from tandem.points where id = v_point) end), '') = '' then
+        return tandem.err('validation', 'Для фискального чека укажите заводской номер кассы Webkassa (SWK…)'); end if;
+    end if;
     if not exists (select 1 from tandem.points where id = v_point) then
       if v_point !~ '^[a-z][a-z0-9_]{1,30}$' then
         return tandem.err('validation', 'Код новой точки — латиница, цифры и подчёркивание, например eneshka2'); end if;
@@ -6553,7 +6888,13 @@ begin
            active = coalesce((payload->>'active')::boolean, active),
            item_categories = case when jsonb_typeof(payload->'item_categories') = 'array'
                                   then array(select jsonb_array_elements_text(payload->'item_categories')) else item_categories end,
-           pin = coalesce(nullif(payload->>'pin', ''), pin)
+           pin = coalesce(nullif(payload->>'pin', ''), pin),
+           fiscal_since = case when coalesce((payload->>'fiscal_enabled')::boolean, fiscal_enabled) and not fiscal_enabled
+                               then now() else fiscal_since end,
+           fiscal_enabled = coalesce((payload->>'fiscal_enabled')::boolean, fiscal_enabled),
+           fiscal_cashbox = case when payload ? 'fiscal_cashbox' then nullif(upper(btrim(payload->>'fiscal_cashbox')), '') else fiscal_cashbox end,
+           fiscal_vat = case when payload ? 'fiscal_vat' then nullif(nullif(payload->>'fiscal_vat', ''), '0')::numeric else fiscal_vat end,
+           fiscal_paper = case when payload ? 'fiscal_paper' then (payload->>'fiscal_paper')::smallint else fiscal_paper end
      where id = v_point;
     return jsonb_build_object('ok', true, 'id', v_point);
   end if;
@@ -7190,6 +7531,22 @@ begin
       'title', 'Пользователи', 'hint', 'Раздел «Пользователи»: закрепите склады за кладовщиками, напомните про первый вход.');
   end if;
 
+  -- 10. 0054: НТИН товаров на точках с фискальным чеком
+  if exists (select 1 from tandem.points where active and fiscal_enabled and not coalesce(training, false)) then
+    select count(*), coalesce(jsonb_agg(jsonb_build_object('code', code, 'name', name, 'detail', detail) order by rn)
+             filter (where rn <= 300), '[]'::jsonb)
+      into v_count, v_rows from (
+        select i.code, i.name, 'код ' || i.code || coalesce(' · ' || i.category, '') as detail,
+               row_number() over (order by i.name) rn
+          from tandem.items i
+         where i.active and i.for_sale and i.item_type = 'goods' and coalesce(btrim(i.ntin), '') = '' and coalesce(btrim(i.gtin), '') = ''
+           and exists (select 1 from tandem.points p where p.active and p.fiscal_enabled and not coalesce(p.training, false)
+                        and (coalesce(cardinality(p.item_categories), 0) = 0 or i.category = any(p.item_categories)))) x;
+    v_checks := v_checks || jsonb_build_object('id', 'fiscal_ntin', 'severity', 'warn', 'target', 'item', 'count', v_count, 'rows', v_rows,
+      'title', 'Товары без НТИН и штрихкода на точках с фискальным чеком',
+      'hint', 'Товар на перепродажу уходит в фискальный чек с НТИН из Национального каталога товаров. Откройте позицию и впишите НТИН (его дают поставщик или карточка товара в каталоге) или штрихкод с упаковки в поле GTIN - по штрихкоду Webkassa найдёт НТИН сама. Блюда и полуфабрикаты своего производства здесь не проверяются.');
+  end if;
+
   return jsonb_build_object('ok', true, 'checks', v_checks,
     'bad', (select count(*) from jsonb_array_elements(v_checks) c where c->>'severity' = 'bad' and (c->>'count')::int > 0),
     'warn', (select count(*) from jsonb_array_elements(v_checks) c where c->>'severity' = 'warn' and (c->>'count')::int > 0));
@@ -7488,6 +7845,61 @@ AS $function$
   select x.item_code from x where x.chart_id is null or x.ready
   union
   select cl.ingredient_code from x join tandem.chart_lines cl on cl.chart_id = x.chart_id where not x.ready
+$function$
+;
+
+CREATE OR REPLACE FUNCTION tandem.schema_snapshot()
+ RETURNS jsonb
+ LANGUAGE sql
+ STABLE SECURITY DEFINER
+ SET search_path TO 'pg_catalog', 'public'
+AS $function$
+with seqs as (
+  select 10 as ord, 'sequence' kind, c.relname::text nm,
+    format('create sequence if not exists tandem.%I as %s increment %s minvalue %s maxvalue %s start %s;', c.relname, format_type(s.seqtypid, null), s.seqincrement, s.seqmin, s.seqmax, s.seqstart) sql
+  from pg_class c join pg_sequence s on s.seqrelid = c.oid where c.relnamespace = 'tandem'::regnamespace
+    and not exists (select 1 from pg_depend d where d.objid = c.oid and d.deptype = 'i')
+), tabs as (
+  select 20 as ord, 'table' kind, c.relname::text nm,
+    format(E'create table if not exists tandem.%I (\n%s\n);', c.relname,
+      (select string_agg(format('  %I %s%s%s%s', a.attname, format_type(a.atttypid, a.atttypmod),
+          case when a.attidentity = 'a' then ' generated always as identity' when a.attidentity = 'd' then ' generated by default as identity' else '' end,
+          case when a.attgenerated = 's' then ' generated always as (' || pg_get_expr(d.adbin, d.adrelid) || ') stored'
+               when d.adbin is not null and a.attidentity = '' then ' default ' || pg_get_expr(d.adbin, d.adrelid) else '' end,
+          case when a.attnotnull then ' not null' else '' end), E',\n' order by a.attnum)
+       from pg_attribute a left join pg_attrdef d on d.adrelid = a.attrelid and d.adnum = a.attnum
+       where a.attrelid = c.oid and a.attnum > 0 and not a.attisdropped)) sql
+  from pg_class c where c.relnamespace = 'tandem'::regnamespace and c.relkind = 'r'
+), cons as (
+  select case when con.contype = 'f' then 40 else 30 end as ord, 'constraint' kind, c.relname || '.' || con.conname nm,
+    format('alter table tandem.%I add constraint %I %s;', c.relname, con.conname, pg_get_constraintdef(con.oid)) sql
+  from pg_constraint con join pg_class c on c.oid = con.conrelid
+  where c.relnamespace = 'tandem'::regnamespace and con.contype in ('p','u','c','f','x')
+), idx as (
+  select 35 as ord, 'index' kind, i.indexname::text nm, i.indexdef || ';' sql
+  from pg_indexes i where i.schemaname = 'tandem'
+    and not exists (select 1 from pg_constraint con join pg_class ic on ic.oid = con.conindid where ic.relname = i.indexname and ic.relnamespace = 'tandem'::regnamespace)
+), seqown as (
+  select 45 as ord, 'seqowner' kind, s.relname::text nm, format('alter sequence tandem.%I owned by tandem.%I.%I;', s.relname, t.relname, a.attname) sql
+  from pg_depend d join pg_class s on s.oid = d.objid and s.relkind = 'S' join pg_class t on t.oid = d.refobjid
+  join pg_attribute a on a.attrelid = t.oid and a.attnum = d.refobjsubid
+  where d.deptype = 'a' and s.relnamespace = 'tandem'::regnamespace
+), fns as (
+  select 50 as ord, 'function' kind, p.oid::regprocedure::text nm, pg_get_functiondef(p.oid) || ';' sql
+  from pg_proc p where p.prokind = 'f' and (p.pronamespace = 'tandem'::regnamespace or (p.pronamespace = 'public'::regnamespace and p.proname like 'tandem%'))
+), views as (
+  select 60 as ord, 'view' kind, c.relname::text nm, format(E'create or replace view tandem.%I as\n%s', c.relname, pg_get_viewdef(c.oid, true)) sql
+  from pg_class c where c.relnamespace = 'tandem'::regnamespace and c.relkind = 'v'
+), trg as (
+  select 70 as ord, 'trigger' kind, t.tgname::text nm, pg_get_triggerdef(t.oid) || ';' sql
+  from pg_trigger t join pg_class c on c.oid = t.tgrelid where c.relnamespace = 'tandem'::regnamespace and not t.tgisinternal
+), rls as (
+  select 80 as ord, 'rls' kind, c.relname::text nm, format('alter table tandem.%I enable row level security;', c.relname) sql
+  from pg_class c where c.relnamespace = 'tandem'::regnamespace and c.relkind = 'r' and c.relrowsecurity
+)
+select coalesce(jsonb_agg(jsonb_build_object('ord', ord, 'kind', kind, 'nm', nm, 'sql', sql) order by ord, nm), '[]'::jsonb)
+from (select * from seqs union all select * from tabs union all select * from cons union all select * from idx
+  union all select * from seqown union all select * from fns union all select * from views union all select * from trg union all select * from rls) x
 $function$
 ;
 
@@ -8184,6 +8596,7 @@ alter table tandem.doc_counters enable row level security;
 alter table tandem.document_lines enable row level security;
 alter table tandem.documents enable row level security;
 alter table tandem.feedback enable row level security;
+alter table tandem.fiscal_money enable row level security;
 alter table tandem.item_aliases enable row level security;
 alter table tandem.item_groups enable row level security;
 alter table tandem.item_prices enable row level security;

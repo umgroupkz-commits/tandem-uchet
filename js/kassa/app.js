@@ -2,9 +2,9 @@
 // попадает в дневной отчёт точки и на склад (миграция 0033). Связь на точках нестабильная, поэтому
 // чек сначала кладётся в очередь планшета (localStorage) и досылается в фоне; сервер узнаёт
 // повторную досылку по uid и второй чек не создаёт.
-import { el, fmt, toast, today, debounce } from "../office/ui.js?v=26";
-import { mountOrders, stopOrders } from "./orders.js?v=26";
-import { initFiscal, fiscalOn, fiscalize, retryPending, fiscalBadges, xReport, autoPrint, setAutoPrint, pendingCount, queueFiscal } from "./fiscal.js?v=26";
+import { el, fmt, toast, today, debounce } from "../office/ui.js?v=27";
+import { mountOrders, stopOrders } from "./orders.js?v=27";
+import { initFiscal, fiscalOn, fiscalize, retryPending, fiscalBadges, xReport, moneyOp, autoPrint, setAutoPrint, pendingCount, queueFiscal } from "./fiscal.js?v=27";
 
 const API = window.TANDEM_API_URL || "https://qeehxcnnuzuwskznhdyg.supabase.co/functions/v1/uchet";
 const $ = (id) => document.getElementById(id);
@@ -577,7 +577,7 @@ const nextVer = () => ++verSeq;
 const unsent = (q) => q.state === "wait" || q.state === "drop";
 const inFlight = (uid) => !!S.sending && S.sending.uid === uid;
 // Правку уже существующего чека сервер не принимает: смена закрыта или чек старый (контракт п. 5).
-const LOCKED = /^(Смена закрыта|Чек слишком старый|Чек уже пробит в налоговой)/;
+const LOCKED = /^(Смена закрыта|Чек слишком старый|Чек уже пробит в налоговой|Чек пробивается в налоговой)/;
 const sig = (pay, lines) => pay + "|" + lines.map((l) => l.item_code + ":" + Number(l.qty) + ":" + Number(l.price)).join(",");
 let retryTimer = null;
 function retry(ms) { clearTimeout(retryTimer); retryTimer = setTimeout(() => { retryTimer = null; flush(); }, ms); }
@@ -707,6 +707,7 @@ async function drawShift() {
   if (seq !== shiftSeq || sess !== S.sess) return;
   if (data) setClosed(data, day);
   const server = data ? data.checks.map((c) => ({ ...c, date: day })) : [];
+  if (data && fiscalOn()) catchUpFiscal(server);
   const onSrv = new Map(server.map((c) => [c.uid, c]));
   const t = { count: 0, total: 0, cash: 0, kaspi_qr: 0, transfer: 0, card: 0 };
   if (data) for (const k of Object.keys(t)) t[k] = Number(data.totals[k]) || 0;
@@ -747,6 +748,19 @@ async function drawShift() {
   for (const c of list) box.append(checkCard(c, false, data.closed_at));
   if (!local.length && !list.length && !offline) box.append(el("div", { class: "state" }, "За сегодня чеков ещё нет. Пробейте первый на вкладке «Продажа»."));
 }
+// 0053: что сервер видит не пробитым (чек сохранён, а вкладку закрыли до пробития; отмена, пока продажа ещё
+// пробивалась), - в очередь пробития: повтор (retryPending) пробьёт и такие чеки, а не только начатые на этом планшете.
+function catchUpFiscal(list) {
+  let added = false;
+  for (const c of list) {
+    const f = c.fiscal || {};
+    if (f.status === "off" || f.status === "pending") continue;
+    const op = c.status === "void" ? (f.status === "ok" && f.return_status !== "ok" ? "return" : null)
+      : c.status === "active" && Number(c.total) > 0 && f.status !== "ok" ? "sale" : null;
+    if (op && pendingCount() < 50) { queueFiscal(c.uid, op); added = true; }
+  }
+  if (added) retryPending().then((n) => { if (n && !$("shift").hidden) drawShift(); });
+}
 // 0053: полоса фискализации в «Смене» - сколько чеков не пробито в налоговой, X-отчёт, печать чека сразу.
 function fiscalBar() {
   if (!fiscalOn()) return null;
@@ -757,6 +771,8 @@ function fiscalBar() {
       " Касса повторяет сама, когда есть связь. Чек без фискального признака покупателю не выдан - пробейте его кнопкой у чека.") : null,
     el("div", { class: "shiftbar" },
       el("button", { class: "link", onclick: (e) => showX(e.target) }, "X-отчёт: что пробито в налоговой"),
+      el("button", { class: "link", onclick: () => showMoney("in") }, "Внести размен"),
+      el("button", { class: "link", onclick: () => showMoney("out") }, "Изъять наличные"),
       el("label", { class: "chkopt" }, auto, "Печатать чек сразу после оплаты")));
 }
 // Webkassa: 0 наличные, 1 карта, 4 мобильные платежи (Kaspi QR и перевод).
@@ -777,6 +793,39 @@ async function showX(btn) {
       // SumInCashbox копит наличные и прошлых смен, пока их не изъяли операцией Webkassa, - не сумма этой смены
       row("Наличные в Webkassa с прошлыми сменами", money(x.SumInCashbox))],
     buttons: [{ text: "Закрыть", value: true, primary: true }] });
+}
+// 0056: внесение размена и изъятие наличных - операции Webkassa, чтобы наличные в Webkassa совпадали с ящиком.
+// Номер операции живёт, пока продавец не закрыл окно: повтор после обрыва связи не задвоит её, а сумма тогда
+// не меняется. Отказ Webkassa операцию не провёл - следующая попытка идёт под новым номером.
+async function showMoney(kind) {
+  if (dlgOpen) return;
+  const out = kind === "out";
+  let ext = uuid(), sumV = "", whyV = "", msg = "", locked = false;
+  for (;;) {
+    const err = el("div", { class: "err", role: "alert" }, msg);
+    const sum = el("input", { type: "text", inputmode: "decimal", class: "reason", autocomplete: "off", value: sumV, readonly: locked, "aria-label": "Сумма" });
+    const why = out ? el("input", { type: "text", class: "reason", autocomplete: "off", maxlength: "300", value: whyV, readonly: locked, "aria-label": "На что" }) : null;
+    for (const i of [sum, why]) if (i) i.addEventListener("input", () => { err.textContent = ""; });
+    const v = await dialog({ title: out ? "Изъять наличные" : "Внести размен",
+      text: out ? "Деньги, которые взяли из ящика посреди смены: расходы, часть выручки. Остаток при закрытии смены изымается сам."
+        : "Размен в ящике на начало смены. При закрытии смены остаток наличных изымается сам, поэтому размен вносят каждое утро.",
+      body: [el("label", {}, "Сумма, ₸"), sum, why ? el("label", {}, "На что") : null, why, err], focus: touch() ? null : sum,
+      buttons: [{ text: "Назад", value: null }, { text: out ? "Изъять" : "Внести", primary: true, value: () => {
+        const n = num(sum.value);
+        if (!(n > 0)) { err.textContent = "Впишите сумму"; return undefined; }
+        if (out && !why.value.trim()) { err.textContent = "Напишите, на что изъяли наличные"; return undefined; }
+        return { sum: r2(n), reason: out ? why.value.trim() : "Размен" };
+      } }] });
+    if (!v) return;
+    sumV = qtyStr(v.sum); whyV = out ? v.reason : "";
+    const r = await moneyOp(kind, v.sum, v.reason, ext);
+    if (r.ok) {
+      toast((out ? "Изъято " : "Внесено ") + money(v.sum) + (r.cash != null ? " · наличных в Webkassa " + money(r.cash) : "") + (r.note ? ". " + r.note : ""));
+      return;
+    }
+    msg = r.error;
+    if (r.network) locked = true; else { ext = uuid(); locked = false; }
+  }
 }
 // Что сказать продавцу о записи очереди и какие действия ей оставить.
 function localNote(c) {
@@ -876,15 +925,16 @@ async function voidCheck(c, btn) {
   try {
     const r = await call("check_void", { uid: c.uid, reason });
     if (!r.ok) toast(r.error || "Чек не отменился", "bad"); else toast("Чек №" + c.no + " отменён");
-    // 0053: отменён пробитый в налоговой чек - пробить чек возврата (не пробьётся - кнопка у чека и повтор)
-    if (r.ok && fiscalOn() && c.fiscal && c.fiscal.status === "ok") { queueFiscal(c.uid, "return"); await fiscalize(c.uid, { op: "return", print: autoPrint() }); }
+    // 0053: отменён пробитый в налоговой чек - пробить чек возврата (не пробьётся - кнопка у чека и повтор).
+    // Нужен ли возврат, решает сервер: карточка могла быть нарисована, пока продажа ещё пробивалась.
+    if (r.ok && fiscalOn()) { queueFiscal(c.uid, "return"); await fiscalize(c.uid, { op: "return", print: autoPrint() }); }
   } catch (e) { toast("Нет связи — отмените чек, когда она появится", "bad"); }
   drawShift();
 }
 
 // ---------------------------------------------------------------- запуск
 // Пробитие в Webkassa ждёт ответа дольше обычного запроса: сервер сам повторяет вход и ищет уже пробитый чек.
-initFiscal({ call: (a, p) => call(a, p, null, 45000), point: () => S.point, store });
+initFiscal({ call: (a, p) => call(a, p, null, 45000), point: () => S.point, seller: () => S.seller, store });
 $("lbtn").onclick = doLogin;
 $("lpin").onkeydown = (e) => { if (e.key === "Enter") $("lseller").focus(); };
 $("lseller").onkeydown = (e) => { if (e.key === "Enter") doLogin(); };

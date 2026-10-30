@@ -1,5 +1,5 @@
 import { ask, el, fmtMoney, today, toast, itemPicker, linesTable, drafts, warningsText, readyNotes, confirmMinus, commentOf, stockNote,
-  withBusy, saveDoc, postDoc, showPosted, newKey, draftHint, okNum, numOf } from "./common.js?v=26";
+  withBusy, saveDoc, postDoc, showPosted, newKey, draftHint, okNum, numOf } from "./common.js?v=27";
 
 // Списание с телефона: порча, проработка, питание персонала — то, что кладовщик видит
 // первым. Устроено как перемещение: черновик на телефоне, предпросмотр остатков, проведение.

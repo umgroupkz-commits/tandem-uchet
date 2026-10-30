@@ -1,6 +1,6 @@
-import { api, can } from "./api.js?v=26";
-import { el, fmt, toast, debounce, modal, confirmDlg, today, isoDate, errText } from "./ui.js?v=26";
-import { numInput, parseNum, numStr, enterNext, fmtDate, fmtMoney, itemPicker } from "./inputs.js?v=26";
+import { api, can } from "./api.js?v=27";
+import { el, fmt, toast, debounce, modal, confirmDlg, today, isoDate, errText } from "./ui.js?v=27";
+import { numInput, parseNum, numStr, enterNext, fmtDate, fmtMoney, itemPicker } from "./inputs.js?v=27";
 
 const TYPES = { dish: "блюдо", prepared: "полуфабрикат", goods: "товар" };
 let root, table, pager, groups = [];
@@ -370,7 +370,7 @@ async function editChart(code, chartId) {
   async function print() {
     if (m.dirty && !confirmDlg("Карта не сохранена. Напечатать так, как сейчас на экране?")) return;
     let mod = null;
-    try { mod = await import("./print.js?v=26"); } catch { mod = null; }
+    try { mod = await import("./print.js?v=27"); } catch { mod = null; }
     if (!mod || typeof mod.printChart !== "function") { toast("Печать техкарты пока недоступна — обновите страницу позже", "bad"); return; }
     const k = calc();
     const ln = lines.map((l) => {

@@ -1362,17 +1362,15 @@ function saveReport() {
    Webkassa. Только за сегодня: смена Webkassa одна на кассу, и закрытие прошлого дня закрыло бы сегодняшние чеки.
    Не пробитые в налоговой чеки дня - сначала пробить в кассе: после Z они ушли бы в следующую смену Webkassa. */
 function closeFiscalShift(date, msg, changed, stale) {
-  api('check_list', { date: date }).then(function (l) {
-    if (stale()) return null;
-    if (!l.ok) { say(msg + '. Z-отчёт Webkassa не снят: ' + (l.offline ? 'нет связи' : l.error || 'чеки не загрузились') + '. Закройте смену ещё раз, когда будет связь', true); return null; }
-    var left = (l.checks || []).filter(function (c) { return c.status === 'active' && Number(c.total) > 0 && !(c.fiscal && c.fiscal.status === 'ok'); }).length;
-    if (left) { say(msg + '. Z-отчёт Webkassa не снят: не пробиты в налоговой чеков - ' + left + '. Пробейте их в кассе (вкладка «Смена», кнопка у чека) и закройте смену ещё раз', true); return null; }
-    say(msg + '. Закрываю смену Webkassa…', changed);
-    return api('fiscal_z', { date: date }, 60000);
-  }).then(function (z) {
+  say(msg + '. Закрываю смену Webkassa…', changed);
+  // 0056: перед Z сервер изымает остаток наличных в Webkassa (выручка сдана) - от имени сдавшего смену.
+  // 0058: не пробитые чеки дня сервер проверяет сам и отвечает отказом с их числом.
+  api('fiscal_z', { date: date, seller: $('shift_by').value.trim() }, 60000).then(function (z) {
     if (!z || stale()) return;
-    if (!z.ok) { say(msg + '. Z-отчёт Webkassa не снят: ' + (z.offline ? 'нет связи' : z.error || 'ошибка') + '. Закройте смену ещё раз', true); return; }
-    say(msg + (z.already ? '. Смена Webkassa уже была закрыта' : '. Смена Webkassa закрыта, Z-отчёт по смене №' + z.report.ShiftNumber), changed);
+    if (!z.ok) { say(msg + '. Z-отчёт Webkassa не снят: ' + (z.offline ? 'нет связи' : z.message || z.error || 'ошибка') + '. Закройте смену ещё раз', true); return; }
+    var got = z.withdrawn ? '. Изъято из кассы Webkassa ' + fmt(z.withdrawn) + ' ₸ (выручка сдана)' : '';
+    var wbad = z.withdraw_error ? '. Изъятие не прошло: ' + z.withdraw_error + ' - наличные остались в Webkassa, изымите их кнопкой в кассе' : '';
+    say(msg + got + (z.already ? '. Смена Webkassa уже была закрыта' : '. Смена Webkassa закрыта, Z-отчёт по смене №' + z.report.ShiftNumber) + wbad, changed || !!wbad);
   });
 }
 

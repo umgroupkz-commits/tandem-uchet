@@ -1,5 +1,5 @@
 import { ask, el, fmtMoney, today, toast, debounce, itemPicker, linesTable, drafts,
-  withBusy, saveDoc, postDoc, showPosted, newKey, draftHint, okNum, numOf, hasNum, lineMatch, fmtQty, selectOnFocus } from "./common.js?v=26";
+  withBusy, saveDoc, postDoc, showPosted, newKey, draftHint, okNum, numOf, hasNum, lineMatch, fmtQty, selectOnFocus } from "./common.js?v=27";
 
 const SCN = "inventory";
 export async function mount(root, ctx) {

@@ -1,5 +1,6 @@
 // Сквозная проверка фискализации через сервер учёта на «Учебной кассе» (касса Webkassa тестового стенда):
-// чек → fiscal_check → повтор без второго чека → печатная форма → отмена → чек возврата → X-отчёт.
+// чек → fiscal_check → повтор без второго чека → печатная форма → отмена → чек возврата → внесение и изъятие
+// (0056) → X-отчёт; с --z - закрытие смены (изъятие остатка и Z).
 // Код учебной кассы берётся по коду обучения (TANDEM_TRAINING_CODE) и не печатается.
 // Фискальный чек у «Учебной кассы» по умолчанию выключен (урок 6 обучалки исправляет пробитый чек, а пробитый
 // в налоговой не исправляется): на время проверки включите его в Склады → Точки продаж → «Учебная касса».
@@ -28,7 +29,8 @@ const saved = await call("check_save", { ...who, uid, date: day, seller: "Про
 ok("чек сохранён", saved.ok, saved.ok ? "№" + saved.check.no + " на " + saved.check.total : saved.error);
 
 const f1 = await call("fiscal_check", { ...who, uid });
-ok("чек пробит в Webkassa", f1.ok && f1.fiscal && f1.fiscal.status === "ok", f1.ok ? "ФП " + f1.fiscal.number + ", смена " + f1.fiscal.shift : f1.error);
+ok("чек пробит в Webkassa", f1.ok && f1.fiscal && f1.fiscal.status === "ok", f1.ok ? "ФП " + f1.fiscal.number + ", смена " + f1.fiscal.shift
+  + (f1.auto_z ? " (смена была дольше суток - закрыта сама, Z №" + f1.auto_z + ")" : "") : f1.error);
 const f2 = await call("fiscal_check", { ...who, uid });
 ok("повтор не пробивает второй чек", f2.ok && f2.done && f2.fiscal.number === (f1.fiscal && f1.fiscal.number), JSON.stringify(f2).slice(0, 120));
 
@@ -48,9 +50,22 @@ const list = await call("check_list", { ...who, date: day });
 const mine = (list.checks || []).find((c) => c.uid === uid);
 ok("в списке кассы видны фискальные данные", !!(mine && mine.fiscal && mine.fiscal.number && mine.fiscal.return_number));
 
+const ext = crypto.randomUUID();
+const mi = await call("fiscal_money", { ...who, kind: "in", sum: 2000, reason: "Размен", seller: "Проверка фискализации", ext: ext + "-in" });
+ok("внесение размена 2 000", mi.ok, mi.ok ? "в кассе Webkassa " + mi.cash : mi.error);
+const mo0 = await call("fiscal_money", { ...who, kind: "out", sum: 300, ext: ext + "-out" });
+ok("изъятие без причины не проходит", !mo0.ok && /на что/.test(mo0.error || ""), mo0.error);
+const mo = await call("fiscal_money", { ...who, kind: "out", sum: 300, reason: "Хозтовары", seller: "Проверка фискализации", ext: ext + "-out" });
+ok("изъятие 300 на хозтовары", mo.ok, mo.ok ? "в кассе Webkassa " + mo.cash : mo.error);
+const mo2 = await call("fiscal_money", { ...who, kind: "out", sum: 300, reason: "Хозтовары", ext: ext + "-out" });
+ok("повтор изъятия не задваивает", mo2.ok && mo2.done, JSON.stringify(mo2).slice(0, 120));
+
 const x = await call("fiscal_x", who);
 ok("X-отчёт", x.ok, x.ok ? "смена " + x.report.ShiftNumber + ", документов " + x.report.DocumentCount : x.error);
 if (process.argv.includes("--z")) {
-  const z = await call("fiscal_z", { ...who, date: day });
-  ok("Z-отчёт (смена закрыта)", z.ok, z.ok ? "смена " + z.report.ShiftNumber : z.error);
+  const z = await call("fiscal_z", { ...who, date: day, seller: "Проверка фискализации" });
+  ok("закрытие смены: изъятие остатка и Z", z.ok && (z.already || z.report), z.ok ? (z.already ? "смена уже закрыта"
+    : "Z по смене " + z.report.ShiftNumber + ", изъято " + (z.withdrawn || 0) + (z.withdraw_error ? ", изъятие не прошло: " + z.withdraw_error : "")) : z.error);
+  const x2 = await call("fiscal_x", who);
+  ok("после закрытия наличных в Webkassa 0", x2.ok && Number(x2.report.SumInCashbox) === 0, x2.ok ? "в кассе " + x2.report.SumInCashbox : x2.error);
 }
