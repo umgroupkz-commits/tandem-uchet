@@ -1,6 +1,7 @@
 // Выгрузка действующих технологических карт всех п/ф из iiko для Excel (только чтение iiko, в учёт ничего не пишет).
 // П/ф - это тип «заготовка» (PREPARED), позиции групп с «п/ф» в названии («Блюда ПФ», «Выпечка Пф») и позиции с «п/ф»
-// в собственном названии («Соус карри ПФ»). Карта берётся та, что действует на сегодня; следующая версия - пометкой.
+// в собственном названии («Соус карри ПФ»); плюс группа «Блюда на продажу» (просьба клиента для 1С, 03.11.2026).
+// Карта берётся та, что действует на сегодня; следующая версия - пометкой.
 // Свежий список товаров кладётся в data/iiko/export_<дата>/, а не в data/iiko/products.json: иначе обновление учёта
 // перед запуском не увидело бы, какие карты изменились. Карта скачивается, только если assemblyChartModifiedAt
 // отличается от прошлой выгрузки; остальные читаются из data/iiko/charts.
@@ -66,7 +67,9 @@ const U = new Map(units.map((u) => [u.id, u.name]));
 const P = new Map(products.map((p) => [p.productId, p]));
 const OLD = new Map(old.map((p) => [p.productId, p]));
 const gname = (p) => (G.get(p.parentGroupId) || {}).name || "";
-const kind = (p) => (p.type === "PREPARED" ? "Заготовка" : PF.test(gname(p)) ? "Блюдо в группе п/ф" : PF.test(p.name) ? "Блюдо с п/ф в названии" : null);
+const EXTRA_GROUPS = new Set(["Блюда на продажу"]);
+const kind = (p) => (p.type === "PREPARED" ? "Заготовка" : PF.test(gname(p)) ? "Блюдо в группе п/ф" : EXTRA_GROUPS.has(gname(p).trim()) ? "Блюдо на продажу"
+  : PF.test(p.name) ? "Блюдо с п/ф в названии" : null);
 const TYPES = { GOODS: "Товар", DISH: "Блюдо", PREPARED: "Заготовка", SERVICE: "Услуга", MODIFIER: "Модификатор" };
 
 const set = products.filter((p) => !p.deleted && p.type !== "GOODS" && kind(p));
