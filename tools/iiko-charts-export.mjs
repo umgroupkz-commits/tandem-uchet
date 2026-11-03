@@ -110,6 +110,7 @@ for (const p of set) {
         const s = l.storeSpecification || {};
         const n = (s.departments || []).length;
         return { name: q ? q.name : "", article: q ? q.productArticle || "" : "", type: q ? TYPES[q.type] || q.type : "", unit: q ? U.get(q.amountUnitId) || "" : "",
+          weight: q ? Number(q.unitWeight) || 0 : 0,
           deleted: q ? !!q.deleted : false, missing: !q, gross: Number(l.amountIn) || 0, net: Number(l.amountMiddle) || 0, out: Number(l.amountOut) || 0,
           dept: s.inverse === false ? `только ${n} подразд.` : n ? `кроме ${n} подразд.` : "" };
       }),
