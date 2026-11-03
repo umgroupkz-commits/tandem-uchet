@@ -202,6 +202,8 @@ PIN сразу после входа предлагается задать св�
 - `node tools/schema-snapshot-pull.mjs` — снять `db/schema/tandem_full.sql` с боевой базы одной командой (служебный
   ключ); вручную — `node tools/build-schema-snapshot.mjs <файл>` из результата `db/schema/snapshot-query.sql`.
 - `node tools/fiscal-unit.mjs` — фискальная логика сервера без сети, 11 проверок.
+- `node tools/iiko-charts-export.mjs`, затем `python tools/iiko-charts-xlsx.py data/iiko/export_<дата>/pf_charts.json <файл.xlsx>` — Excel с действующими
+  техкартами всех п/ф из iiko (только чтение; кэш `data/iiko/charts` и `products.json` не трогает, обновление учёта видит изменения по-прежнему).
 
 ## Прейскурант iiko (`tools/load-pricelist.mjs`)
 
