@@ -7,6 +7,7 @@
 //   ломают разбор адреса), PORT (8787), CORS_ORIGIN (* или адрес сайта), PG_STATEMENT_TIMEOUT_MS (20000).
 import http from "node:http";
 import pg from "pg";
+import { FISCAL_ACTIONS, handleFiscal } from "../supabase/functions/uchet/fiscal.js";
 
 const MAX_BODY = 8e6;   // байт; nginx перед прокси должен пропускать больше (client_max_body_size 10m), иначе 413 отдаст он сам
 const pool = new pg.Pool({ max: 10, statement_timeout: Number(process.env.PG_STATEMENT_TIMEOUT_MS || 120000) });
@@ -25,6 +26,13 @@ async function gate(action, payload) {
   const q = await pool.query("select public.tandem_gate(action => $1, payload => $2::jsonb) as r", [action, JSON.stringify(payload)]);
   return q.rows[0].r;
 }
+
+const fiscalDeps = {
+  gate,
+  store: async (point, uid, op, ok, data, error) => (await pool.query(
+    "select public.tandem_fiscal_store($1, $2::uuid, $3, $4, $5::jsonb, $6) as r", [point, uid, op, ok, data == null ? null : JSON.stringify(data), error])).rows[0].r,
+  config: async () => process.env,
+};
 
 http.createServer(async (req, res) => {
   if (req.method === "OPTIONS") { res.writeHead(200, CORS); return res.end("ok"); }
@@ -55,6 +63,9 @@ http.createServer(async (req, res) => {
     // без nginx — адрес соединения. Присланное клиентом _ip всегда перезаписывается.
     payload._ip = String(req.headers["x-real-ip"] || req.socket.remoteAddress || "").slice(0, 64) || null;
     try {
+      // 0053: фискальные действия кассы (Webkassa) - как в Edge Function uchet; настройки Webkassa - переменные
+      // окружения WEBKASSA_* этого прокси.
+      if (FISCAL_ACTIONS.has(action)) return send(res, 200, await handleFiscal(action, payload, fiscalDeps));
       send(res, 200, await gate(action, payload));
     } catch (e) {
       console.error(action, e.message);

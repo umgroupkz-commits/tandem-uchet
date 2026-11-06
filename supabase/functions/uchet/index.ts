@@ -1,4 +1,6 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+// @ts-ignore: обычный JS-модуль без типов (общий с server/proxy.mjs)
+import { FISCAL_ACTIONS, handleFiscal } from "./fiscal.js";
 
 // Тандем KZ — API учёта продаж (POST {action, payload} → JSON).
 // HTML отсюда не отдаётся: на *.supabase.co и Edge Functions, и Storage переписывают text/html
@@ -26,6 +28,30 @@ async function rpc(fn: string, args: unknown): Promise<Response> {
     body: JSON.stringify(args),
   });
 }
+
+async function rpcJson(fn: string, args: unknown): Promise<any> {
+  const r = await rpc(fn, args);
+  const text = await r.text();
+  if (!r.ok) throw new Error(fn + ": HTTP " + r.status + " " + text.slice(0, 200));
+  return JSON.parse(text);
+}
+
+// Зависимости фискальных действий (supabase/functions/uchet/fiscal.js): гейт, запись результата
+// (tandem_fiscal_store - только service role) и настройки Webkassa: переменные окружения функции, иначе Vault.
+const fiscalDeps = {
+  gate: (action: string, payload: unknown) => rpcJson("tandem_gate", { action, payload }),
+  store: (point: string, uid: string | null, op: string, ok: boolean, data: unknown, error: string | null) =>
+    rpcJson("tandem_fiscal_store", { p_point: point, p_uid: uid, p_op: op, p_ok: ok, p_data: data, p_error: error }),
+  config: async () => {
+    const env = (k: string) => Deno.env.get(k) ?? "";
+    if (env("WEBKASSA_API_KEY") || env("WEBKASSA_MODE")) {
+      return { WEBKASSA_MODE: env("WEBKASSA_MODE"), WEBKASSA_BASE: env("WEBKASSA_BASE"), WEBKASSA_API_KEY: env("WEBKASSA_API_KEY"),
+        WEBKASSA_LOGIN: env("WEBKASSA_LOGIN"), WEBKASSA_PASSWORD: env("WEBKASSA_PASSWORD") };
+    }
+    const v = await rpcJson("tandem_fiscal_config", {});
+    return { WEBKASSA_MODE: v.mode, WEBKASSA_BASE: v.base, WEBKASSA_API_KEY: v.api_key, WEBKASSA_LOGIN: v.login, WEBKASSA_PASSWORD: v.password };
+  },
+};
 
 async function proxy(fn: string, args: unknown): Promise<Response> {
   const r = await rpc(fn, args);
@@ -57,6 +83,15 @@ Deno.serve(async (req: Request) => {
     const payload = (raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {}) as Record<string, unknown>;
     // IP клиента — для счётчика неверных кодов в гейте; присланное клиентом _ip всегда перезаписывается.
     payload._ip = clientIp(req);
+    // 0053: фискальные действия кассы - здесь, а не в базе: Webkassa вызывает сервер, ключи - в Vault.
+    if (FISCAL_ACTIONS.has(action)) {
+      try {
+        return json(await handleFiscal(action, payload, fiscalDeps));
+      } catch (e) {
+        console.error(action + " error", e);
+        return json({ ok: false, error: "Ошибка фискализации: " + String((e as Error)?.message ?? e).slice(0, 300) }, 500);
+      }
+    }
     // Вся маршрутизация, служебный ключ и счётчик неверных кодов — в базе (public.tandem_gate,
     // миграция 0029). Прокси остаётся тонким: тот же вызов делает server/proxy.mjs на своём сервере.
     return await proxy("tandem_gate", { action, payload });

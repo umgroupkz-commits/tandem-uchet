@@ -140,9 +140,9 @@ var newUid = function () {
 /* Вызов сервера. Никогда не бросает: обрыв связи, таймаут и непонятный ответ приходят как
    {ok:false, error, offline:true}, чтобы каждая кнопка разблокировалась и сказала, что случилось. */
 var NET_ERR = 'Нет связи с сервером. Данные могли не сохраниться — проверьте и повторите';
-function post(action, payload) {
+function post(action, payload, ms) {
   var ctl = window.AbortController ? new AbortController() : null;
-  var timer = ctl ? setTimeout(function () { ctl.abort(); }, 20000) : null;
+  var timer = ctl ? setTimeout(function () { ctl.abort(); }, ms || 20000) : null;
   return fetch(API, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -159,11 +159,11 @@ function post(action, payload) {
     return res === null || typeof res !== 'object' ? { ok: false, error: 'Пустой ответ сервера' } : res;
   });
 }
-function api(action, payload) {
+function api(action, payload, ms) {
   payload = payload || {};
   payload.pin = S.pin;
   if (S.point) payload.point_id = S.point.id;
-  return post(action, payload);
+  return post(action, payload, ms);
 }
 
 function initLogin() {
@@ -1350,10 +1350,27 @@ function saveReport() {
     recalc();
     clearDraft();   // отчёт на сервере; recalc только что записал черновик заново
     say(msg, changed);
+    if (S.mode === 'checks' && S.point.fiscal && date === isoDate(new Date())) closeFiscalShift(date, msg, changed, stale);
   }).catch(function (e) {
     if (stale()) return;
     S.saving = false; $('savebtn').disabled = !S.ready;
     say('Ошибка на странице: ' + e.message, true);
+  });
+}
+
+/* 0053: точка пробивает фискальные чеки (Webkassa) - закрытие смены снимает Z-отчёт и закрывает смену кассы
+   Webkassa. Только за сегодня: смена Webkassa одна на кассу, и закрытие прошлого дня закрыло бы сегодняшние чеки.
+   Не пробитые в налоговой чеки дня - сначала пробить в кассе: после Z они ушли бы в следующую смену Webkassa. */
+function closeFiscalShift(date, msg, changed, stale) {
+  say(msg + '. Закрываю смену Webkassa…', changed);
+  // 0056: перед Z сервер изымает остаток наличных в Webkassa (выручка сдана) - от имени сдавшего смену.
+  // 0058: не пробитые чеки дня сервер проверяет сам и отвечает отказом с их числом.
+  api('fiscal_z', { date: date, seller: $('shift_by').value.trim() }, 60000).then(function (z) {
+    if (!z || stale()) return;
+    if (!z.ok) { say(msg + '. Z-отчёт Webkassa не снят: ' + (z.offline ? 'нет связи' : z.message || z.error || 'ошибка') + '. Закройте смену ещё раз', true); return; }
+    var got = z.withdrawn ? '. Изъято из кассы Webkassa ' + fmt(z.withdrawn) + ' ₸ (выручка сдана)' : '';
+    var wbad = z.withdraw_error ? '. Изъятие не прошло: ' + z.withdraw_error + ' - наличные остались в Webkassa, изымите их кнопкой в кассе' : '';
+    say(msg + got + (z.already ? '. Смена Webkassa уже была закрыта' : '. Смена Webkassa закрыта, Z-отчёт по смене №' + z.report.ShiftNumber) + wbad, changed || !!wbad);
   });
 }
 
