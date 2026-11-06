@@ -6,7 +6,9 @@ COPY deno.json deno.lock ./
 COPY src ./src
 COPY sql ./sql
 COPY main.ts ./
-RUN deno install --entrypoint main.ts && chown -R deno:deno /app
+# Скрипты ключа учёта и вебхуков запускаются на сервере одноразовым контейнером: Deno на сервере нет.
+COPY scripts ./scripts
+RUN deno install --entrypoint main.ts scripts/bot-key.ts scripts/register.ts && chown -R deno:deno /app
 USER deno
 EXPOSE 8080
 CMD ["run", "--allow-net", "--allow-env", "--allow-read", "main.ts"]

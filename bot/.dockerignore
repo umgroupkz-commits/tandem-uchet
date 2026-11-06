@@ -1,6 +1,5 @@
 node_modules
 tests
 eval
-scripts
 *.env
 .env*
