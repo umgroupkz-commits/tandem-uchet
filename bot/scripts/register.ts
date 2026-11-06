@@ -10,7 +10,7 @@ let secret: string;
 try { secret = await uzel.registerWebhook(base + "/uzel"); }
 catch { console.error("«Узел»: вебхук не зарегистрирован — проверьте UZEL_BASE_URL, UZEL_API_KEY и что бот отвечает на " + base + "/uzel."); Deno.exit(1); }
 const text = await Deno.readTextFile(file);
-await Deno.writeTextFile(file, text.replace(/^UZEL_WEBHOOK_SECRET=.*$/m, "").trimEnd() + "\nUZEL_WEBHOOK_SECRET=" + secret + "\n");
+await rewrite(file, text.replace(/^UZEL_WEBHOOK_SECRET=.*$/m, "").trimEnd() + "\nUZEL_WEBHOOK_SECRET=" + secret + "\n");
 console.log("Вебхук «Узла» зарегистрирован, секрет записан в " + file);
 try {
   const r = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/setWebhook`, { method: "POST", headers: { "content-type": "application/json" },
@@ -22,4 +22,11 @@ try {
 } catch {
   console.error("Telegram: вебхук не установлен (сеть или ответ) — проверьте TELEGRAM_BOT_TOKEN и доступ к api.telegram.org.");
   Deno.exit(1);
+}
+
+// Переписать файл на месте (тот же файл, права 600 остаются). Не Deno.writeTextFile: на сервере Енешки
+// (файл с хоста в контейнере) он падает с EACCES, а открытие с усечением проходит (проверено 06.11.2026).
+async function rewrite(path: string, text: string) {
+  const f = await Deno.open(path, { write: true, truncate: true });
+  try { await f.write(new TextEncoder().encode(text)); } finally { f.close(); }
 }

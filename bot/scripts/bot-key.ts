@@ -7,5 +7,12 @@ try { text = await Deno.readTextFile(file); }
 catch { console.error("Нет файла " + file + " — проверьте путь к .env бота."); Deno.exit(1); }
 const key = [...crypto.getRandomValues(new Uint8Array(32))].map((b) => b.toString(16).padStart(2, "0")).join("");
 const hash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(key)))].map((b) => b.toString(16).padStart(2, "0")).join("");
-await Deno.writeTextFile(file, text.replace(/^UCHET_SERVICE_KEY=.*$/m, "").trimEnd() + "\nUCHET_SERVICE_KEY=" + key + "\n");
+await rewrite(file, text.replace(/^UCHET_SERVICE_KEY=.*$/m, "").trimEnd() + "\nUCHET_SERVICE_KEY=" + key + "\n");
 console.log("Ключ записан в " + file + ". Отпечаток для учёта (settings.bot_key_hash): " + hash);
+
+// Переписать файл на месте (тот же файл, права 600 остаются). Не Deno.writeTextFile: на сервере Енешки
+// (файл с хоста в контейнере) он падает с EACCES, а открытие с усечением проходит (проверено 06.11.2026).
+async function rewrite(path: string, text: string) {
+  const f = await Deno.open(path, { write: true, truncate: true });
+  try { await f.write(new TextEncoder().encode(text)); } finally { f.close(); }
+}
