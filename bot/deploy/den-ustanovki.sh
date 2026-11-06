@@ -31,7 +31,8 @@ say() { printf '\n== %s\n' "$*"; }
 die() { printf '\nОШИБКА: %s\n' "$*" >&2; exit 1; }
 [ -f "$KEY" ] || die "нет ключа $KEY"
 
-dns_ok() { nslookup "$1" 8.8.8.8 2>/dev/null | sed -n '/^Name:/,$p' | grep -q "$IP"; }
+# Первые две строки ответа nslookup - сам DNS-сервер; «Name:» не ищем: русская Windows пишет «Имя:».
+dns_ok() { nslookup "$1" 8.8.8.8 2>/dev/null | tail -n +3 | grep -qF "$IP"; }
 na_servere() { "${SSH[@]}" "uzel@$IP" "$@"; }
 
 case "${1:-}" in
