@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#1F3A68">
+<title>Тандем KZ - выгрузки из iiko</title>
+<!-- Для клиента: два отчёта iiko, которые программа не берёт сама (прейскурант и остатки), - как их выгрузить
+     в день обновления учёта из iiko. Остальное (номенклатура, техкарты, цены закупа) программа берёт сама. -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Раскладка: одна колонка текста ~68 знаков, слева шаги и проверки, лента чека - как образец того, что увидит продавец */
+:root {
+  --bg: #F4F6F8; --surface: #FFFFFF; --ink: #17212F; --ink2: #4A5566; --muted: #6E7887;
+  --line: #DCE2E9; --accent: #1F3A68; --accent2: #2D5AA0; --ok: #0B6B4F; --okbg: #E3F3EC;
+  --bad: #B4453C; --badbg: #FBEAE8; --paper: #FFFDF6; --paperline: #E6E0CD;
+  --f-body: "Golos Text", "Segoe UI", system-ui, sans-serif;
+  --f-mono: "JetBrains Mono", "Consolas", ui-monospace, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #11161D; --surface: #18202A; --ink: #E6EBF1; --ink2: #B6C0CC; --muted: #8A95A3;
+  --line: #2A3542; --accent: #9DB8E6; --accent2: #B9CDF0; --ok: #6FD0A8; --okbg: #143528;
+  --bad: #F09A91; --badbg: #3A1D1A; --paper: #1E2630; --paperline: #34404D; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #11161D; --surface: #18202A; --ink: #E6EBF1; --ink2: #B6C0CC; --muted: #8A95A3;
+  --line: #2A3542; --accent: #9DB8E6; --accent2: #B9CDF0; --ok: #6FD0A8; --okbg: #143528;
+  --bad: #F09A91; --badbg: #3A1D1A; --paper: #1E2630; --paperline: #34404D; color-scheme: dark }
+body { background: var(--bg); color: var(--ink); font: 16px/1.55 var(--f-body); }
+.wrap { max-width: 880px; margin: 0 auto; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 28px 56px; display: grid; gap: 28px; }
+h1, h2 { text-wrap: balance; margin: 0; line-height: 1.2; }
+h1 { font-size: clamp(26px, 5vw, 36px); font-weight: 700; letter-spacing: -0.01em; }
+h2 { font-size: 21px; font-weight: 650; }
+p { margin: 0; }
+.eyebrow { font-size: 12.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+.lead { font-size: 17.5px; color: var(--ink2); max-width: 66ch; }
+.hero { display: grid; grid-template-columns: 1fr auto; gap: 24px; align-items: start; }
+.hero > div { display: grid; gap: 12px; min-width: 0; }
+@media (max-width: 680px) { .hero { grid-template-columns: 1fr; } .receipt { justify-self: start; } }
+.btn { display: inline-flex; align-items: center; gap: 8px; padding: 12px 18px; border-radius: 10px; background: var(--accent); color: var(--bg); font-weight: 600; text-decoration: none; border: 0; font: 600 16px var(--f-body); cursor: pointer; width: fit-content; }
+.btn:hover { background: var(--accent2); }
+.btn:focus-visible, button:focus-visible, input:focus-visible, a:focus-visible { outline: 3px solid var(--accent2); outline-offset: 2px; }
+.btn.ghost { background: transparent; color: var(--accent); border: 1.5px solid var(--accent); }
+.receipt { width: 210px; background: var(--paper); border: 1px solid var(--paperline); border-radius: 4px; padding: 14px 14px 18px; font: 11.5px/1.45 var(--f-mono); color: var(--ink2); box-shadow: 0 1px 0 var(--paperline); }
+.receipt b { color: var(--ink); font-weight: 600; }
+.receipt hr { border: 0; border-top: 1px dashed var(--paperline); margin: 7px 0; }
+.receipt .row { display: flex; justify-content: space-between; gap: 8px; }
+.receipt .qr { width: 64px; height: 64px; margin: 10px auto 4px; display: block; }
+.receipt .cap { text-align: center; font-size: 10.5px; color: var(--muted); }
+section { display: grid; gap: 14px; }
+ol.steps { margin: 0; padding-left: 22px; display: grid; gap: 10px; max-width: 70ch; }
+ol.steps li::marker { color: var(--accent); font-weight: 700; }
+.note { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; color: var(--ink2); max-width: 70ch; }
+.note b { color: var(--ink); }
+.lessons { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; }
+.lesson { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; display: grid; gap: 4px; min-width: 0; }
+.lesson .n { font: 600 12px var(--f-mono); color: var(--accent); }
+.lesson .t { font-weight: 600; }
+.lesson .d { font-size: 14px; color: var(--muted); }
+.who { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+.who label { font-weight: 600; }
+.who input { flex: 1 1 220px; min-width: 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--ink); font: 16px var(--f-body); }
+.checks { display: grid; gap: 10px; }
+.check { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; display: grid; grid-template-columns: 34px 1fr; gap: 6px 12px; }
+.check.ok { border-color: var(--ok); }
+.check.bad { border-color: var(--bad); }
+.check .num { font: 600 15px var(--f-mono); color: var(--muted); padding-top: 1px; }
+.check .body { display: grid; gap: 6px; min-width: 0; }
+.check .do { font-weight: 600; }
+.check .want { color: var(--ink2); font-size: 15px; }
+.check .want::before { content: "Должно получиться: "; color: var(--muted); }
+.marks { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 4px; }
+.marks button { padding: 7px 12px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--ink2); font: 500 14px var(--f-body); cursor: pointer; }
+.marks button[aria-pressed="true"].y { background: var(--okbg); border-color: var(--ok); color: var(--ok); font-weight: 600; }
+.marks button[aria-pressed="true"].n { background: var(--badbg); border-color: var(--bad); color: var(--bad); font-weight: 600; }
+.marks input { flex: 1 1 200px; min-width: 0; padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px; background: transparent; color: var(--ink); font: 14px var(--f-body); }
+.marks input[hidden] { display: none; }
+.report { display: grid; gap: 10px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
+.report .sum { color: var(--ink2); font-variant-numeric: tabular-nums; }
+.report textarea { width: 100%; min-height: 150px; box-sizing: border-box; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--ink); font: 13px/1.45 var(--f-mono); resize: vertical; }
+.copied { color: var(--ok); font-weight: 600; }
+ul.plain { margin: 0; padding-left: 20px; display: grid; gap: 8px; max-width: 70ch; color: var(--ink2); }
+ul.plain b { color: var(--ink); }
+.foot { color: var(--muted); font-size: 14px; border-top: 1px solid var(--line); padding-top: 16px; }
+code { font: 14px var(--f-mono); background: var(--surface); border: 1px solid var(--line); border-radius: 5px; padding: 0 5px; }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+*{box-sizing:border-box} [hidden]{display:none!important} body{margin:0}
+.part { display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; border-top: 2px solid var(--accent); padding-top: 14px; }
+.part .tag { font: 600 13px var(--f-mono); color: var(--accent); letter-spacing: .04em; }
+.part .time { font-size: 14px; color: var(--muted); }
+.check .where { font-size: 13.5px; color: var(--muted); }
+.timeline { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; }
+.timeline div { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; display: grid; gap: 2px; }
+.timeline b { font-size: 16px; } .timeline span { font-size: 14px; color: var(--muted); }
+
+.spec { display: grid; grid-template-columns: 120px 1fr; gap: 8px 14px; font-size: 15.5px; max-width: 72ch }
+.spec > * { min-width: 0 }
+.spec .k { font-size: 12px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); padding-top: 3px }
+@media (max-width: 520px) { .spec { grid-template-columns: 1fr; gap: 2px } .spec .k { padding-top: 8px } }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; display: grid; gap: 12px }
+.kbd { display: inline-block; font-size: 14px; font-weight: 600; padding: 1px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg) }
+.warn { background: var(--badbg); color: var(--ink); border-radius: 10px; padding: 10px 14px; font-size: 15px }
+ul.cols { columns: 2 220px; column-gap: 24px; margin: 0; padding-left: 20px; font-size: 15px; color: var(--ink2) }
+ul.cols li { break-inside: avoid; margin-bottom: 3px }
+.done li::marker { content: "✓  "; color: var(--ok) }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header style="display:grid;gap:12px">
+    <span class="eyebrow">Тандем · учёт · выгрузки из iiko</span>
+    <h1>Выгрузки из iiko</h1>
+    <p class="lead">Номенклатуру, группы, склады, контрагентов, техкарты и цены закупа программа берёт из iiko сама. Вручную нужны только два отчёта: цены продажи по точкам и остатки по складам. Оба - в день, когда обновляем учёт из iiko: мы предупредим заранее. Файлы - Андрею в WhatsApp, как есть, ничего в них не правя.</p>
+  </header>
+
+  <section>
+    <h2>1. Сводный прейскурант - цены продажи</h2>
+    <div class="card"><div class="spec">
+      <span class="k">Где</span><p>iikoOffice → «Товары и склады» → «Сводный прейскурант». Тот же отчёт, что выгружали 21 августа («Сводный прейскурант на 21.08.2026»).</p>
+      <span class="k">Настройки</span><p>Дата - сегодняшняя. Подразделения - все: Енешка, ВТУЗ, Буфеты, Тандем Университет, Актау. Группы - все. В отчёте должны быть колонки «Блюдо», «Артикул» и по каждому подразделению «Цена, тг.».</p>
+      <span class="k">Сохранить</span><p><span class="kbd">Экспорт в Excel</span> и прислать файл.</p>
+    </div>
+    <p class="note" style="margin:0">Программа берёт базовую цену подразделения. Цены из колонки «Реал» не загружаются: какую цену ставить на кассу - решение собственника.</p></div>
+  </section>
+
+  <section>
+    <h2>2. Расширенная оборотно-сальдовая ведомость - остатки</h2>
+    <div class="card"><div class="spec">
+      <span class="k">Когда</span><p>В день обновления, после того как в iiko закрыт день. Выгруженные раньше остатки устареют.</p>
+      <span class="k">Где</span><p>iikoOffice → «Отчёты» → «Расширенная оборотно-сальдовая ведомость». Её тоже выгружали 21 августа.</p>
+      <span class="k">Настройки</span><p>Период - с 1-го числа месяца по вчерашний день: остатки берутся на конец этого дня. Склад - <b>один склад на один файл</b>. Категория - все. Нужны колонки «Остатки на конец»: «Кол-во» и «Сумма с/н».</p>
+      <span class="k">Сохранить</span><p><span class="kbd">Экспорт в Excel</span>, файл назвать по складу, например «ОСВ Кухня Темиртау.xlsx».</p>
+    </div>
+    <p class="warn" style="margin:0">Если отметить в отчёте несколько складов сразу, iiko сложит их остатки в одну строку, и разложить их обратно по складам будет нельзя. Поэтому - по одному складу.</p></div>
+  </section>
+
+  <section>
+    <h2>По каким складам нужны остатки</h2>
+    <p class="lead" style="font-size:16px">Только по тем, где лежит товар и которые переходят на программу. Склады в iiko сейчас:</p>
+    <ul class="cols">
+      <li>Кухня Темиртау</li><li>Магазин кухни</li><li>Хоз 1 товары кухни</li><li>Посуда 1 кухни</li>
+      <li>Склад ТЭМК</li><li>Склад хоз товаров</li><li>Посуда склад</li><li>Посуда фабрика</li>
+      <li>Магазин хоз нужды</li><li>Кухня ВТУЗ</li><li>Буфеты ВТУЗ</li><li>Хоз товары2</li>
+      <li>Посуда2</li><li>Кухня Университет</li><li>Буфет Универ</li><li>Хоз Товары Университет</li>
+      <li>Посуда Университет</li><li>Буфет 1</li><li>Буфет Мичурина 49</li><li>БуфетАян отдел</li>
+      <li>Хоз товары 3</li><li>Посуда 3</li><li>Кухня Актау</li>
+      <li style="color:var(--muted)">Склады Алиханова 5 - не нужны, столовая продана</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Что выгружать не нужно</h2>
+    <ul class="plain done">
+      <li>Номенклатуру, группы, склады, контрагентов - программа берёт их из iiko сама.</li>
+      <li>Техкарты - тоже сама; правьте их в iiko как обычно, при обновлении программа заберёт свежие.</li>
+      <li>Цены закупа - из приходных накладных iiko, тоже сама.</li>
+    </ul>
+  </section>
+
+  <p class="foot"><a href="proverka-kassy.html">План проверки кассы</a> · <a href="test.html">Обучение</a> · <a href="help.html">Памятки по ролям</a></p>
+</div>
+</body>
+</html>

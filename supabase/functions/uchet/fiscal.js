@@ -23,9 +23,9 @@ export async function handleFiscal(action, payload, deps) {
   // нет доступа, точка без фискализации, чек отменён или уже пробит - ответ гейта как есть
   if (!prep || prep.ok !== true || prep.skip || prep.done) return prep;
 
-  const wk = createWebkassa(webkassaConfig(await deps.config()), deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {});
   const point = payload.point_id;
   try {
+    const wk = createWebkassa(webkassaConfig(pickConfig(await deps.config(), prep.training)), deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {});
     if (op === "x") return { ok: true, report: await wk.xReport(prep.cashbox) };
     if (op === "z") return await closeShift(wk, prep, point, payload, deps);
     if (op === "money") {
@@ -74,6 +74,21 @@ export async function handleFiscal(action, payload, deps) {
     if (op === "z") await deps.store(point, null, "z", false, { report_date: payload.date || prep.date }, msg);
     return { ok: false, error: "Webkassa: " + msg, network: !!(e && e.network), code: e && e.code != null ? e.code : null };
   }
+}
+
+// Учебная касса (points.training) пробивает на тестовом стенде Webkassa: свой набор WEBKASSA_TEST_* (в Vault -
+// webkassa_test_*, 0060). Пока его нет, берётся общий, но только если он сам тестовый (стенд devkkm или имитация):
+// учебный чек не должен уйти в налоговую с рабочей кассы.
+export function pickConfig(raw, training) {
+  if (!training) return raw;
+  const get = (k) => (typeof raw === "function" ? raw(k) : raw[k]) || "";
+  if (get("WEBKASSA_TEST_API_KEY") || get("WEBKASSA_TEST_MODE")) {
+    const t = {};
+    for (const k of ["MODE", "BASE", "API_KEY", "LOGIN", "PASSWORD"]) t["WEBKASSA_" + k] = get("WEBKASSA_TEST_" + k);
+    return t;
+  }
+  if (get("WEBKASSA_MODE") === "sim" || /devkkm/i.test(get("WEBKASSA_BASE") || "devkkm")) return raw;
+  throw new Error("учебной кассе не задан тестовый стенд Webkassa (node tools/webkassa-config.mjs --test)");
 }
 
 // Z-отчёт смены, закрытой сама собой (код 11): номер закрытой смены для сообщения кассиру.

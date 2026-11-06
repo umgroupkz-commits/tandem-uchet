@@ -42,14 +42,17 @@ const fiscalDeps = {
   gate: (action: string, payload: unknown) => rpcJson("tandem_gate", { action, payload }),
   store: (point: string, uid: string | null, op: string, ok: boolean, data: unknown, error: string | null) =>
     rpcJson("tandem_fiscal_store", { p_point: point, p_uid: uid, p_op: op, p_ok: ok, p_data: data, p_error: error }),
+  // общий набор WEBKASSA_* и тестовый WEBKASSA_TEST_* для учебной кассы (0060); какой взять - решает fiscal.js
   config: async () => {
     const env = (k: string) => Deno.env.get(k) ?? "";
+    const keys = ["MODE", "BASE", "API_KEY", "LOGIN", "PASSWORD"], out: Record<string, string> = {};
     if (env("WEBKASSA_API_KEY") || env("WEBKASSA_MODE")) {
-      return { WEBKASSA_MODE: env("WEBKASSA_MODE"), WEBKASSA_BASE: env("WEBKASSA_BASE"), WEBKASSA_API_KEY: env("WEBKASSA_API_KEY"),
-        WEBKASSA_LOGIN: env("WEBKASSA_LOGIN"), WEBKASSA_PASSWORD: env("WEBKASSA_PASSWORD") };
+      for (const k of keys) { out["WEBKASSA_" + k] = env("WEBKASSA_" + k); out["WEBKASSA_TEST_" + k] = env("WEBKASSA_TEST_" + k); }
+      return out;
     }
     const v = await rpcJson("tandem_fiscal_config", {});
-    return { WEBKASSA_MODE: v.mode, WEBKASSA_BASE: v.base, WEBKASSA_API_KEY: v.api_key, WEBKASSA_LOGIN: v.login, WEBKASSA_PASSWORD: v.password };
+    for (const k of keys) { const n = k.toLowerCase(); out["WEBKASSA_" + k] = v[n]; out["WEBKASSA_TEST_" + k] = v["test_" + n]; }
+    return out;
   },
 };
 
