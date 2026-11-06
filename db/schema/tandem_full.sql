@@ -1,5 +1,5 @@
 -- Полный снимок схемы учёта Тандем KZ (схема tandem + функции public.tandem_*).
--- Снят из боевой базы каталогом PostgreSQL 2026-10-30 запросом db/schema/snapshot-query.sql
+-- Снят из боевой базы каталогом PostgreSQL 2026-11-06 запросом db/schema/snapshot-query.sql
 -- и собран tools/build-schema-snapshot.mjs. Данных не содержит.
 -- Назначение: поднять пустую базу на собственном сервере одной командой
 --   psql -v ON_ERROR_STOP=1 -f db/schema/tandem_full.sql
@@ -356,7 +356,8 @@ create table if not exists tandem.items (
   training boolean default false not null,
   ntin text,
   gtin text,
-  position_type smallint default 0 not null
+  position_type smallint default 0 not null,
+  gtin_source text
 );
 
 create table if not exists tandem.order_lines (
@@ -1100,7 +1101,10 @@ begin
     if (select mode from tandem.points where id = v_point) is distinct from 'checks' then
       return jsonb_build_object('ok', false, 'error', 'У этой точки касса не включена');
     end if;
-    if action = 'fiscal_prepare' then return tandem.fiscal_prepare(v_point, payload); end if;
+    if action = 'fiscal_prepare' then   -- 0060: признак учебной точки - серверу, чтобы выбрать стенд Webkassa
+      return tandem.fiscal_prepare(v_point, payload)
+        || jsonb_build_object('training', coalesce((select training from tandem.points where id = v_point), false));
+    end if;
     if action = 'check_save' then return tandem.check_save(v_point, payload); end if;
     if action = 'check_void' then return tandem.check_void(v_point, payload); end if;
     return tandem.check_list(v_point, coalesce(tandem.to_date(payload->>'date'), v_today));
@@ -1876,6 +1880,21 @@ begin
              cost_source = 'iiko_invoice'
       from inc where i.iiko_id = inc.id
                 and (i.cost_source is null or i.cost_source not in ('manual','document'))
+      returning 1)
+    select count(*) into v_upd from upd;
+    return jsonb_build_object('ok', true, 'updated', v_upd, 'skipped', v_total - v_upd);
+
+  elsif p_kind = 'gtin' then
+    -- 0059: штрихкоды из iiko; вписанные в бэк-офисе не трогаем
+    with inc as (
+      select distinct on (id) (x->>'iiko_id')::uuid id, nullif(btrim(coalesce(x->>'gtin', '')), '') gtin
+      from jsonb_array_elements(p_rows) x
+      where coalesce(x->>'iiko_id', '') <> '' and coalesce(btrim(x->>'gtin'), '') ~ '^([0-9]{8,14})?$'
+      order by id),
+    upd as (
+      update tandem.items i set gtin = inc.gtin, gtin_source = case when inc.gtin is null then null else 'iiko' end
+      from inc where i.iiko_id = inc.id and coalesce(i.gtin_source, '') <> 'office'
+                 and i.gtin is distinct from inc.gtin
       returning 1)
     select count(*) into v_upd from upd;
     return jsonb_build_object('ok', true, 'updated', v_upd, 'skipped', v_total - v_upd);
@@ -4196,16 +4215,18 @@ CREATE OR REPLACE FUNCTION tandem.fiscal_config_set(payload jsonb)
  SET search_path TO 'tandem', 'public'
 AS $function$
 declare k text; v text; v_id uuid; v_set text[] := '{}';
+  v_pre text := case when payload->>'set' = 'test' then 'webkassa_test_' else 'webkassa_' end;
 begin
   foreach k in array array['base', 'api_key', 'login', 'password', 'mode'] loop
     v := nullif(btrim(coalesce(payload->>k, '')), '');
     if v is null then continue; end if;
-    select id into v_id from vault.secrets where name = 'webkassa_' || k;
-    if v_id is null then perform vault.create_secret(v, 'webkassa_' || k, 'Webkassa: ' || k || ' (0053)');
+    select id into v_id from vault.secrets where name = v_pre || k;
+    if v_id is null then perform vault.create_secret(v, v_pre || k, 'Webkassa: ' || v_pre || k || ' (0060)');
     else perform vault.update_secret(v_id, v); end if;
     v_set := v_set || k;
   end loop;
-  return jsonb_build_object('ok', true, 'set', to_jsonb(v_set));
+  return jsonb_build_object('ok', true, 'set', to_jsonb(v_set), 'target', case when v_pre = 'webkassa_test_' then 'test' else 'main' end,
+    'has_test', exists (select 1 from vault.secrets where name in ('webkassa_test_api_key', 'webkassa_test_mode')));
 end $function$
 ;
 
@@ -5642,6 +5663,8 @@ begin
       update tandem.items set
         ntin = case when payload ? 'ntin' then nullif(btrim(payload->>'ntin'), '') else ntin end,
         gtin = case when payload ? 'gtin' then nullif(btrim(payload->>'gtin'), '') else gtin end,
+        gtin_source = case when payload ? 'gtin' and nullif(btrim(payload->>'gtin'), '') is distinct from gtin
+                           then case when nullif(btrim(payload->>'gtin'), '') is null then null else 'office' end else gtin_source end,
         position_type = case when payload ? 'position_type' then coalesce(nullif(payload->>'position_type', '')::smallint, 0) else position_type end
        where code = v_code;
     end if;
