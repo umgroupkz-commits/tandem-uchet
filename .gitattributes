@@ -1,0 +1,3 @@
+# Сценарии и файлы, которые уходят на Linux-сервер: только LF (core.autocrlf=true иначе дал бы CRLF).
+*.sh text eol=lf
+bot/deploy/* text eol=lf
