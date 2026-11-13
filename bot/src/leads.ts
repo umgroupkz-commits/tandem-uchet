@@ -24,8 +24,10 @@ export interface LeadDeps {
 }
 
 export type Outcome = "order" | "no_order" | "unclear";
+// Стадия - так считает воронку СММ (письмо СММщицы 13.11.2026): в работе, игнор, итог ясен.
+export type Stage = "in_work" | "ignored" | "done";
 export interface Analysis {
-  outcome: Outcome;
+  outcome: Outcome; stage: Stage; city: string | null; other_city: boolean;
   items: { item_code: string | null; title: string; qty: number; unit: string; price: number | null; sum: number | null }[];
   total: number | null; total_menu: number | null; kind: "delivery" | "pickup" | null; for_date: string | null;
   reason: string | null; summary: string; model: string;
@@ -138,6 +140,8 @@ export function menuForAnalysis(menu: Menu): string {
 }
 
 export const ANALYZE_RULES = `Ты разбираешь переписку в WhatsApp между клиентом и продавцом «Енешки» (Темиртау: татарские пироги, выпечка, полуфабрикаты). Бот клиенту не отвечал, разговор вёл человек. Нужен итог для отчёта рекламщикам.
+stage - где разговор сейчас: "done" - итог ясен (договорились о заказе или клиент отказался, или разговор не о заказе); "in_work" - не закончен: клиент думает, уточняют детали, ждут ответа продавца или клиента; "ignored" - продавец ответил, а клиент пропал, так и не сказав, берёт или нет.
+city - город клиента, только если он сам его назвал или назвал адрес в нём; иначе пустая строка. other_city - true, если это не Темиртау и не Караганда (туда не возим); не назвал город - false.
 outcome: "order" - договорились о заказе: понятно, что берут, и продавец его принял (подтвердил, назвал сумму или время). "no_order" - клиент спрашивал или собирался, но не заказал, или разговор вообще не о заказе. "unclear" - нельзя понять: договорились голосовым или звонком, переписка оборвана, заказ под вопросом.
 items: позиции заказа (для no_order - что клиент хотел, если ясно; для unclear - что обсуждали). item_code - код из меню в квадратных скобках, только если позиция совпадает точно; нет в меню или не ясно какая - пустая строка. title - как назвали. qty - количество в единице меню (кг или шт); «пачка» и «0,7» - это позиции «пачка 0,7 кг» по 1 шт.
 total_stated - сумма заказа, которую назвал продавец, числом; не называл - 0. Сам не считай.
@@ -148,9 +152,12 @@ summary - одна-две фразы по-русски: что хотел кли
 
 export const ANALYSIS_SCHEMA = {
   type: "object", additionalProperties: false,
-  required: ["outcome", "items", "total_stated", "kind", "for_date", "reason", "summary"],
+  required: ["outcome", "stage", "city", "other_city", "items", "total_stated", "kind", "for_date", "reason", "summary"],
   properties: {
     outcome: { type: "string", enum: ["order", "no_order", "unclear"] },
+    stage: { type: "string", enum: ["in_work", "ignored", "done"] },
+    city: { type: "string" },
+    other_city: { type: "boolean" },
     items: { type: "array", items: { type: "object", additionalProperties: false, required: ["item_code", "title", "qty"],
       properties: { item_code: { type: "string" }, title: { type: "string" }, qty: { type: "number" } } } },
     total_stated: { type: "number" },
@@ -162,7 +169,7 @@ export const ANALYSIS_SCHEMA = {
 };
 
 interface RawAnalysis {
-  outcome: Outcome; items: { item_code: string; title: string; qty: number }[]; total_stated: number;
+  outcome: Outcome; stage: Stage; city: string; other_city: boolean; items: { item_code: string; title: string; qty: number }[]; total_stated: number;
   kind: "delivery" | "pickup" | "unknown"; for_date: string; reason: string; summary: string;
 }
 
@@ -179,8 +186,11 @@ export function priceAnalysis(menu: Menu, raw: RawAnalysis, model: string): Anal
   const known = items.filter((x) => x.sum !== null);
   const totalMenu = known.length ? known.reduce((s, x) => s + (x.sum ?? 0), 0) : null;
   const stated = Number(raw.total_stated) > 0 ? Math.round(Number(raw.total_stated)) : null;
+  // Заказ - всегда итог; «игнор» при заказе не бывает. Стадия не из списка - «в работе», а не «итог».
+  const stage: Stage = outcome === "order" ? "done" : (["in_work", "ignored", "done"].includes(raw.stage) ? raw.stage : "in_work");
+  const city = String(raw.city ?? "").trim().slice(0, 100) || null;
   return {
-    outcome, items,
+    outcome, items, stage, city, other_city: raw.other_city === true && !!city,
     total: outcome === "order" ? (stated ?? totalMenu) : null,
     total_menu: totalMenu,
     kind: raw.kind === "delivery" || raw.kind === "pickup" ? raw.kind : null,

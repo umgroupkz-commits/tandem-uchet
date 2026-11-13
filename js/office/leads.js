@@ -6,7 +6,14 @@ import { el, errText, today, isoDate } from "./ui.js?v=28";
 import { fmtDate, fmtDateTime, fmtMoney } from "./inputs.js?v=28";
 
 const OUTCOME = { order: "заказ", no_order: "не заказали", unclear: "непонятно", pending: "разговор идёт" };
-const OUT_CLASS = { order: "ok", no_order: "dim", unclear: "warn", pending: "dim" };
+// Статус заявки словами воронки СММ (13.11.2026): продажа, в работе, игнор, отказ.
+const STATUS = { sale: "продажа", work: "в работе", ignored: "игнор", refused: "отказ", unclear: "непонятно" };
+const statusOf = (l) => l.outcome === "order" ? "sale" : l.outcome === "pending" || l.stage === "in_work" ? "work"
+  : l.stage === "ignored" ? "ignored" : l.outcome === "no_order" ? "refused" : "unclear";
+const STATUS_CLASS = { sale: "ok", work: "", ignored: "warn", refused: "dim", unclear: "dim" };
+// Фильтр: статус или отдельная метка (без ответа продавца, другой город).
+const FILTERS = { ...STATUS, no_reply: "без ответа", other_city: "другой город" };
+const pass = (l, f) => !f || (f === "no_reply" ? l.reply_min == null : f === "other_city" ? !!l.other_city : statusOf(l) === f);
 const KIND = { delivery: "доставка", pickup: "самовывоз" };
 const REFRESH_MS = 30_000;
 const st = { from: today(), to: today(), outcome: "" };
@@ -46,64 +53,74 @@ function tools() {
   const from = el("input", { type: "date", value: st.from, onchange: (e) => { if (e.target.value) setPeriod(e.target.value, st.to < e.target.value ? e.target.value : st.to); } });
   const to = el("input", { type: "date", value: st.to, onchange: (e) => { if (e.target.value) setPeriod(st.from > e.target.value ? e.target.value : st.from, e.target.value); } });
   const sel = el("select", { onchange: (e) => { st.outcome = e.target.value; draw(false); } },
-    el("option", { value: "" }, "все"), ...Object.entries(OUTCOME).map(([k, v]) => el("option", { value: k }, v)));
+    el("option", { value: "" }, "все"), ...Object.entries(FILTERS).map(([k, v]) => el("option", { value: k }, v)));
   sel.value = st.outcome;
   return el("div", { class: "tools" },
     el("span", {}, "Первое обращение с"), from, el("span", {}, "по"), to,
     el("button", { class: "ghost", onclick: () => setPeriod(today(), today()) }, "Сегодня"),
     el("button", { class: "ghost", onclick: () => setPeriod(daysAgo(6), today()) }, "7 дней"),
     el("button", { class: "ghost", onclick: () => setPeriod(daysAgo(29), today()) }, "30 дней"),
-    el("span", {}, "Итог"), sel,
+    el("span", {}, "Показать"), sel,
     el("button", { onclick: exportXlsx }, "Excel"),
     el("button", { class: "ghost", title: "Номера заказавших в виде, который принимает Facebook (SHA-256), для аудиторий и похожих аудиторий",
       onclick: exportFacebook }, "Для Facebook"));
 }
 
+// Цифры в том порядке и теми словами, что просит СММ. Одна заявка бывает в нескольких: это воронка.
 function kpis(r) {
-  const conv = r.leads ? Math.round((r.orders / r.leads) * 100) : 0;
-  const box = (title, value, hint) => el("div", { class: "card", style: "min-width:140px;flex:1" },
+  const pct = (a) => r.received ? Math.round((a / r.received) * 100) + " % от поступивших" : "";
+  const box = (title, value, hint, warn) => el("div", { class: "card", style: "min-width:120px;flex:1" + (warn ? ";border-color:#d9822b" : "") },
     el("div", { class: "dim" }, title), el("div", { style: "font-size:1.6em;font-weight:700" }, value), hint ? el("div", { class: "dim" }, hint) : null);
-  return el("div", { style: "display:flex;gap:8px;flex-wrap:wrap;margin:8px 0" },
-    box("Обращений", String(r.leads), r.pending ? `разговор идёт: ${r.pending}` : ""),
-    box("Заказов", String(r.orders), r.unclear ? `непонятно: ${r.unclear}` : ""),
-    box("Конверсия", `${conv} %`, "из обращения в заказ"),
-    box("Выручка", fmtMoney(r.revenue), "по заказам из WhatsApp"),
-    box("Средний чек", r.avg_check ? fmtMoney(r.avg_check) : "—"),
-    box("Первый ответ", r.reply_median_min != null ? `${r.reply_median_min} мин` : "—", "медиана"));
+  return el("div", {},
+    el("div", { style: "display:flex;gap:8px;flex-wrap:wrap;margin:8px 0" },
+      box("Поступило", String(r.received)),
+      box("Обработано", String(r.processed), pct(r.processed)),
+      box("В работе", String(r.in_work)),
+      box("Игнор", String(r.ignored), pct(r.ignored)),
+      box("С других городов", String(r.other_city)),
+      box("Продаж", String(r.sales), pct(r.sales)),
+      box("Сумма продаж", fmtMoney(r.revenue), r.avg_check ? "средний чек " + fmtMoney(r.avg_check) : "")),
+    el("div", { style: "display:flex;gap:8px;flex-wrap:wrap;margin:0 0 8px" },
+      box("Без ответа продавца", String(r.no_reply), "написали, а им не ответили", r.no_reply > 0),
+      box("Отказ", String(r.no_order), "почему - внизу страницы"),
+      box("Первый ответ", r.reply_median_min != null ? `${r.reply_median_min} мин` : "—", "медиана")));
 }
 
 const itemsText = (items) => (items || []).map((x) => `${x.title} ${String(x.qty).replace(".", ",")}${x.unit ? " " + x.unit : ""}`).join("; ");
-const shown = (rows) => st.outcome ? rows.filter((l) => l.outcome === st.outcome) : rows;
+const shown = (rows) => rows.filter((l) => pass(l, st.outcome));
 
 function table(rows) {
   const t = el("table");
-  t.append(el("tr", {}, ...["Первое обращение", "Клиент", "Первое сообщение", "Итог", "Что заказали", "Сумма", "На когда", "Ответили через", "Что произошло"]
+  t.append(el("tr", {}, ...["Первое обращение", "Клиент", "Первое сообщение", "Статус", "Что заказали", "Сумма", "На когда", "Ответили через", "Что произошло"]
     .map((h) => el("th", {}, h))));
   const list = shown(rows);
   for (const l of list) t.append(el("tr", {},
     el("td", {}, fmtDateTime(l.first_at)),
     el("td", {}, l.name || "—", el("div", { class: "dim" }, l.phone ? "+" + l.phone : "номер скрыт")),
     el("td", { style: "max-width:260px" }, l.first_text || ""),
-    el("td", { class: OUT_CLASS[l.outcome] || "" }, OUTCOME[l.outcome] || l.outcome),
+    el("td", { class: STATUS_CLASS[statusOf(l)] || "" }, STATUS[statusOf(l)],
+      l.other_city ? el("div", { class: "dim" }, "другой город" + (l.city ? ": " + l.city : "")) : null,
+      l.reply_min == null ? el("div", { class: "warn" }, "без ответа") : null),
     el("td", { style: "max-width:280px" }, itemsText(l.items)),
     el("td", { class: "num" }, l.total != null ? fmtMoney(l.total) : "",
       l.total != null && l.total_menu != null && Math.abs(l.total - l.total_menu) >= 1
         ? el("div", { class: "dim", title: "сумма по ценам меню" }, "по меню " + fmtMoney(l.total_menu)) : null),
     el("td", {}, l.for_date ? fmtDate(l.for_date) : "", l.kind ? el("div", { class: "dim" }, KIND[l.kind]) : null),
-    el("td", { class: "num" }, l.reply_min != null ? `${l.reply_min} мин` : "—"),
+    el("td", { class: "num" }, l.reply_min != null ? `${l.reply_min} мин` : "нет ответа"),
     el("td", { style: "max-width:320px" }, l.summary || (l.outcome === "pending" ? "ждём, пока разговор затихнет" : ""),
       l.reason ? el("div", { class: "dim" }, "почему: " + l.reason) : null)));
   if (!list.length) t.append(el("tr", {}, el("td", { colspan: 9, class: "dim" }, "Обращений за период нет")));
   return el("div", { class: "card", style: "padding:0;overflow:auto" }, t);
 }
 
+const DAY_COLS = [["received", "Поступило"], ["processed", "Обработано"], ["in_work", "В работе"], ["ignored", "Игнор"],
+  ["other_city", "С других городов"], ["sales", "Продаж"], ["revenue", "Сумма продаж"], ["no_reply", "Без ответа"]];
 function daysTable(r) {
   if (!r.days.length) return el("span");
   const t = el("table");
-  t.append(el("tr", {}, ...["День", "Обращений", "Заказов", "Конверсия", "Выручка"].map((h) => el("th", {}, h))));
-  for (const d of r.days) t.append(el("tr", {}, el("td", {}, fmtDate(d.date)), el("td", { class: "num" }, String(d.leads)),
-    el("td", { class: "num" }, String(d.orders)), el("td", { class: "num" }, d.leads ? Math.round(d.orders / d.leads * 100) + " %" : "—"),
-    el("td", { class: "num" }, fmtMoney(d.revenue))));
+  t.append(el("tr", {}, el("th", {}, "День"), ...DAY_COLS.map(([, h]) => el("th", {}, h))));
+  for (const d of r.days) t.append(el("tr", {}, el("td", {}, fmtDate(d.date)),
+    ...DAY_COLS.map(([k]) => el("td", { class: "num" }, k === "revenue" ? fmtMoney(d[k]) : String(d[k])))));
   return el("div", {}, el("h3", {}, "По дням"), el("div", { class: "card", style: "padding:0;overflow:auto" }, t));
 }
 
@@ -132,14 +149,15 @@ async function exportXlsx() {
   const X = window.XLSX, wb = X.utils.book_new();
   const rows = shown(lastList).map((l) => ({
     "Первое обращение": new Date(l.first_at).toLocaleString("ru-RU"), "Имя": l.name || "", "Телефон": l.phone ? "+" + l.phone : "",
-    "Первое сообщение": l.first_text || "", "Итог": OUTCOME[l.outcome] || l.outcome, "Что заказали": itemsText(l.items),
+    "Первое сообщение": l.first_text || "", "Статус": STATUS[statusOf(l)], "Итог разбора": OUTCOME[l.outcome] || l.outcome,
+    "Другой город": l.other_city ? (l.city || "да") : "", "Что заказали": itemsText(l.items),
     "Сумма": l.total ?? "", "Сумма по меню": l.total_menu ?? "", "На когда": l.for_date || "", "Получение": KIND[l.kind] || "",
-    "Ответили через, мин": l.reply_min ?? "", "Что произошло": l.summary || "", "Почему не заказали": l.reason || "",
+    "Ответили через, мин": l.reply_min ?? "нет ответа", "Что произошло": l.summary || "", "Почему не заказали": l.reason || "",
     "Сообщений клиента": l.msgs_in, "Ответов": l.msgs_out, "Источник": l.source || "" }));
   X.utils.book_append_sheet(wb, X.utils.json_to_sheet(rows), "Заявки");
   if (lastReport) {
-    X.utils.book_append_sheet(wb, X.utils.json_to_sheet(lastReport.days.map((d) => ({ "День": d.date, "Обращений": d.leads, "Заказов": d.orders,
-      "Конверсия, %": d.leads ? Math.round(d.orders / d.leads * 100) : 0, "Выручка": Number(d.revenue) }))), "По дням");
+    X.utils.book_append_sheet(wb, X.utils.json_to_sheet(lastReport.days.map((d) => Object.fromEntries([["День", d.date],
+      ...DAY_COLS.map(([k, h]) => [h, Number(d[k])])]))), "По дням");
   }
   X.writeFile(wb, `zayavki_whatsapp_${st.from}_${st.to}.xlsx`);
 }

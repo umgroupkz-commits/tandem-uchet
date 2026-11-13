@@ -4,6 +4,8 @@
 -- Смотрят раздел «Заявки WhatsApp» СММщики (новая роль smm, только этот раздел), собственник и администратор:
 -- сколько людей написало, сколько заказало, время первого обращения - для рекламы.
 -- Номер клиента виден полностью (решение Андрея 13.11.2026: нужен СММ для аудиторий Facebook).
+-- Воронка - словами СММщицы (13.11.2026): поступило, обработано, в работе, игнор, с других городов, продаж,
+-- сумма продаж; плюс «без ответа» - продавец так и не ответил.
 
 create table if not exists tandem.wa_leads (
   id              bigserial primary key,
@@ -19,6 +21,9 @@ create table if not exists tandem.wa_leads (
   first_reply_at  timestamptz,            -- первый ответ оператора: видно, как быстро отвечают
   source          text,                   -- откуда пришёл (метки в рекламе - когда появятся)
   outcome         text not null default 'pending' check (outcome in ('pending', 'order', 'no_order', 'unclear')),
+  stage           text not null default 'in_work' check (stage in ('in_work', 'ignored', 'done')),  -- где разговор: в работе / игнор / итог ясен
+  city            text,                   -- город, если клиент его назвал
+  other_city      boolean not null default false,  -- не Темиртау и не Караганда
   items           jsonb not null default '[]'::jsonb,
   total           numeric(12,2),          -- сумма заказа: названная оператором, иначе по ценам меню
   total_menu      numeric(12,2),          -- то же по ценам меню (сверка с названной)
@@ -55,7 +60,8 @@ begin
   exception when others then return tandem.err('validation', 'Неверное время обращения'); end;
   if v_start is null then return tandem.err('validation', 'Нет времени обращения'); end if;
   if v_phone is not null and v_phone !~ '^[0-9]{10,15}$' then v_phone := null; end if;
-  if a is not null and coalesce(a->>'outcome', '') not in ('order', 'no_order', 'unclear') then
+  if a is not null and (coalesce(a->>'outcome', '') not in ('order', 'no_order', 'unclear')
+                        or coalesce(a->>'stage', '') not in ('in_work', 'ignored', 'done')) then
     return tandem.err('validation', 'Итог разбора не из списка');
   end if;
 
@@ -81,6 +87,9 @@ begin
   if a is not null then
     update tandem.wa_leads set
       outcome     = a->>'outcome',
+      stage       = a->>'stage',
+      city        = left(nullif(btrim(a->>'city'), ''), 100),
+      other_city  = coalesce((a->>'other_city')::boolean, false),
       items       = case when jsonb_typeof(a->'items') = 'array' then a->'items' else '[]'::jsonb end,
       total       = tandem.to_num(a->>'total'),
       total_menu  = tandem.to_num(a->>'total_menu'),
@@ -116,7 +125,7 @@ begin
         'lang', l.lang, 'first_text', left(l.first_text, 300), 'msgs_in', l.msgs_in, 'msgs_out', l.msgs_out,
         'reply_min', case when l.first_reply_at is not null
                           then greatest(round(extract(epoch from l.first_reply_at - l.episode_start) / 60)::int, 0) end,
-        'source', l.source, 'outcome', l.outcome, 'items', l.items, 'total', l.total, 'total_menu', l.total_menu,
+        'source', l.source, 'outcome', l.outcome, 'stage', l.stage, 'city', l.city, 'other_city', l.other_city, 'items', l.items, 'total', l.total, 'total_menu', l.total_menu,
         'kind', l.kind, 'for_date', l.for_date, 'reason', l.reason, 'summary', l.summary, 'analyzed_at', l.analyzed_at)
         order by l.episode_start desc)
       from (select * from tandem.wa_leads where episode_start >= t0 and episode_start < t1
@@ -124,27 +133,41 @@ begin
   end if;
 
   if action = 'lead_report' then
+    -- Одна заявка бывает в нескольких строках, как в воронке: обработана и продана, обработана и в игноре.
+    -- «В работе» - и то, что модель ещё не разбирала (разговор не затих).
     return (
-      with l as (select *, (episode_start at time zone 'UTC' + interval '5 hours')::date as d
+      with l as (select *, (episode_start at time zone 'UTC' + interval '5 hours')::date as d,
+                        (outcome = 'pending' or stage = 'in_work') as is_work
                    from tandem.wa_leads where episode_start >= t0 and episode_start < t1),
-      days as (select d, count(*) leads, count(*) filter (where outcome = 'order') orders,
-                      coalesce(sum(total) filter (where outcome = 'order'), 0) revenue
+      days as (select d, count(*) received,
+                      count(*) filter (where first_reply_at is not null) processed,
+                      count(*) filter (where is_work) in_work,
+                      count(*) filter (where stage = 'ignored') ignored,
+                      count(*) filter (where other_city) other_city,
+                      count(*) filter (where outcome = 'order') sales,
+                      coalesce(sum(total) filter (where outcome = 'order'), 0) revenue,
+                      count(*) filter (where first_reply_at is null) no_reply
                  from l group by d)
       select jsonb_build_object('ok', true,
-        'leads', (select count(*) from l),
-        'orders', (select count(*) from l where outcome = 'order'),
-        'no_order', (select count(*) from l where outcome = 'no_order'),
-        'unclear', (select count(*) from l where outcome = 'unclear'),
-        'pending', (select count(*) from l where outcome = 'pending'),
-        'revenue', (select coalesce(sum(total), 0) from l where outcome = 'order'),
-        'avg_check', (select round(avg(total)) from l where outcome = 'order' and total is not null),
+        'received',   (select count(*) from l),
+        'processed',  (select count(*) from l where first_reply_at is not null),
+        'in_work',    (select count(*) from l where is_work),
+        'ignored',    (select count(*) from l where stage = 'ignored'),
+        'other_city', (select count(*) from l where other_city),
+        'sales',      (select count(*) from l where outcome = 'order'),
+        'revenue',    (select coalesce(sum(total), 0) from l where outcome = 'order'),
+        'no_reply',   (select count(*) from l where first_reply_at is null),
+        'no_order',   (select count(*) from l where outcome = 'no_order'),
+        'unclear',    (select count(*) from l where outcome = 'unclear'),
+        'avg_check',  (select round(avg(total)) from l where outcome = 'order' and total is not null),
         'reply_median_min', (select round(percentile_cont(0.5) within group (order by extract(epoch from first_reply_at - episode_start) / 60))
                                from l where first_reply_at is not null),
         'reasons', coalesce((select jsonb_agg(jsonb_build_object('reason', reason, 'n', n) order by n desc)
                                from (select reason, count(*) n from l where outcome = 'no_order' and reason is not null
                                       group by reason order by count(*) desc limit 10) r), '[]'::jsonb),
-        'days', coalesce((select jsonb_agg(jsonb_build_object('date', d, 'leads', leads, 'orders', orders, 'revenue', revenue)
-                                           order by d) from days), '[]'::jsonb)));
+        'days', coalesce((select jsonb_agg(jsonb_build_object('date', d, 'received', received, 'processed', processed,
+                                             'in_work', in_work, 'ignored', ignored, 'other_city', other_city, 'sales', sales,
+                                             'revenue', revenue, 'no_reply', no_reply) order by d) from days), '[]'::jsonb)));
   end if;
   return tandem.err('unknown_action', 'Неизвестное действие: ' || action);
 end $$;

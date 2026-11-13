@@ -51,7 +51,7 @@ Deno.test("обращения: первый ответ оператора зап
   assertEquals(store.leads[0].msgs_out, 2);
 });
 
-const ORDER = { outcome: "order", items: [{ item_code: "P1", title: "пирог с мясом", qty: 1.5 }, { item_code: "", title: "торт наполеон", qty: 1 }],
+const ORDER = { outcome: "order", stage: "done", city: "", other_city: false, items: [{ item_code: "P1", title: "пирог с мясом", qty: 1.5 }, { item_code: "", title: "торт наполеон", qty: 1 }],
   total_stated: 0, kind: "pickup", for_date: "2026-11-14", reason: "", summary: "Взяла пирог на завтра, тел. +7 701 123 45 67" };
 const convo = [msg("m1", "in", "Здравствуйте, пирог с мясом полтора кило на завтра", "2026-11-13T05:00:00Z"),
   msg("m2", "out", "Здравствуйте! Да, сделаем, заберёте сами?", "2026-11-13T05:05:00Z"), msg("m3", "in", "да", "2026-11-13T05:06:00Z")];
@@ -122,4 +122,18 @@ Deno.test("разбор: схема ответа - строгая (все пол
   assertEquals(ANALYSIS_SCHEMA.additionalProperties, false);
   assertEquals(ANALYSIS_SCHEMA.required.length, Object.keys(ANALYSIS_SCHEMA.properties).length);
   assert(menuForAnalysis(MENU).includes("[P1]"));
+});
+
+Deno.test("разбор: стадии воронки СММ - заказ всегда итог, неизвестная стадия - в работе", () => {
+  assertEquals(priceAnalysis(MENU, { ...ORDER, stage: "ignored" } as never, "m").stage, "done", "продажа - не игнор");
+  assertEquals(priceAnalysis(MENU, { ...ORDER, outcome: "no_order", stage: "ignored" } as never, "m").stage, "ignored");
+  assertEquals(priceAnalysis(MENU, { ...ORDER, outcome: "unclear", stage: "что-то" } as never, "m").stage, "in_work");
+});
+Deno.test("разбор: другой город - только если город назван", () => {
+  const a = priceAnalysis(MENU, { ...ORDER, outcome: "no_order", city: "Астана", other_city: true } as never, "m");
+  assertEquals(a.other_city, true); assertEquals(a.city, "Астана");
+  assertEquals(priceAnalysis(MENU, { ...ORDER, city: "", other_city: true } as never, "m").other_city, false, "без города - не считаем");
+});
+Deno.test("разбор: в схеме стадия и город обязательны", () => {
+  for (const f of ["stage", "city", "other_city"]) assert(ANALYSIS_SCHEMA.required.includes(f), f);
 });
