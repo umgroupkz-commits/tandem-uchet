@@ -10,13 +10,17 @@ import { Watcher } from "./src/watcher.ts";
 import { makeApp } from "./src/app.ts";
 import { inSchedule } from "./src/menu.ts";
 import { Leads } from "./src/leads.ts";
+import { SmmReports } from "./src/smm.ts";
 
 const cfg = loadConfig(Deno.env.toObject());
 const store = new PgStore(cfg.databaseUrl);
 await store.migrate();
 const uzel = new UzelClient(cfg.uzelBase, cfg.uzelKey);
 const uchet = new Uchet(cfg.uchetUrl, cfg.uchetKey);
-const cards = new Cards({ tg: new Telegram(cfg.tgToken), uchet, store, ownerId: cfg.telegramOwnerId });
+const tg = new Telegram(cfg.tgToken);
+// Сводка по заявкам WhatsApp для группы СММ (src/smm.ts): группу назначает владелец командой /smm.
+const smm = new SmmReports({ uchet, tg, store, now: () => new Date(), officeUrl: "https://umgroupkz-commits.github.io/tandem-uchet/office.html" });
+const cards = new Cards({ tg, uchet, store, ownerId: cfg.telegramOwnerId, smm });
 const base = { uchet, uzel, store, model: new ClaudeModel(cfg.anthropicKey), modelName: cfg.model, now: () => new Date(), uuid: () => crypto.randomUUID() };
 // Бот отвечает клиентам, только если молчать не велит ни один из трёх уровней: BOT_MODE в bot.env (замок на
 // сервере), client_bot_mode в учёте и расписание client_bot_schedule. Учёт недоступен — решает обычный ход:
@@ -47,6 +51,8 @@ if (cfg.tgToken) {
   const watcher = new Watcher({ uchet, cards, uzel, store, now: () => new Date() });
   setInterval(() => watcher.pollOnce().catch((e) => store.journal("error", null, "watcher: " + e)), 10_000);
   setInterval(() => watcher.reminders().catch((e) => store.journal("error", null, "reminders: " + e)), 60_000);
+  // утренняя сводка СММ: проверка раз в 10 минут, уходит один раз в день после 9:00
+  setInterval(() => smm.morning().catch((e) => store.journal("error", null, "сводка СММ: " + e)), 10 * 60_000);
 } else {
   await store.journal("start", null, "тихий режим без Telegram: карточки заказов и напоминания выключены");
 }

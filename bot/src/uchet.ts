@@ -1,5 +1,6 @@
 // Учёт Тандема: служебные действия bot_* через tandem_gate (часть A). Ключ — ключ бота (settings.bot_key_hash).
 import type { Fetch, Menu, Order, OrderEvent, Quote } from "./types.ts";
+import type { LeadReport } from "./smm.ts";
 
 export type Ans<T> = ({ ok: true } & T) | { ok: false; error: string; message?: string; order?: Order };
 
@@ -34,5 +35,7 @@ export class Uchet {
   }
   /** Обращение клиента (заявка) в учёт - tandem.wa_leads (0061). */
   leadUpsert(p: Record<string, unknown>) { return this.call<{ ok: boolean; error?: string; message?: string; id?: number }>("bot_lead_upsert", p); }
+  /** Сводка по заявкам за период (дни по Темиртау) - для Telegram СММ (0062). */
+  leadReport(from: string, to: string) { return this.call<LeadReport>("bot_lead_report", { from, to }); }
   history(phone: string) { return this.call<{ ok: boolean; name: string | null; lang: string | null; addresses: string[] }>("bot_client_history", { phone }); }
 }

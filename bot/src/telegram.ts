@@ -2,6 +2,7 @@
 // (/allow ответом на сообщение человека). Права на кнопку проверяет бот, допустимость перехода — учёт.
 // Без parse_mode: имя и адрес клиента не ломают разметку.
 import type { Fetch, Order } from "./types.ts";
+import type { SmmReports } from "./smm.ts";
 import type { Store } from "./store.ts";
 import type { Uchet } from "./uchet.ts";
 import { money, qtyText } from "./menu.ts";
@@ -56,7 +57,8 @@ interface Upd {
 type Team = { id: number; name: string }[];
 
 export class Cards {
-  constructor(private d: { tg: Pick<Telegram, "call">; uchet: Pick<Uchet, "cardStatus">; store: Store; ownerId: number }) {}
+  constructor(private d: { tg: Pick<Telegram, "call">; uchet: Pick<Uchet, "cardStatus">; store: Store; ownerId: number;
+    smm?: Pick<SmmReports, "chat" | "setChat" | "text"> }) {}
   private group() { return this.d.store.getState<number>("tg_group"); }
   private async who(id: number, first?: string): Promise<string | null> {
     if (id === this.d.ownerId) return first || "Владелец";
@@ -122,6 +124,22 @@ export class Cards {
       return this.move(a.order_id, a.to, a.by_name, a.kind === "courier" ? { courier: text } : { reason: text });
     }
     const owner = m.from.id === this.d.ownerId;
+    // Сводка по заявкам WhatsApp для СММ (src/smm.ts): группу назначает владелец, запросить может любой в ней.
+    const [cmd, arg] = text.split(/\s+/);
+    if (this.d.smm && cmd === "/smm" && owner) {
+      await this.d.smm.setChat(m.chat.id);
+      await this.d.tg.call("sendMessage", { chat_id: m.chat.id, text: "Сводка по заявкам WhatsApp будет приходить сюда каждое утро в 9:00 за вчера. " +
+        "В любой момент: /svodka - за сегодня, /svodka 7 - за 7 дней." });
+      return;
+    }
+    if (this.d.smm && cmd === "/svodka" && (owner || m.chat.id === await this.d.smm.chat())) {
+      const days = Math.min(Math.max(parseInt(arg ?? "", 10) || 1, 1), 90);
+      let out: string;
+      try { out = await this.d.smm.text(days); }
+      catch { out = "Сводку сейчас не получить: учёт не ответил. Попробуйте через пару минут."; }
+      await this.d.tg.call("sendMessage", { chat_id: m.chat.id, text: out, disable_web_page_preview: true });
+      return;
+    }
     if (text === "/here" && owner) { await this.d.store.setState("tg_group", m.chat.id); await this.d.tg.call("sendMessage", { chat_id: m.chat.id, text: "Карточки заказов будут приходить сюда." }); return; }
     if (text === "/allow" && owner && m.reply_to_message?.from) {
       const t = ((await this.d.store.getState<Team>("team")) ?? []).filter((x) => x.id !== m.reply_to_message!.from!.id);
