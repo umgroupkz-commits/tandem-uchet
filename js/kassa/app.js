@@ -2,9 +2,9 @@
 // попадает в дневной отчёт точки и на склад (миграция 0033). Связь на точках нестабильная, поэтому
 // чек сначала кладётся в очередь планшета (localStorage) и досылается в фоне; сервер узнаёт
 // повторную досылку по uid и второй чек не создаёт.
-import { el, fmt, toast, today, debounce } from "../office/ui.js?v=27";
-import { mountOrders, stopOrders } from "./orders.js?v=27";
-import { initFiscal, fiscalOn, fiscalize, retryPending, fiscalBadges, xReport, moneyOp, autoPrint, setAutoPrint, pendingCount, queueFiscal } from "./fiscal.js?v=27";
+import { el, fmt, toast, today, debounce } from "../office/ui.js?v=28";
+import { mountOrders, stopOrders } from "./orders.js?v=28";
+import { initFiscal, fiscalOn, fiscalize, retryPending, fiscalBadges, xReport, moneyOp, autoPrint, setAutoPrint, pendingCount, queueFiscal } from "./fiscal.js?v=28";
 
 const API = window.TANDEM_API_URL || "https://qeehxcnnuzuwskznhdyg.supabase.co/functions/v1/uchet";
 const $ = (id) => document.getElementById(id);

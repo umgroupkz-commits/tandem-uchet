@@ -6,12 +6,15 @@ import { type Deps, handleTurn } from "./dialog.ts";
 import type { DialogState, Lang } from "./types.ts";
 import { detectLang, maskPhone, maskPhonesIn, phoneOf } from "./menu.ts";
 import { handoffText } from "./templates.ts";
+import type { Leads } from "./leads.ts";
 
 export interface InDeps extends Deps {
   uzelApi: Pick<UzelClient, "getDialog" | "messages">; secret: string; debounceMs: number; paused(): Promise<boolean>;
   notify(text: string): Promise<void>;   // сообщение в группу продавцов (main.ts: cards.say)
   /** Тихий режим: слушать и записывать, но не писать никому. Разговоры ведут люди в «Узле». */
   silent(): Promise<boolean>;
+  /** Обращения клиентов (заявки для рекламы): пишутся в любом режиме, в том числе когда диалог ведёт человек. */
+  leads: Pick<Leads, "clientWrote" | "operatorWrote">;
 }
 const SIX_H = 6 * 3600e3, HALF_H = 30 * 60e3;
 const HUMAN = new Set(["operator", "phone_echo"]);
@@ -38,6 +41,13 @@ export class Inbound {
     if (!ev.eventId) return new Response("ok");
     if (!await this.d.store.seenEvent(ev.eventId)) return new Response("dup");
     if (ev.event === "message.in" && ev.dialogId) this.schedule(ev.dialogId);
+    // Ответ оператора (из окна или с телефона) - продолжение обращения: по нему видно, что разговор ещё идёт
+    // и когда ответили впервые. Ответ бота (program) сюда не идёт.
+    if (ev.event === "message.out" && ev.dialogId && (ev.author === "operator" || ev.author === "phone_echo")) {
+      const dlg = ev.dialogId;
+      this.d.leads.operatorWrote(dlg, this.d.now().toISOString())
+        .catch((e) => this.d.store.journal("error", dlg, "обращение (ответ оператора): " + String(e)).catch(() => {}));
+    }
     return new Response("ok");
   }
 
@@ -63,6 +73,8 @@ export class Inbound {
   private async failed(id: string, e: unknown) {
     const tryDo = async (f: () => Promise<unknown>) => { try { await f(); } catch { /* по возможности */ } };
     await tryDo(() => this.d.store.journal("error", id, maskPhonesIn(String(e))));
+    // Тихий режим: и при сбое ни слова клиенту - разговор и так ведёт человек. Не узнали режим - тоже молчим.
+    if (await this.d.silent().catch(() => true)) return;
     let lang: Lang = "ru", name: string | null = null, phone = "";
     await tryDo(async () => { const st = await this.d.store.getDialog(id); if (st) ({ lang, name, phone } = st); });
     await tryDo(() => this.d.uzel.send(id, handoffText(lang, "failed", name)));
@@ -87,6 +99,8 @@ export class Inbound {
     const start = st.last_client_msg_id && cursor < 0 ? lastIdx((m) => m.direction === "out") : Math.max(cursor, human);
     const clientNew = msgs.slice(start + 1).filter((m) => m.direction === "in");
     const lastIn = lastIdx((m) => m.direction === "in");
+    // Обращение - до любых решений «молчать»: диалог, который ведёт человек, тоже заявка, и её надо посчитать.
+    if (clientNew.length) await this.trackLead(id, clientNew, phone, st.name);
     // Ведёт человек или бот на паузе в «Узле» — молчать, но курсор сдвинуть: после возврата это не новое
     if (dlg.bot.paused || dlg.assignedUserId) {
       if (lastIn >= 0 && msgs[lastIn].id !== st.last_client_msg_id) { st.last_client_msg_id = msgs[lastIn].id; await this.d.store.saveDialog(st); }
@@ -102,8 +116,6 @@ export class Inbound {
     const lang = detectLang(texts.join(" "));
     if (lang) st.lang = lang;
     await this.d.store.journal("in", id, `${phone ? maskPhone(phone) : "скрытый номер"}: ${maskPhonesIn(texts.join(" | ")).slice(0, 300)}`);
-    // Обращение считаем всегда, в любом режиме: на этих строках держится счёт заявок для рекламы.
-    await this.d.store.seenContact({ dialog_id: id, phone, name: st.name, lang: st.lang, text: maskPhonesIn(texts.join(" | ")) });
     // Тихий режим — выход до любой отправки: ни ответа клиенту, ни передачи продавцу, ни заказа.
     // Курсор уже сдвинут, поэтому после включения бот не станет отвечать на то, что прочитал молча.
     if (await this.d.silent()) { await this.d.store.saveDialog(st); return; }
@@ -129,6 +141,19 @@ export class Inbound {
     const summaryAt = st.summary_sent_at ? Date.parse(st.summary_sent_at) : NaN;
     const afterSummary = !Number.isNaN(summaryAt) && clientNew.some((m) => at(m) > summaryAt);
     await handleTurn(this.d, st, texts.join("\n"), afterSummary);
+  }
+
+  // Сбой учёта обращений не должен мешать разговору: записать в журнал и идти дальше.
+  private async trackLead(id: string, news: UzelMessage[], phone: string | null, name: string | null) {
+    try {
+      const texts = news.map((m) => (m.text ?? "").trim()).filter(Boolean);
+      const now = this.d.now().getTime();
+      await this.d.leads.clientWrote({ dialog_id: id, firstAt: new Date(at(news[0]) || now).toISOString(),
+        lastAt: new Date(at(news[news.length - 1]) || now).toISOString(), n: news.length, phone, name,
+        lang: detectLang(texts.join(" ")) ?? "ru", text: maskPhonesIn(texts.join(" | ")) });
+    } catch (e) {
+      await this.d.store.journal("error", id, maskPhonesIn("обращение: " + String(e))).catch(() => {});
+    }
   }
 
   private fresh(id: string, phone: string, name: string | null): DialogState {

@@ -44,3 +44,9 @@ export interface DialogState {
   system_text: string | null;       // системная часть, замороженная на весь разговор (null — ещё не начат)
   menu_seen_hash: string | null;    // отпечаток правил и меню, которые модель видела последними
 }
+
+// Обращение клиента (эпизод разговора): src/leads.ts. Время - ISO-строки.
+export interface Lead {
+  dialog_id: string; episode_start: string; phone: string | null; name: string | null; lang: Lang; first_text: string | null;
+  last_at: string; msgs_in: number; msgs_out: number; first_reply_at: string | null; analyzed_at: string | null;
+}

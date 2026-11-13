@@ -1,6 +1,6 @@
 // Store на Postgres (общий сервер VPS, база bot). Запросы параметризованы; схема — sql/001_bot.sql.
 import pg from "pg";
-import type { DialogState, Lang } from "./types.ts";
+import type { DialogState, Lead } from "./types.ts";
 import { type Await, type Card, FINAL, type Store } from "./store.ts";
 
 export class PgStore implements Store {
@@ -77,18 +77,32 @@ export class PgStore implements Store {
   async journal(kind: string, d: string | null, text: string) {
     await this.q("insert into bot.journal (kind, dialog_id, text) values ($1, $2, $3)", [kind, d, text.slice(0, 2000)]);
   }
-  // Обращения: строка на разговор. Номер и имя обновляем (у скрытого адреса номер приходит не сразу),
-  // первое сообщение не переписываем — по нему видно, с чего клиент начал и откуда пришёл.
-  async seenContact(c: { dialog_id: string; phone: string | null; name: string | null; lang: Lang; text: string }) {
+  // Обращения (src/leads.ts решает, новый это эпизод или продолжение; здесь только чтение и запись)
+  private static LEAD = `dialog_id, episode_start, phone, name, lang, first_text, last_at, msgs_in, msgs_out, first_reply_at, analyzed_at`;
+  private static row(r: Record<string, unknown>): Lead {
+    const iso = (v: unknown) => v == null ? null : new Date(v as string).toISOString();
+    return { dialog_id: String(r.dialog_id), episode_start: iso(r.episode_start)!, phone: (r.phone as string) ?? null,
+      name: (r.name as string) ?? null, lang: r.lang === "kz" ? "kz" : "ru", first_text: (r.first_text as string) ?? null,
+      last_at: iso(r.last_at)!, msgs_in: Number(r.msgs_in), msgs_out: Number(r.msgs_out),
+      first_reply_at: iso(r.first_reply_at), analyzed_at: iso(r.analyzed_at) };
+  }
+  async latestLead(id: string) {
+    const r = await this.q(`select ${PgStore.LEAD} from bot.leads where dialog_id = $1 order by episode_start desc limit 1`, [id]);
+    return r.rows[0] ? PgStore.row(r.rows[0]) : null;
+  }
+  async saveLead(l: Lead) {
+    await this.q(
+      `insert into bot.leads (${PgStore.LEAD}) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+       on conflict (dialog_id, episode_start) do update set phone = excluded.phone, name = excluded.name, lang = excluded.lang,
+         first_text = excluded.first_text, last_at = excluded.last_at, msgs_in = excluded.msgs_in, msgs_out = excluded.msgs_out,
+         first_reply_at = excluded.first_reply_at, analyzed_at = excluded.analyzed_at`,
+      [l.dialog_id, l.episode_start, l.phone, l.name, l.lang, l.first_text?.slice(0, 1000) ?? null, l.last_at, l.msgs_in, l.msgs_out,
+        l.first_reply_at, l.analyzed_at]);
+  }
+  async leadsDue(quietBefore: Date, since: Date, limit: number) {
     const r = await this.q(
-      `insert into bot.contacts (dialog_id, phone, name, lang, first_text, msgs_in)
-       values ($1, $2, $3, $4, $5, 1)
-       on conflict (dialog_id) do update set
-         phone = coalesce(excluded.phone, bot.contacts.phone),
-         name = coalesce(excluded.name, bot.contacts.name),
-         lang = excluded.lang, last_at = now(), msgs_in = bot.contacts.msgs_in + 1
-       returning (xmax = 0) as inserted`,
-      [c.dialog_id, c.phone, c.name, c.lang, c.text.slice(0, 500)]);
-    return r.rows[0]?.inserted === true;
+      `select ${PgStore.LEAD} from bot.leads where last_at < $1 and episode_start >= $2
+         and (analyzed_at is null or analyzed_at < last_at) order by last_at limit $3`, [quietBefore, since, limit]);
+    return r.rows.map(PgStore.row);
   }
 }

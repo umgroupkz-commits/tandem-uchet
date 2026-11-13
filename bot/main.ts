@@ -9,6 +9,7 @@ import { Cards, Telegram } from "./src/telegram.ts";
 import { Watcher } from "./src/watcher.ts";
 import { makeApp } from "./src/app.ts";
 import { inSchedule } from "./src/menu.ts";
+import { Leads } from "./src/leads.ts";
 
 const cfg = loadConfig(Deno.env.toObject());
 const store = new PgStore(cfg.databaseUrl);
@@ -28,7 +29,16 @@ const silent = async () => {
     return !inSchedule(s.client_bot_schedule, new Date());
   } catch { return false; }
 };
-const inbound = new Inbound({ ...base, uzelApi: uzel, secret: cfg.uzelWebhookSecret, debounceMs: 4000,
+// Обращения и разбор переписки (src/leads.ts). Модель - та же, что у бота; без ключа Anthropic заявки считаются,
+// но не разбираются. Разбор - раз в 5 минут по затихшим разговорам.
+const leads = new Leads({ store, uchet, uzelApi: uzel, model: cfg.anthropicKey ? base.model : null, modelName: cfg.model,
+  now: () => new Date() });
+if (cfg.anthropicKey) {
+  const tick = () => leads.analyzeDue().catch((e) => store.journal("error", null, "разбор: " + e));
+  setTimeout(tick, 60_000);
+  setInterval(tick, 5 * 60_000);
+}
+const inbound = new Inbound({ ...base, uzelApi: uzel, secret: cfg.uzelWebhookSecret, debounceMs: 4000, leads,
   paused: async () => (await store.getState<boolean>("paused")) === true, silent,
   notify: (t) => cfg.tgToken ? cards.say(t) : store.journal("notify", null, t) });
 // Карточки заказов и напоминания живут в Telegram: без бота Telegram их некому показывать (так бывает

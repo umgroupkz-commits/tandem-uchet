@@ -1,4 +1,5 @@
 import { assert, assertEquals } from "@std/assert";
+import { Leads } from "../src/leads.ts";
 import { Inbound } from "../src/inbound.ts";
 import { hmacHex } from "../src/uzel.ts";
 import { deps, newDialog, ScriptModel, text } from "./fakes.ts";
@@ -22,8 +23,11 @@ async function signed(body: unknown) {
 const ev = (id: string) => ({ event: "message.in", eventId: id, ts: "x", channelId: "c", dialogId: "d1", messageId: "m2", author: "client",
   status: null, bot: null, pauseKind: null, pauseReason: null });
 const make = (model: ScriptModel, a = api(), silent = false) => { const d = deps(model); const notified: string[] = [];
-  return { inb: new Inbound({ ...d, uzelApi: a as never, secret: SECRET, debounceMs: 0, paused: () => Promise.resolve(false),
-    notify: (t: string) => { notified.push(t); return Promise.resolve(); }, silent: () => Promise.resolve(silent) }), d, notified }; };
+  const pushed: Record<string, unknown>[] = [];
+  const leads = new Leads({ store: d.storeM, uzelApi: a as never, model: null, modelName: "m", now: d.now,
+    uchet: { menu: () => d.uchetF.menu(), leadUpsert: (p) => { pushed.push(p); return Promise.resolve({ ok: true }); } } });
+  return { inb: new Inbound({ ...d, uzelApi: a as never, secret: SECRET, debounceMs: 0, paused: () => Promise.resolve(false), leads,
+    notify: (t: string) => { notified.push(t); return Promise.resolve(); }, silent: () => Promise.resolve(silent) }), d, notified, pushed }; };
 const msg = (id: string, direction: "in" | "out", txt: string | null, at: string, author = direction === "in" ? "client" : "program", extra: Record<string, unknown> = {}) =>
   ({ id, direction, type: "text", text: txt, author, attachment: null, occurredAt: at, ...extra });
 const userText = (m: ScriptModel) => JSON.stringify((m.requests[0].messages as unknown[])[0]);
@@ -215,7 +219,9 @@ Deno.test("вход: тихий режим — ни слова клиенту, �
   await inb.idle();
   assertEquals(d.uzelF.sent.length, 0, "клиенту ничего не ушло");
   assertEquals(d.uzelF.handoffs.length, 0, "продавцу тоже ничего не ушло");
-  assertEquals(d.storeM.contacts.size, 1, "обращение записано");
+  assertEquals(d.storeM.leads.length, 1, "обращение записано");
+  assertEquals(d.storeM.leads[0].episode_start, "2026-10-17T05:00:00.000Z", "время первого обращения - первое сообщение");
+  assertEquals(d.storeM.leads[0].msgs_in, 2);
   assert(d.storeM.log.some((l: string) => l.startsWith("in ")), "входящее в журнале");
 });
 Deno.test("вход: тихий режим — прочитанное молча не всплывёт ответом после включения", async () => {
@@ -224,4 +230,38 @@ Deno.test("вход: тихий режим — прочитанное молча
   await silent.inb.handle(await signed(ev("e1"))); await silent.inb.idle();
   const saved = await silent.d.store.getDialog("d1");
   assert(saved && saved.last_client_msg_id === "m2", "курсор сдвинут на прочитанное");
+});
+
+Deno.test("вход: обращение уходит в учёт сразу и пишется, даже когда диалог ведёт человек", async () => {
+  const { inb, d, pushed } = make(new ScriptModel([]), api({ assigned: "op1" }));
+  await inb.handle(await signed(ev("e1"))); await inb.idle();
+  assertEquals(d.uzelF.sent.length, 0, "диалог ведёт человек - бот молчит");
+  assertEquals(d.storeM.leads.length, 1, "но заявка посчитана");
+  assertEquals(pushed.length, 1);
+  assertEquals(pushed[0].phone, "77011234567");
+  assertEquals(pushed[0].first_text, "пирог хочу | и манты");
+});
+Deno.test("вход: ответ оператора - продолжение обращения, время первого ответа", async () => {
+  const { inb, d, pushed } = make(new ScriptModel([]), api(), true);
+  await inb.handle(await signed(ev("e1"))); await inb.idle();
+  await inb.handle(await signed({ ...ev("e2"), event: "message.out", author: "phone_echo", status: "sent" })); await inb.idle();
+  await new Promise((r) => setTimeout(r, 0));
+  assertEquals(d.storeM.leads[0].msgs_out, 1);
+  assert(d.storeM.leads[0].first_reply_at, "время первого ответа записано");
+  assertEquals(pushed.length, 2);
+});
+Deno.test("вход: ответ самого бота - не ответ оператора", async () => {
+  const { inb, d } = make(new ScriptModel([]), api(), true);
+  await inb.handle(await signed(ev("e1"))); await inb.idle();
+  await inb.handle(await signed({ ...ev("e2"), event: "message.out", author: "program", status: "queued" })); await inb.idle();
+  await new Promise((r) => setTimeout(r, 0));
+  assertEquals(d.storeM.leads[0].msgs_out, 0);
+});
+Deno.test("вход: тихий режим и сбой обработки - клиенту всё равно ни слова", async () => {
+  const broken = { ...api(), messages: () => Promise.reject(new Error("узел упал")) };
+  const { inb, d } = make(new ScriptModel([]), broken as never, true);
+  await inb.handle(await signed(ev("e1"))); await inb.idle();
+  assertEquals(d.uzelF.sent.length, 0);
+  assertEquals(d.uzelF.handoffs.length, 0);
+  assert(d.storeM.log.some((l: string) => l.startsWith("error ")), "сбой в журнале");
 });

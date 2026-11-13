@@ -32,5 +32,7 @@ export class Uchet {
   cardStatus(order_id: number, to: string, by_name: string, extra: Record<string, unknown> = {}) {
     return this.call<Ans<{ order: Order }>>("bot_card_status", { order_id, to, by_name, ...extra });
   }
+  /** Обращение клиента (заявка) в учёт - tandem.wa_leads (0059). */
+  leadUpsert(p: Record<string, unknown>) { return this.call<{ ok: boolean; error?: string; message?: string; id?: number }>("bot_lead_upsert", p); }
   history(phone: string) { return this.call<{ ok: boolean; name: string | null; lang: string | null; addresses: string[] }>("bot_client_history", { phone }); }
 }

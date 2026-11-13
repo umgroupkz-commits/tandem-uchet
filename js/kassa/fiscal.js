@@ -2,7 +2,7 @@
 // чеки» (вход отдаёт point.fiscal). Чек сначала сохраняется у нас (очередь app.js), затем сервер
 // пробивает его в Webkassa действием fiscal_check; не пробитый чек виден продавцу и пробивается повторно.
 // Печать - печатная форма Webkassa (fiscal_print) на чековый принтер из браузера, с QR-кодом чека.
-import { el, toast } from "../office/ui.js?v=27";
+import { el, toast } from "../office/ui.js?v=28";
 
 let C = null;   // {call(action, payload), point(), store, redraw()}
 const QR_LIB = "https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js";
