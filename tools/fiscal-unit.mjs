@@ -1,12 +1,12 @@
 // Проверка фискальной логики сервера (supabase/functions/uchet/fiscal.js) без сети: поддельная Webkassa
 // с состоянием смены и наличных. Ветки: внесение/изъятие, повтор операции (код 14), смена дольше суток (код 11),
 // закрытие смены с изъятием остатка, повторное закрытие дня. Запуск: node tools/fiscal-unit.mjs
-import { handleFiscal } from "../supabase/functions/uchet/fiscal.js";
+import { handleFiscal, pickConfig } from "../supabase/functions/uchet/fiscal.js";
 let pass = 0, fail = 0;
 const ok = (t, c, x) => { c ? pass++ : fail++; console.log((c ? "ok   " : "FAIL ") + t + (x ? " - " + x : "")); };
 // Поддельная Webkassa: смена (open/expired/closed), наличные в кассе, журнал вызовов.
 function fake(st) {
-  const calls = [];
+  const calls = [], urls = [];
   const err = (Code, Text) => ({ Errors: [{ Code, Text }] });
   const handle = (path, b) => {
     calls.push(path.split("/").pop() + (b.OperationType != null ? ":" + b.OperationType : ""));
@@ -20,14 +20,14 @@ function fake(st) {
     if (path.endsWith("check")) { st.cash += 100; return { Data: { CheckNumber: "F" + calls.length, ShiftNumber: st.shift } }; }
     return { Data: {} };
   };
-  return { calls, fetchImpl: async (url, o) => ({ ok: true, status: 200, text: async () => JSON.stringify(handle(url, JSON.parse(o.body))) }) };
+  return { calls, urls, fetchImpl: async (url, o) => (urls.push(url), { ok: true, status: 200, text: async () => JSON.stringify(handle(url, JSON.parse(o.body))) }) };
 }
-const run = async (action, payload, st, prep) => {
+const run = async (action, payload, st, prep, cfg) => {
   const f = fake(st), stored = [];
   const deps = { gate: async () => prep, store: async (...a) => { stored.push(a); return a[2] === "money" ? { ok: true, money: { ok: a[3] } } : { ok: true, fiscal: { status: "ok" } }; },
-    config: async () => ({ WEBKASSA_API_KEY: "k", WEBKASSA_LOGIN: "l", WEBKASSA_PASSWORD: "p" }), fetchImpl: f.fetchImpl };
+    config: async () => cfg || ({ WEBKASSA_API_KEY: "k", WEBKASSA_LOGIN: "l", WEBKASSA_PASSWORD: "p" }), fetchImpl: f.fetchImpl };
   const r = await handleFiscal(action, { point_id: "p", ...payload }, deps);
-  return { r, calls: f.calls.filter((c) => c !== "Authorize").join(","), stored };
+  return { r, calls: f.calls.filter((c) => c !== "Authorize").join(","), stored, urls: f.urls };
 };
 const MP = (kind, sum) => ({ ok: true, op: "money", cashbox: "C", kind, sum, ext: "e1" });
 let x;
@@ -54,5 +54,18 @@ x = await run("fiscal_check", { uid: "u1" }, { state: "expired", shift: 5, cash:
 ok("чек при смене > 24ч: Z и повтор", x.r.ok && x.r.auto_z === 5 && x.calls === "check,ZReport,check", x.calls);
 x = await run("fiscal_check", { uid: "u1" }, { state: "open", shift: 5, cash: 0 }, SP_);
 ok("обычный чек без лишних вызовов", x.r.ok && !x.r.auto_z && x.calls === "check", x.calls);
+// 0060: учебная касса - на тестовом стенде, рабочая - на общем (рабочем) наборе
+const MAIN = { WEBKASSA_BASE: "https://kkm.webkassa.kz", WEBKASSA_API_KEY: "real", WEBKASSA_LOGIN: "l", WEBKASSA_PASSWORD: "p" };
+const TEST = { WEBKASSA_TEST_BASE: "https://devkkm.webkassa.kz", WEBKASSA_TEST_API_KEY: "t", WEBKASSA_TEST_LOGIN: "tl", WEBKASSA_TEST_PASSWORD: "tp" };
+ok("рабочая касса - общий набор", pickConfig({ ...MAIN, ...TEST }, false).WEBKASSA_API_KEY === "real");
+const tc = pickConfig({ ...MAIN, ...TEST }, true);
+ok("учебная касса - тестовый набор", tc.WEBKASSA_BASE === TEST.WEBKASSA_TEST_BASE && tc.WEBKASSA_API_KEY === "t" && tc.WEBKASSA_LOGIN === "tl");
+ok("учебная без тестового набора, общий - стенд devkkm", pickConfig({ WEBKASSA_API_KEY: "k" }, true).WEBKASSA_API_KEY === "k");
+x = await run("fiscal_check", { uid: "u1" }, { state: "open", shift: 5, cash: 0 }, { ...SP_, training: true }, { ...MAIN, ...TEST });
+ok("учебный чек уходит на тестовый стенд", x.r.ok && x.urls.length && x.urls.every((u) => u.startsWith("https://devkkm.webkassa.kz/")), x.urls.join(" "));
+x = await run("fiscal_check", { uid: "u1" }, { state: "open", shift: 5, cash: 0 }, { ...SP_, training: true }, MAIN);
+ok("учебный чек при одном рабочем наборе - отказ без вызова Webkassa", !x.r.ok && !x.urls.length && x.stored[0][3] === false, x.r.error);
+x = await run("fiscal_check", { uid: "u1" }, { state: "open", shift: 5, cash: 0 }, SP_, { ...MAIN, ...TEST });
+ok("рабочий чек - на рабочий адрес", x.r.ok && x.urls.every((u) => u.startsWith("https://kkm.webkassa.kz/")), x.urls.join(" "));
 console.log(`\nпройдено ${pass}, провалено ${fail}`);
 process.exit(fail ? 1 : 0);

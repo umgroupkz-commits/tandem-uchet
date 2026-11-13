@@ -10,8 +10,8 @@
 import fs from "node:fs";
 const IIKO = "https://api-ru.iiko.services";
 const UCHET = process.env.TANDEM_API_URL || "https://qeehxcnnuzuwskznhdyg.supabase.co/functions/v1/uchet";
-const CACHE = "data/iiko/charts";
-const LOG = "data/iiko/charts.log";
+const CACHE = (process.env.IIKO_CACHE || "data/iiko") + "/charts";   // IIKO_CACHE - как в iiko-migrate.mjs
+const LOG = (process.env.IIKO_CACHE || "data/iiko") + "/charts.log";
 const args = process.argv.slice(2);
 const DRY = args.includes("--dry");
 const SKIP_COSTS = args.includes("--skip-costs");
@@ -39,7 +39,14 @@ async function iiko(path, body) {
   if (!token || Date.now() - tokenAt > 50 * 60 * 1000) await auth();   // токен живёт час
   let wait = 5000, fails5xx = 0;
   for (let i = 0; i < 12; i++) {
-    const r = await fetch(IIKO + path, { method: "POST", headers: { "content-type": "application/json", authorization: "Bearer " + token }, body: JSON.stringify(body ?? {}) });
+    let r, t;
+    // обрыв соединения (ECONNRESET, и на запросе, и на чтении ответа) - как 5xx: повтор с выдержкой, после пяти - пропуск товара
+    try { r = await fetch(IIKO + path, { method: "POST", headers: { "content-type": "application/json", authorization: "Bearer " + token }, body: JSON.stringify(body ?? {}) }); t = await r.text(); }
+    catch (e) {
+      if (++fails5xx >= 5) throw Object.assign(new Error(path + " → обрыв связи"), { skippable: true });
+      log(`  обрыв связи (${e.cause?.code || e.message}), жду ${Math.round(wait / 1000)} с`);
+      await sleep(wait); wait = Math.min(wait * 2, 60000); continue;
+    }
     if (r.status === 429) {
       throttled++;
       const retryAfter = Number(r.headers.get("retry-after")) * 1000 || 0;
@@ -60,7 +67,6 @@ async function iiko(path, body) {
       log(`  HTTP ${r.status}, жду ${Math.round(wait / 1000)} с (попытка ${fails5xx})`);
       await sleep(wait); wait = Math.min(wait * 2, 60000); continue;
     }
-    const t = await r.text();
     if (!r.ok) throw new Error(path + " → HTTP " + r.status + " " + t.slice(0, 200));
     pause = Math.max(PAUSE_MIN, pause - 15);
     return JSON.parse(t);

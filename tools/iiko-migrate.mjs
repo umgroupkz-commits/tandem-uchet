@@ -10,24 +10,30 @@
 import fs from "node:fs";
 const IIKO = "https://api-ru.iiko.services";
 const UCHET = "https://qeehxcnnuzuwskznhdyg.supabase.co/functions/v1/uchet";
-const CACHE = "data/iiko";
+const CACHE = process.env.IIKO_CACHE || "data/iiko";   // IIKO_CACHE - другая папка (проверка в tools/iiko-obnovlenie.mjs)
 const DRY = process.argv.includes("--dry");
 const FROM_CACHE = process.argv.includes("--from-cache");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function iiko(path, body, token) {
   for (let i = 0; i < 5; i++) {
-    const r = await fetch(IIKO + path, {
-      method: "POST",
-      headers: { "content-type": "application/json", ...(token ? { authorization: "Bearer " + token } : {}) },
-      body: JSON.stringify(body ?? {}),
-    });
+    let r, t;
+    // iiko рвёт соединение посреди длинной выгрузки (ECONNRESET, 06.11.2026), в том числе на чтении тела ответа, -
+    // повтор, а не падение всего переноса
+    try {
+      r = await fetch(IIKO + path, {
+        method: "POST",
+        headers: { "content-type": "application/json", ...(token ? { authorization: "Bearer " + token } : {}) },
+        body: JSON.stringify(body ?? {}),
+      });
+      t = await r.text();
+    } catch (e) { console.log(`  ${path}: обрыв связи (${e.cause?.code || e.message}), повтор через ${5 * (i + 1)} с`); await sleep(5000 * (i + 1)); continue; }
     if (r.status === 429) { await sleep(3000); continue; }
-    const t = await r.text();
+    if (r.status >= 500) { console.log(`  ${path}: HTTP ${r.status}, повтор`); await sleep(5000 * (i + 1)); continue; }
     if (!r.ok) throw new Error(path + " → HTTP " + r.status + " " + t.slice(0, 200));
     return JSON.parse(t);
   }
-  throw new Error(path + ": постоянный 429");
+  throw new Error(path + ": iiko не отвечает (429, 5xx или обрывы связи)");
 }
 
 async function paged(path, keys, token) {
@@ -119,7 +125,21 @@ const items = [...byCode.values()]
   price: p.defaultSalePrice ? String(p.defaultSalePrice) : null,
 }));
 
-console.log(`к переносу: групп ${groups.length}, складов ${stores.length}, контрагентов ${counteragents.length}, позиций ${items.length} (из них удалённых в iiko ${items.filter((x) => x.deleted).length}; дублей кода отброшено ${dupes})`);
+// 0059: штрихкод из карточки iiko - в GTIN позиции (по нему Webkassa находит НТИН). Берётся только настоящий: верная
+// контрольная цифра, не внутренний код магазина (начинается на 2 - iiko собирает его из артикула), не обрезанный
+// 12-значный (у казахстанских товаров EAN-13); из нескольких - 13-значный. Пустой - штрихкода в iiko нет.
+const realBarcode = (b) => {
+  if (!/^\d{8}$|^\d{13,14}$/.test(b) || (b.length === 13 && b[0] === "2")) return false;
+  const d = b.split("").map(Number), c = d.pop();
+  let sum = 0; d.reverse().forEach((x, i) => { sum += x * (i % 2 === 0 ? 3 : 1); });
+  return (10 - (sum % 10)) % 10 === c;
+};
+const gtins = [...byCode.values()].filter((p) => !p.deleted).map((p) => {
+  const good = (p.barcodes || []).map((b) => String(b.barcode || "").trim()).filter(realBarcode);
+  return { iiko_id: p.productId, gtin: good.find((b) => b.length === 13) || good[0] || "" };
+});
+
+console.log(`к переносу: групп ${groups.length}, складов ${stores.length}, контрагентов ${counteragents.length}, позиций ${items.length} (из них удалённых в iiko ${items.filter((x) => x.deleted).length}; дублей кода отброшено ${dupes}); штрихкодов ${gtins.filter((g) => g.gtin).length}`);
 if (DRY) { console.log("--dry: в базу ничего не отправлено"); process.exit(0); }
 if (!process.env.TANDEM_SERVICE_KEY) throw new Error("TANDEM_SERVICE_KEY не задан");
 
@@ -127,4 +147,5 @@ await send("groups", groups);
 await send("stores", stores);
 await send("counteragents", counteragents);
 await send("items", items);
+await send("gtin", gtins);
 console.log("готово");
