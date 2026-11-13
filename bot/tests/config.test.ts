@@ -30,3 +30,18 @@ Deno.test("config: TELEGRAM_OWNER_ID и PORT — только числа, ина
   assertThrows(() => loadConfig({ ...full, PORT: "80a" }), Error, "PORT");
   assertEquals(loadConfig({ ...full, PORT: "9000" }).port, 9000);
 });
+
+Deno.test("config: тихий режим — без ключа Anthropic и Telegram, но «Узел» и учёт обязательны", () => {
+  const { ANTHROPIC_API_KEY: _a, TELEGRAM_BOT_TOKEN: _b, TELEGRAM_WEBHOOK_SECRET: _c, TELEGRAM_OWNER_ID: _d, ...bare } = full;
+  const c = loadConfig({ ...bare, BOT_MODE: "silent" });
+  assertEquals(c.silent, true);
+  assertEquals(c.tgToken, "");
+  assertEquals(c.telegramOwnerId, 0);
+  assertThrows(() => loadConfig({ ...bare }), Error, "ANTHROPIC_API_KEY");          // говорящему они нужны
+  const { UZEL_API_KEY: _e, ...noUzel } = bare;
+  assertThrows(() => loadConfig({ ...noUzel, BOT_MODE: "silent" }), Error, "UZEL_API_KEY");
+});
+Deno.test("config: BOT_MODE не задан — бот говорящий", () => {
+  assertEquals(loadConfig(full).silent, false);
+  assertEquals(loadConfig({ ...full, BOT_MODE: "active" }).silent, false);
+});

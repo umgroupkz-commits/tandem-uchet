@@ -111,7 +111,9 @@ pusk)
   na_servere "PAPKA=$PAPKA bash -s" <<'NA_SERVERE'
 set -euo pipefail
 cd ~/"$PAPKA"
-nuzhny="UZEL_BASE_URL UZEL_API_KEY UCHET_API_URL UCHET_SERVICE_KEY ANTHROPIC_API_KEY TELEGRAM_BOT_TOKEN TELEGRAM_WEBHOOK_SECRET TELEGRAM_OWNER_ID PUBLIC_BASE_URL"
+nuzhny="UZEL_BASE_URL UZEL_API_KEY UCHET_API_URL UCHET_SERVICE_KEY PUBLIC_BASE_URL"
+# Тихий режим (BOT_MODE=silent): бот только слушает WhatsApp, модель и Telegram ему не нужны.
+grep -qE '^BOT_MODE=silent' bot.env || nuzhny="$nuzhny ANTHROPIC_API_KEY TELEGRAM_BOT_TOKEN TELEGRAM_WEBHOOK_SECRET TELEGRAM_OWNER_ID"
 net=""
 for n in $nuzhny; do grep -qE "^$n=.+" bot.env || net="$net $n"; done
 [ -z "$net" ] || { echo "ОШИБКА: в bot.env пусто:$net (bash vpisat.sh ИМЯ / den-ustanovki.sh klyuch)" >&2; exit 1; }

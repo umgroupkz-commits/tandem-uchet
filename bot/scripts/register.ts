@@ -12,6 +12,11 @@ catch { console.error("«Узел»: вебхук не зарегистриро�
 const text = await Deno.readTextFile(file);
 await rewrite(file, text.replace(/^UZEL_WEBHOOK_SECRET=.*$/m, "").trimEnd() + "\nUZEL_WEBHOOK_SECRET=" + secret + "\n");
 console.log("Вебхук «Узла» зарегистрирован, секрет записан в " + file);
+// Тихий режим: бота Telegram может ещё не быть - карточки заказов в нём всё равно не нужны.
+if (!env.TELEGRAM_BOT_TOKEN) {
+  console.log("Telegram: токена нет - вебхук не ставлю (тихий режим).");
+  Deno.exit(0);
+}
 try {
   const r = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/setWebhook`, { method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ url: base + "/tg", secret_token: env.TELEGRAM_WEBHOOK_SECRET, allowed_updates: ["message", "callback_query"] }),

@@ -29,10 +29,17 @@ const silent = async () => {
   } catch { return false; }
 };
 const inbound = new Inbound({ ...base, uzelApi: uzel, secret: cfg.uzelWebhookSecret, debounceMs: 4000,
-  paused: async () => (await store.getState<boolean>("paused")) === true, notify: (t) => cards.say(t), silent });
-const watcher = new Watcher({ uchet, cards, uzel, store, now: () => new Date() });
-setInterval(() => watcher.pollOnce().catch((e) => store.journal("error", null, "watcher: " + e)), 10_000);
-setInterval(() => watcher.reminders().catch((e) => store.journal("error", null, "reminders: " + e)), 60_000);
+  paused: async () => (await store.getState<boolean>("paused")) === true, silent,
+  notify: (t) => cfg.tgToken ? cards.say(t) : store.journal("notify", null, t) });
+// Карточки заказов и напоминания живут в Telegram: без бота Telegram их некому показывать (так бывает
+// только в тихом режиме, пока бот лишь слушает WhatsApp) — наблюдатель тогда не поднимается.
+if (cfg.tgToken) {
+  const watcher = new Watcher({ uchet, cards, uzel, store, now: () => new Date() });
+  setInterval(() => watcher.pollOnce().catch((e) => store.journal("error", null, "watcher: " + e)), 10_000);
+  setInterval(() => watcher.reminders().catch((e) => store.journal("error", null, "reminders: " + e)), 60_000);
+} else {
+  await store.journal("start", null, "тихий режим без Telegram: карточки заказов и напоминания выключены");
+}
 Deno.serve({ port: cfg.port }, makeApp({ inbound, cards, tgSecret: cfg.tgWebhookSecret,
   health: async () => ({ ok: true, events_after: await store.getState("events_after"),
     paused: await store.getState("paused") === true, silent: await silent() }) }));
