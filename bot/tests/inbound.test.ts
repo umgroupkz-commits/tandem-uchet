@@ -21,9 +21,9 @@ async function signed(body: unknown) {
 }
 const ev = (id: string) => ({ event: "message.in", eventId: id, ts: "x", channelId: "c", dialogId: "d1", messageId: "m2", author: "client",
   status: null, bot: null, pauseKind: null, pauseReason: null });
-const make = (model: ScriptModel, a = api()) => { const d = deps(model); const notified: string[] = [];
+const make = (model: ScriptModel, a = api(), silent = false) => { const d = deps(model); const notified: string[] = [];
   return { inb: new Inbound({ ...d, uzelApi: a as never, secret: SECRET, debounceMs: 0, paused: () => Promise.resolve(false),
-    notify: (t: string) => { notified.push(t); return Promise.resolve(); } }), d, notified }; };
+    notify: (t: string) => { notified.push(t); return Promise.resolve(); }, silent: () => Promise.resolve(silent) }), d, notified }; };
 const msg = (id: string, direction: "in" | "out", txt: string | null, at: string, author = direction === "in" ? "client" : "program", extra: Record<string, unknown> = {}) =>
   ({ id, direction, type: "text", text: txt, author, attachment: null, occurredAt: at, ...extra });
 const userText = (m: ScriptModel) => JSON.stringify((m.requests[0].messages as unknown[])[0]);
@@ -206,4 +206,22 @@ Deno.test("вход: скрытый адрес без contactPhone сейчас,
   assertEquals(d.uzelF.handoffs, []);
   assertEquals(d.uzelF.sent.map((x) => x.text), ["Здравствуйте"]);
   assertEquals(d.storeM.dialogs.get("d1")!.phone, "77015554433");
+});
+
+// Тихий режим: бот подключён к WhatsApp, но разговоры ведут люди. Он только слушает и считает обращения.
+Deno.test("вход: тихий режим — ни слова клиенту, но обращение записано", async () => {
+  const { inb, d } = make(new ScriptModel([]), api(), true);
+  assertEquals((await inb.handle(await signed(ev("e1")))).status, 200);
+  await inb.idle();
+  assertEquals(d.uzelF.sent.length, 0, "клиенту ничего не ушло");
+  assertEquals(d.uzelF.handoffs.length, 0, "продавцу тоже ничего не ушло");
+  assertEquals(d.storeM.contacts.size, 1, "обращение записано");
+  assert(d.storeM.log.some((l: string) => l.startsWith("in ")), "входящее в журнале");
+});
+Deno.test("вход: тихий режим — прочитанное молча не всплывёт ответом после включения", async () => {
+  const a = api();
+  const silent = make(new ScriptModel([]), a, true);
+  await silent.inb.handle(await signed(ev("e1"))); await silent.inb.idle();
+  const saved = await silent.d.store.getDialog("d1");
+  assert(saved && saved.last_client_msg_id === "m2", "курсор сдвинут на прочитанное");
 });

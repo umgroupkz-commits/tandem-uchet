@@ -10,6 +10,8 @@ import { handoffText } from "./templates.ts";
 export interface InDeps extends Deps {
   uzelApi: Pick<UzelClient, "getDialog" | "messages">; secret: string; debounceMs: number; paused(): Promise<boolean>;
   notify(text: string): Promise<void>;   // сообщение в группу продавцов (main.ts: cards.say)
+  /** Тихий режим: слушать и записывать, но не писать никому. Разговоры ведут люди в «Узле». */
+  silent(): Promise<boolean>;
 }
 const SIX_H = 6 * 3600e3, HALF_H = 30 * 60e3;
 const HUMAN = new Set(["operator", "phone_echo"]);
@@ -100,6 +102,11 @@ export class Inbound {
     const lang = detectLang(texts.join(" "));
     if (lang) st.lang = lang;
     await this.d.store.journal("in", id, `${phone ? maskPhone(phone) : "скрытый номер"}: ${maskPhonesIn(texts.join(" | ")).slice(0, 300)}`);
+    // Обращение считаем всегда, в любом режиме: на этих строках держится счёт заявок для рекламы.
+    await this.d.store.seenContact({ dialog_id: id, phone, name: st.name, lang: st.lang, text: maskPhonesIn(texts.join(" | ")) });
+    // Тихий режим — выход до любой отправки: ни ответа клиенту, ни передачи продавцу, ни заказа.
+    // Курсор уже сдвинут, поэтому после включения бот не станет отвечать на то, что прочитал молча.
+    if (await this.d.silent()) { await this.d.store.saveDialog(st); return; }
     if (!phone) {   // скрытый адрес WhatsApp без номера — заказ не оформить, ответит человек
       await this.d.uzel.send(id, handoffText(st.lang, "human", st.name));
       await this.d.uzel.handoff(id, "скрытый номер — нужен телефон");

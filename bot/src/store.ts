@@ -23,6 +23,9 @@ export interface Store {
   noticeOnce(orderId: number, kind: string): Promise<boolean>;   // true — отметка поставлена сейчас (уведомления ещё не было)
   noticeUndo(orderId: number, kind: string): Promise<void>;      // снять отметку: уведомление не ушло
   journal(kind: string, dialogId: string | null, text: string): Promise<void>;
+  /** Обращение клиента: новый разговор или ещё одно сообщение в прежнем. Пишется и в тихом режиме — на этом
+   *  держится счёт обращений для рекламы. Возвращает true, если разговор новый (первое сообщение). */
+  seenContact(c: { dialog_id: string; phone: string | null; name: string | null; lang: Lang; text: string }): Promise<boolean>;
 }
 
 export class MemStore implements Store {
@@ -42,4 +45,10 @@ export class MemStore implements Store {
   noticeOnce(id: number, kind: string) { const k = `${id}:${kind}`; const n = !this.notices.has(k); this.notices.add(k); return Promise.resolve(n); }
   noticeUndo(id: number, kind: string) { this.notices.delete(`${id}:${kind}`); return Promise.resolve(); }
   journal(kind: string, d: string | null, text: string) { this.log.push(`${kind} ${d ?? "-"} ${text}`); return Promise.resolve(); }
+  contacts = new Map<string, { phone: string | null; msgs: number; first: string }>();
+  seenContact(c: { dialog_id: string; phone: string | null; name: string | null; lang: Lang; text: string }) {
+    const was = this.contacts.get(c.dialog_id);
+    this.contacts.set(c.dialog_id, { phone: c.phone, msgs: (was?.msgs ?? 0) + 1, first: was?.first ?? c.text });
+    return Promise.resolve(!was);
+  }
 }

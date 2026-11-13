@@ -27,7 +27,7 @@ export function rulesText(menu: Menu): string {
     `Свежие пироги и сеты «печём под заказ»: на сегодня — если заказ до ${s.client_fresh_cutoff}, готовность к ${s.client_fresh_ready}; позже — на завтра и дальше.`,
     `«С витрины»: сегодня — не раньше чем через ${s.stock_ready_minutes} минут, в часы приёма.`,
     `Заказ вперёд — не дальше ${s.client_max_days_ahead} дней.`,
-    `Доставка ${s.client_delivery_text || "по Темиртау бесплатная"}, от ${money(Number(s.client_min_order))}. Меньше — только самовывоз.`,
+    `Доставка: ${s.client_delivery_text || "по Темиртау бесплатная"}. Доставляем от ${money(Number(s.client_min_order))}, меньше — только самовывоз.`,
     `Самовывоз: ${menu.points.map((p) => `[${p.id}] ${p.name}`).join("; ")}.`,
     `Оплата при получении: ${s.client_payment_methods || "наличные, Kaspi QR, перевод, карта"}.`,
   ].join("\n");
@@ -76,6 +76,38 @@ export function detectLang(text: string): Lang | null {
 const hm = (s: string) => { const [h, m] = s.split(":").map(Number); return h * 60 + m; };
 export function localNow(now: Date): string {
   return new Date(now.getTime() + 5 * 3600e3).toISOString().slice(0, 16).replace("T", " ");
+}
+
+// Календарь для модели: она не знает «сегодня» и считает «завтра», «в субботу», «через неделю» от этой строки.
+// День недели — словом: без него модель угадывает его по дате и ошибается.
+const DAYS_RU = ["воскресенье", "понедельник", "вторник", "среда", "четверг", "пятница", "суббота"];
+export function nowText(now: Date): string {
+  const l = new Date(now.getTime() + 5 * 3600e3);
+  const s = l.toISOString();
+  return `${s.slice(8, 10)}.${s.slice(5, 7)}.${s.slice(0, 4)}, ${DAYS_RU[l.getUTCDay()]}, ${s.slice(11, 16)}`;
+}
+
+// Расписание бота (настройка учёта client_bot_schedule): когда ему разрешено отвечать клиентам.
+// Запись: «1-5 09:00-18:00; 6 10:00-15:00», где 1 — понедельник, 7 — воскресенье; несколько окон через «;».
+// Пусто — всегда. Ни одно окно не разобрано — тоже всегда: опечатка в настройке не должна молча запереть бота
+// (а запереть его совсем — это client_bot_mode=silent, отдельная и явная настройка).
+export function inSchedule(spec: string | null | undefined, now: Date): boolean {
+  const s = (spec ?? "").trim();
+  if (!s) return true;
+  const l = new Date(now.getTime() + 5 * 3600e3);
+  const dow = l.getUTCDay() === 0 ? 7 : l.getUTCDay();
+  const mins = l.getUTCHours() * 60 + l.getUTCMinutes();
+  let parsed = false;
+  for (const part of s.split(";")) {
+    const m = part.trim().match(/^([1-7])(?:\s*-\s*([1-7]))?\s+(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})$/);
+    if (!m) continue;
+    parsed = true;
+    const a = Number(m[1]), b = m[2] ? Number(m[2]) : Number(m[1]);
+    // «6-7» — суббота и воскресенье; «6-1» — суббота, воскресенье, понедельник (через конец недели)
+    const dayOk = a <= b ? dow >= a && dow <= b : dow >= a || dow <= b;
+    if (dayOk && mins >= hm(m[3]) && mins < hm(m[4])) return true;
+  }
+  return !parsed;
 }
 export function inHours(menu: Menu, now: Date): boolean {
   const l = new Date(now.getTime() + 5 * 3600e3);

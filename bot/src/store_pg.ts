@@ -1,6 +1,6 @@
 // Store на Postgres (общий сервер VPS, база bot). Запросы параметризованы; схема — sql/001_bot.sql.
 import pg from "pg";
-import type { DialogState } from "./types.ts";
+import type { DialogState, Lang } from "./types.ts";
 import { type Await, type Card, FINAL, type Store } from "./store.ts";
 
 export class PgStore implements Store {
@@ -11,7 +11,7 @@ export class PgStore implements Store {
     this.pool.on("error", (e: Error) => console.error("pg pool:", e.message));
   }
   async migrate() {   // по порядку; каждый файл можно повторять (if not exists)
-    for (const f of ["001_bot.sql", "002_bot.sql"]) await this.pool.query(await Deno.readTextFile(new URL(`../sql/${f}`, import.meta.url)));
+    for (const f of ["001_bot.sql", "002_bot.sql", "003_bot.sql"]) await this.pool.query(await Deno.readTextFile(new URL(`../sql/${f}`, import.meta.url)));
   }
   private q(text: string, params: unknown[] = []) { return this.pool.query(text, params); }
   async seenEvent(id: string) {
@@ -76,5 +76,19 @@ export class PgStore implements Store {
   }
   async journal(kind: string, d: string | null, text: string) {
     await this.q("insert into bot.journal (kind, dialog_id, text) values ($1, $2, $3)", [kind, d, text.slice(0, 2000)]);
+  }
+  // Обращения: строка на разговор. Номер и имя обновляем (у скрытого адреса номер приходит не сразу),
+  // первое сообщение не переписываем — по нему видно, с чего клиент начал и откуда пришёл.
+  async seenContact(c: { dialog_id: string; phone: string | null; name: string | null; lang: Lang; text: string }) {
+    const r = await this.q(
+      `insert into bot.contacts (dialog_id, phone, name, lang, first_text, msgs_in)
+       values ($1, $2, $3, $4, $5, 1)
+       on conflict (dialog_id) do update set
+         phone = coalesce(excluded.phone, bot.contacts.phone),
+         name = coalesce(excluded.name, bot.contacts.name),
+         lang = excluded.lang, last_at = now(), msgs_in = bot.contacts.msgs_in + 1
+       returning (xmax = 0) as inserted`,
+      [c.dialog_id, c.phone, c.name, c.lang, c.text.slice(0, 500)]);
+    return r.rows[0]?.inserted === true;
   }
 }

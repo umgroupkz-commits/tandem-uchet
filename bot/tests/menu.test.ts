@@ -1,5 +1,5 @@
 import { assert, assertEquals } from "@std/assert";
-import { cartCheck, detectLang, faqText, inHours, maskPhone, maskPhonesIn, menuText, money, phoneFromChat, phoneOf, rulesText } from "../src/menu.ts";
+import { cartCheck, detectLang, faqText, inHours, inSchedule, maskPhone, maskPhonesIn, menuText, money, nowText, phoneFromChat, phoneOf, rulesText } from "../src/menu.ts";
 import { MENU } from "./fakes.ts";
 
 Deno.test("menu: текст меню с кодом, ценой, единицей, сроком и стопом", () => {
@@ -16,10 +16,10 @@ Deno.test("menu: правила из настроек", () => {
 });
 Deno.test("menu: доставка и способы оплаты — из настроек учёта, без них прежние слова", () => {
   const def = rulesText(MENU);
-  assert(def.includes("Доставка по Темиртау бесплатная, от 7 000 ₸") && def.includes("наличные, Kaspi QR, перевод, карта"));
-  const own = rulesText({ ...MENU, settings: { ...MENU.settings, client_delivery_text: "по Темиртау и Караганде платная, 1 000 ₸",
+  assert(def.includes("Доставка: по Темиртау бесплатная. Доставляем от 7 000 ₸") && def.includes("наличные, Kaspi QR, перевод, карта"));
+  const own = rulesText({ ...MENU, settings: { ...MENU.settings, client_delivery_text: "по Темиртау бесплатная; в Караганду платная, сумму назовёт продавец",
     client_payment_methods: "наличные и Kaspi QR" } });
-  assert(own.includes("Доставка по Темиртау и Караганде платная, 1 000 ₸, от 7 000 ₸"), own);
+  assert(own.includes("Доставка: по Темиртау бесплатная; в Караганду платная, сумму назовёт продавец. Доставляем от 7 000 ₸"), own);
   assert(own.includes("Оплата при получении: наличные и Kaspi QR.") && !own.includes("перевод"), own);
 });
 Deno.test("menu: частые вопросы — текст из настроек, пустой — без раздела", () => {
@@ -69,4 +69,28 @@ Deno.test("menu: маска — только телефонные записи, 
   assert(!maskPhonesIn("7011234567").includes("7011234567"));   // 10 цифр с 7
   assertEquals(maskPhonesIn("к 2026-10-18 12:00 на двоих"), "к 2026-10-18 12:00 на двоих");
   assertEquals(maskPhonesIn("2026-10-18 12:00"), "2026-10-18 12:00");
+});
+
+// Календарь: модель считает «завтра» и «в субботу» от этой строки, поэтому день недели в ней обязателен.
+Deno.test("menu: сейчас — дата, день недели и час Темиртау", () => {
+  assertEquals(nowText(new Date("2026-11-13T04:30:00Z")), "13.11.2026, пятница, 09:30");
+  assertEquals(nowText(new Date("2026-11-14T19:10:00Z")), "15.11.2026, воскресенье, 00:10");
+});
+Deno.test("расписание: пусто и непонятная запись — бот отвечает всегда", () => {
+  const sunday = new Date("2026-11-15T06:00:00Z");
+  assert(inSchedule("", sunday) && inSchedule(null, sunday) && inSchedule("каждый день", sunday));
+});
+Deno.test("расписание: по дням недели и часам Темиртау", () => {
+  const sched = "1-5 09:00-18:00";
+  assert(inSchedule(sched, new Date("2026-11-13T04:30:00Z")), "пятница 09:30 — рабочее время");
+  assert(!inSchedule(sched, new Date("2026-11-13T03:30:00Z")), "пятница 08:30 — ещё рано");
+  assert(!inSchedule(sched, new Date("2026-11-13T13:30:00Z")), "пятница 18:30 — уже поздно");
+  assert(!inSchedule(sched, new Date("2026-11-15T06:00:00Z")), "воскресенье — выходной");
+  assert(inSchedule("1-5 09:00-18:00; 6 10:00-15:00", new Date("2026-11-14T06:00:00Z")), "суббота 11:00 — второе окно");
+});
+Deno.test("расписание: окно через конец недели (сб-пн)", () => {
+  const s = "6-1 10:00-14:00";
+  assert(inSchedule(s, new Date("2026-11-15T06:00:00Z")), "воскресенье 11:00");
+  assert(inSchedule(s, new Date("2026-11-16T06:00:00Z")), "понедельник 11:00");
+  assert(!inSchedule(s, new Date("2026-11-17T06:00:00Z")), "вторник — вне окна");
 });

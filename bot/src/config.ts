@@ -4,6 +4,9 @@ export interface Config {
   uchetUrl: string; uchetKey: string; anthropicKey: string; model: string;
   tgToken: string; tgWebhookSecret: string; telegramOwnerId: number;
   databaseUrl: string; publicBase: string; port: number;
+  /** BOT_MODE=silent — бот слушает и записывает, но никому не пишет. Замок сильнее настроек учёта:
+   *  снимается только правкой bot.env на сервере, чтобы бот не заговорил с клиентами по недосмотру. */
+  silent: boolean;
 }
 
 const REQUIRED = ["UZEL_BASE_URL", "UZEL_API_KEY", "UCHET_API_URL", "UCHET_SERVICE_KEY", "ANTHROPIC_API_KEY",
@@ -26,5 +29,6 @@ export function loadConfig(env: Record<string, string | undefined>): Config {
     telegramOwnerId: num("TELEGRAM_OWNER_ID", env.TELEGRAM_OWNER_ID!),
     databaseUrl: env.DATABASE_URL!, publicBase: env.PUBLIC_BASE_URL!.replace(/\/$/, ""),
     port: num("PORT", env.PORT || "8080"),
+    silent: (env.BOT_MODE ?? "").trim().toLowerCase() === "silent",
   };
 }

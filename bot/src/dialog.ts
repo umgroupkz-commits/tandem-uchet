@@ -3,7 +3,7 @@
 import type { Uchet } from "./uchet.ts";
 import type { Store } from "./store.ts";
 import type { DialogState, Menu } from "./types.ts";
-import { faqText, localNow, menuText, rulesText } from "./menu.ts";
+import { faqText, menuText, nowText, rulesText } from "./menu.ts";
 import { runTool, type ToolCtx, TOOLS } from "./tools.ts";
 import { handoffText } from "./templates.ts";
 
@@ -69,7 +69,7 @@ export async function handleTurn(deps: Deps, st: DialogState, clientText: string
     update = `Меню и правила обновились — действуют эти:\n${ctxNow}\n\n`;
     st.menu_seen_hash = fingerprint(ctxNow);
   }
-  st.convo.push({ role: "system", content: update + `Сейчас ${localNow(deps.now())} (Темиртау). Клиент: ${st.name ?? "имя неизвестно"}. Корзина: ${JSON.stringify(st.cart)}. ` +
+  st.convo.push({ role: "system", content: update + `Сейчас ${nowText(deps.now())} (Темиртау). Клиент: ${st.name ?? "имя неизвестно"}. Корзина: ${JSON.stringify(st.cart)}. ` +
     `Получение: ${JSON.stringify(st.details)}. Этап: ${st.stage}${st.last_order_no ? `, последний заказ №${st.last_order_no}` : ""}.` });
   st.last_activity = deps.now().toISOString();
   // ctx общий на ход: правка корзины, деталей или новый итог в этом же ходе снимают «клиент ответил после итога»
