@@ -9,6 +9,7 @@ name: bot-eneshka
 services:
   bot:
     image: tandem.invalid/eneshka-bot:${BOT_VERSIYA:-mestnaya}
+    container_name: bot-eneshka   # deploy/sayt.sh «Узла» ищет сайт по имени контейнера, не по псевдониму в сети
     env_file: ./bot.env
     environment:
       DATABASE_URL: postgres://bot:${BOT_DB_PASSWORD:?нужен BOT_DB_PASSWORD в .env}@db:5432/bot
