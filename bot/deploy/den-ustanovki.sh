@@ -12,6 +12,8 @@
 # Между «bot» и «klyuch» Андрей сам вписывает ключи на сервере: ssh uzel@IP, cd ~/bot-eneshka,
 # bash vpisat.sh UZEL_API_KEY (и ANTHROPIC_API_KEY, TELEGRAM_BOT_TOKEN, TELEGRAM_OWNER_ID).
 # Секреты этот сценарий не печатает и с сервера не забирает.
+# Сценарии на сервер идут через стандартный ввод (bash -s): у каждого docker compose run/exec внутри них - </dev/null,
+# иначе docker читает остаток сценария как свой ввод и следующие строки молча не выполняются.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
@@ -100,7 +102,7 @@ cd ~/"$PAPKA"
 if grep -qE '^UCHET_SERVICE_KEY=.+' bot.env; then echo "UCHET_SERVICE_KEY уже есть - новый не делаю"; exit 0; fi
 # Одноразовый контейнер из образа бота: Deno на сервере нет. root внутри - чтобы прочесть bot.env с правами 600.
 docker compose run --rm --no-deps -T --user 0 -v "$PWD/bot.env:/tmp/bot.env" --entrypoint deno bot \
-  run --allow-read=/tmp/bot.env --allow-write=/tmp/bot.env scripts/bot-key.ts /tmp/bot.env
+  run --allow-read=/tmp/bot.env --allow-write=/tmp/bot.env scripts/bot-key.ts /tmp/bot.env </dev/null
 NA_SERVERE
   echo "Отпечаток выше - в настройку учёта bot_key_hash (сам ключ остался только в bot.env на сервере)."
   ;;
@@ -119,7 +121,7 @@ for n in $nuzhny; do grep -qE "^$n=.+" bot.env || net="$net $n"; done
 [ -z "$net" ] || { echo "ОШИБКА: в bot.env пусто:$net (bash vpisat.sh ИМЯ / den-ustanovki.sh klyuch)" >&2; exit 1; }
 docker compose up -d
 for i in $(seq 1 30); do
-  docker compose exec -T bot deno eval "const r=await fetch('http://127.0.0.1:8080/health');if(!r.ok)Deno.exit(1)" 2>/dev/null && break
+  docker compose exec -T bot deno eval "const r=await fetch('http://127.0.0.1:8080/health');if(!r.ok)Deno.exit(1)" </dev/null 2>/dev/null && break
   [ "$i" = 30 ] && { docker compose logs --tail 30 bot; echo "ОШИБКА: бот не отвечает на /health" >&2; exit 1; }
   sleep 2
 done
@@ -137,8 +139,11 @@ NA_SERVERE
 set -euo pipefail
 cd ~/"$PAPKA"
 docker compose run --rm --no-deps -T --user 0 -v "$PWD/bot.env:/tmp/bot.env" --entrypoint deno bot \
-  run --allow-net --allow-env --allow-read=/tmp/bot.env --allow-write=/tmp/bot.env scripts/register.ts /tmp/bot.env
+  run --allow-net --allow-env --allow-read=/tmp/bot.env --allow-write=/tmp/bot.env scripts/register.ts /tmp/bot.env </dev/null
 docker compose up -d --force-recreate bot
+# Проверка, а не надежда: бот обязан видеть секрет вебхука, иначе «Узел» получает 401 на каждое оповещение
+# (16.11.2026: так и было - перезапуск выше съел docker compose run, читавший остаток этого сценария).
+[ -n "$(docker exec bot-eneshka printenv UZEL_WEBHOOK_SECRET)" ] || { echo "ОШИБКА: бот не видит UZEL_WEBHOOK_SECRET" >&2; exit 1; }
 NA_SERVERE
   sleep 10
   echo "Снаружи: $(curl -fsS --max-time 10 "https://$DOMEN_BOTA/health")"

@@ -58,6 +58,17 @@ export class UzelClient {
     if (r.status !== 200) throw new Error(`Узел: история ${r.status}`);
     return r.json.data as UzelMessage[];
   }
+  async channels(): Promise<{ id: string }[]> {
+    const r = await this.req("GET", "/v1/channels");
+    if (r.status !== 200) throw new Error(`Узел: каналы ${r.status}`);
+    return r.json.data as { id: string }[];
+  }
+  /** До ста диалогов канала (вкладка «все»): для обхода заявок. */
+  async dialogs(channelId: string): Promise<UzelDialog[]> {
+    const r = await this.req("GET", `/v1/dialogs?channelId=${encodeURIComponent(channelId)}&filter=all`);
+    if (r.status !== 200) throw new Error(`Узел: список диалогов ${r.status}`);
+    return r.json.data as UzelDialog[];
+  }
   async send(dialogId: string, text: string): Promise<{ ok: true; id: string } | { ok: false; code: string }> {
     const r = await this.req("POST", "/v1/messages", { dialogId, text });
     if (r.status === 202) return { ok: true, id: String((r.json.data as Record<string, unknown>).id) };

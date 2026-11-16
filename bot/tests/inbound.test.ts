@@ -242,13 +242,18 @@ Deno.test("вход: обращение уходит в учёт сразу и �
   assertEquals(pushed[0].first_text, "пирог хочу | и манты");
 });
 Deno.test("вход: ответ оператора - продолжение обращения, время первого ответа", async () => {
-  const { inb, d, pushed } = make(new ScriptModel([]), api(), true);
+  const hist = [
+    { id: "m1", direction: "in", type: "text", text: "пирог хочу", author: "client", attachment: null, occurredAt: "2026-10-17T05:00:00Z" } as Record<string, unknown>,
+  ];
+  const { inb, d, pushed } = make(new ScriptModel([]), { ...api(), messages: () => Promise.resolve(hist) } as never, true);
   await inb.handle(await signed(ev("e1"))); await inb.idle();
+  hist.unshift({ id: "m2", direction: "out", type: "text", text: "есть", author: "phone_echo", attachment: null, occurredAt: "2026-10-17T05:04:00Z" });
   await inb.handle(await signed({ ...ev("e2"), event: "message.out", author: "phone_echo", status: "sent" })); await inb.idle();
-  await new Promise((r) => setTimeout(r, 0));
+  assertEquals(d.storeM.leads.length, 1);
   assertEquals(d.storeM.leads[0].msgs_out, 1);
-  assert(d.storeM.leads[0].first_reply_at, "время первого ответа записано");
+  assertEquals(d.storeM.leads[0].first_reply_at, "2026-10-17T05:04:00.000Z");
   assertEquals(pushed.length, 2);
+  assertEquals(d.uzelF.sent.length, 0);
 });
 Deno.test("вход: ответ самого бота - не ответ оператора", async () => {
   const { inb, d } = make(new ScriptModel([]), api(), true);
@@ -264,4 +269,20 @@ Deno.test("вход: тихий режим и сбой обработки - кл
   assertEquals(d.uzelF.sent.length, 0);
   assertEquals(d.uzelF.handoffs.length, 0);
   assert(d.storeM.log.some((l: string) => l.startsWith("error ")), "сбой в журнале");
+});
+
+// 16.11.2026: оповещения пришли с опозданием, продавец к тому времени на всё ответил - бот не насчитал ни одной
+// заявки (считал только сообщения клиента после последнего ответа человека). Учёт заявок от ответов не зависит.
+Deno.test("вход: продавец уже ответил на всё - заявка всё равно посчитана, с ответом продавца", async () => {
+  const { inb, d, pushed } = make(new ScriptModel([]), api({ msgs: [
+    { id: "m3", direction: "out", type: "text", text: "Здравствуйте, есть, 3500", author: "phone_echo", attachment: null, occurredAt: "2026-10-17T05:03:00Z" },
+    { id: "m2", direction: "in", type: "text", text: "и манты", author: "client", attachment: null, occurredAt: "2026-10-17T05:00:02Z" },
+    { id: "m1", direction: "in", type: "text", text: "пирог хочу", author: "client", attachment: null, occurredAt: "2026-10-17T05:00:00Z" } ] }), true);
+  await inb.handle(await signed(ev("e1"))); await inb.idle();
+  assertEquals(d.storeM.leads.length, 1, "заявка есть");
+  assertEquals(d.storeM.leads[0].msgs_in, 2);
+  assertEquals(d.storeM.leads[0].msgs_out, 1);
+  assertEquals(d.storeM.leads[0].first_reply_at, "2026-10-17T05:03:00.000Z");
+  assertEquals(pushed.length, 1, "в учёт - одной записью");
+  assertEquals(d.uzelF.sent.length, 0, "тихий режим - ни слова");
 });

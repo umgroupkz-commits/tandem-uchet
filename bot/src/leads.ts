@@ -1,13 +1,16 @@
 // Обращения клиентов (заявки) и разбор переписки моделью - для рекламы (решение Андрея 13.11.2026).
 // Бот в тихом режиме не отвечает, а слушает: клиент написал - обращение (эпизод разговора), оператор ответил -
 // тот же эпизод. Каждое изменение сразу уходит в учёт (tandem.wa_leads): СММщики видят новые заявки сразу.
+// Источник - история диалога в «Узле», а не сами оповещения: на каждое событие диалога бот сверяет историю и
+// учитывает то, чего ещё не учитывал, а раз в 30 минут обходит все диалоги. Так заявки не теряются, когда
+// оповещения опоздали или продавец уже ответил (16.11.2026 из-за этого сводка показывала нули).
 // Когда разговор затих, модель читает всю переписку эпизода и говорит, был ли заказ, что заказали, на какую
 // дату и почему не заказали. Сумму по меню считает программа, а не модель; названную оператором - берёт как есть.
-import type { Lang, Lead, Menu } from "./types.ts";
+import type { Lead, Menu } from "./types.ts";
 import type { Store } from "./store.ts";
 import type { Block, ModelClient } from "./dialog.ts";
-import type { UzelMessage } from "./uzel.ts";
-import { maskPhonesIn, nowText } from "./menu.ts";
+import type { UzelDialog, UzelMessage } from "./uzel.ts";
+import { detectLang, maskPhonesIn, nowText, phoneOf } from "./menu.ts";
 
 export const EPISODE_GAP_H = 24;   // тишина дольше суток - следующее сообщение клиента уже новое обращение
 export const QUIET_MIN = 40;       // столько минут без новых сообщений - разговор затих, пора разбирать
@@ -17,7 +20,11 @@ const PER_TICK = 5;                // разборов за один прохо�
 export interface LeadDeps {
   store: Store;
   uchet: { menu(): Promise<Menu>; leadUpsert(p: Record<string, unknown>): Promise<{ ok: boolean; error?: string; message?: string }> };
-  uzelApi: { messages(id: string, limit?: number): Promise<UzelMessage[]> };
+  uzelApi: {
+    messages(id: string, limit?: number): Promise<UzelMessage[]>;
+    channels?(): Promise<{ id: string }[]>;
+    dialogs?(channelId: string): Promise<UzelDialog[]>;
+  };
   model: ModelClient | null;       // нет ключа Anthropic - обращения считаются, разбора нет
   modelName: string;
   now(): Date;
@@ -35,34 +42,65 @@ export interface Analysis {
 
 const iso = (t: number) => new Date(t).toISOString();
 const atOf = (m: UzelMessage) => Date.parse(m.occurredAt ?? m.createdAt ?? "") || 0;
+// В обращении считаются сообщения клиента и ответы людей (из окна «Узла» или с телефона). Ответ бота - нет.
+const countable = (m: UzelMessage) => m.direction === "in" || m.author === "operator" || m.author === "phone_echo";
 
 export class Leads {
   constructor(private d: LeadDeps) {}
 
-  /** Клиент написал n сообщений (первое - в firstAt, последнее - в lastAt). Возвращает обращение. */
-  async clientWrote(x: { dialog_id: string; firstAt: string; lastAt: string; n: number; phone: string | null;
-    name: string | null; lang: Lang; text: string }): Promise<Lead> {
-    const last = await this.d.store.latestLead(x.dialog_id);
-    const fresh = !last || Date.parse(x.firstAt) - Date.parse(last.last_at) > EPISODE_GAP_H * 3600e3;
-    const l: Lead = fresh
-      ? { dialog_id: x.dialog_id, episode_start: x.firstAt, phone: x.phone, name: x.name, lang: x.lang,
-          first_text: x.text.slice(0, 1000), last_at: x.lastAt, msgs_in: x.n, msgs_out: 0, first_reply_at: null, analyzed_at: null }
-      : { ...last!, phone: x.phone ?? last!.phone, name: x.name ?? last!.name, lang: x.lang,
-          last_at: iso(Math.max(Date.parse(last!.last_at), Date.parse(x.lastAt))), msgs_in: last!.msgs_in + x.n };
-    await this.d.store.saveLead(l);
-    await this.push(l);
-    return l;
+  /** Сверить обращения диалога с его историей в «Узле»: учесть сообщения клиента и ответы людей, которых ещё не
+   *  учитывали (метка leadhw:<диалог> - время последнего учтённого). Ответ человека без обращения клиента (продавец
+   *  написал первым) - не заявка. Старше недели не берём. Возвращает, сколько обращений изменилось. */
+  async sync(dlg: { id: string; phone: string | null; name: string | null }, msgs: UzelMessage[]): Promise<number> {
+    const hwKey = `leadhw:${dlg.id}`;
+    const hw = Math.max((await this.d.store.getState<number>(hwKey)) ?? 0, this.d.now().getTime() - LOOKBACK_D * 86400e3);
+    const fresh = msgs.filter((m) => atOf(m) > hw && countable(m)).sort((a, b) => atOf(a) - atOf(b));
+    if (!fresh.length) return 0;
+    let cur = await this.d.store.latestLead(dlg.id);
+    const touched = new Map<string, Lead>();
+    for (const m of fresh) {
+      const t = atOf(m), when = iso(t);
+      const gap = !cur || t - Date.parse(cur.last_at) > EPISODE_GAP_H * 3600e3;
+      if (m.direction === "in") {
+        const txt = maskPhonesIn((m.text ?? "").trim() || (m.attachment ? `[${KIND[m.attachment.kind] ?? "вложение"}]` : ""));
+        if (gap) {
+          cur = { dialog_id: dlg.id, episode_start: when, phone: dlg.phone, name: dlg.name, lang: "ru", first_text: "",
+            last_at: when, msgs_in: 0, msgs_out: 0, first_reply_at: null, analyzed_at: null };
+        }
+        const l = cur!;
+        l.msgs_in++;
+        l.phone = dlg.phone ?? l.phone; l.name = dlg.name ?? l.name;
+        l.lang = detectLang(m.text ?? "") ?? l.lang;
+        // первое обращение - всё, что клиент написал до первого ответа продавца
+        if (!l.first_reply_at && txt) l.first_text = (l.first_text ? l.first_text + " | " + txt : txt).slice(0, 1000);
+        l.last_at = iso(Math.max(Date.parse(l.last_at), t));
+        touched.set(l.episode_start, l);
+      } else {
+        if (gap) continue;
+        const l = cur!;
+        l.msgs_out++;
+        l.first_reply_at = l.first_reply_at ?? when;
+        l.last_at = iso(Math.max(Date.parse(l.last_at), t));
+        touched.set(l.episode_start, l);
+      }
+    }
+    for (const l of touched.values()) { await this.d.store.saveLead(l); await this.push(l); }
+    await this.d.store.setState(hwKey, atOf(fresh[fresh.length - 1]));
+    return touched.size;
   }
 
-  /** Оператор ответил (из окна «Узла» или с телефона). Ответ без обращения клиента - не заявка. */
-  async operatorWrote(dialogId: string, at: string): Promise<Lead | null> {
-    const last = await this.d.store.latestLead(dialogId);
-    if (!last || Date.parse(at) - Date.parse(last.last_at) > EPISODE_GAP_H * 3600e3) return null;
-    const l: Lead = { ...last, last_at: iso(Math.max(Date.parse(last.last_at), Date.parse(at))), msgs_out: last.msgs_out + 1,
-      first_reply_at: last.first_reply_at ?? at };
-    await this.d.store.saveLead(l);
-    await this.push(l);
-    return l;
+  /** Обход всех диалогов «Узла» (до 100 на канал): страховка от потерянных оповещений и досчёт после простоя. */
+  async sweep(): Promise<number> {
+    const api = this.d.uzelApi;
+    if (!api.channels || !api.dialogs) return 0;
+    let n = 0;
+    for (const ch of await api.channels()) {
+      for (const dlg of await api.dialogs(ch.id)) {
+        try { n += await this.sync({ id: dlg.id, phone: phoneOf(dlg), name: dlg.contactName ?? null }, await api.messages(dlg.id, 100)); }
+        catch (e) { await this.d.store.journal("error", dlg.id, maskPhonesIn("обход диалогов: " + String(e))); }
+      }
+    }
+    return n;
   }
 
   /** Разобрать затихшие разговоры. Возвращает, сколько разобрано. */

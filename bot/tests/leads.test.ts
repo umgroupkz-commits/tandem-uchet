@@ -16,39 +16,81 @@ function setup(msgs: UzelMessage[], replies: { content: unknown[]; stop_reason: 
     uchet: { menu: () => Promise.resolve(MENU), leadUpsert: (p) => { pushed.push(p); return Promise.resolve({ ok: true }); } } });
   return { store, pushed, model, leads };
 }
-const wrote = (leads: Leads, firstAt: string, lastAt = firstAt, n = 1) =>
-  leads.clientWrote({ dialog_id: "d1", firstAt, lastAt, n, phone: "77011234567", name: "Айгуль", lang: "ru", text: "пирог хочу" });
+const DLG = { id: "d1", phone: "77011234567", name: "Айгуль" };
+// обращение для проверок разбора: клиент написал в firstAt (и ещё раз в lastAt)
+const wrote = (leads: Leads, firstAt: string, lastAt = firstAt) => leads.sync(DLG, [msg("w" + firstAt, "in", "пирог хочу", firstAt),
+  ...(lastAt !== firstAt ? [msg("w" + lastAt, "in", "на завтра", lastAt)] : [])]);
 
 Deno.test("обращения: первое сообщение - новое обращение, его время - время первого обращения", async () => {
   const { leads, store, pushed } = setup([]);
-  await wrote(leads, "2026-11-13T05:00:00.000Z", "2026-11-13T05:01:00.000Z", 2);
+  await leads.sync(DLG, [msg("m2", "in", "на завтра", "2026-11-13T05:01:00Z"), msg("m1", "in", "пирог хочу", "2026-11-13T05:00:00Z")]);
   assertEquals(store.leads.length, 1);
   assertEquals(store.leads[0].episode_start, "2026-11-13T05:00:00.000Z");
   assertEquals(store.leads[0].msgs_in, 2);
+  assertEquals(store.leads[0].first_text, "пирог хочу | на завтра");
+  assertEquals(pushed.length, 1, "в учёт - одной записью");
   assertEquals(pushed[0].episode_start, "2026-11-13T05:00:00.000Z");
   assertEquals(pushed[0].analysis, undefined, "сразу - без разбора");
 });
+Deno.test("обращения: та же история второй раз - ничего не удваивается", async () => {
+  const h = [msg("m1", "in", "пирог хочу", "2026-11-13T05:00:00Z"), msg("m2", "out", "есть", "2026-11-13T05:03:00Z")];
+  const { leads, store, pushed } = setup([]);
+  assertEquals(await leads.sync(DLG, h), 1);
+  assertEquals(await leads.sync(DLG, h), 0);
+  assertEquals(store.leads[0].msgs_in, 1);
+  assertEquals(store.leads[0].msgs_out, 1);
+  assertEquals(pushed.length, 1);
+});
 Deno.test("обращения: дописал через час - то же обращение; через сутки с лишним - новое", async () => {
-  const { leads, store } = setup([]);
-  await wrote(leads, "2026-11-13T05:00:00.000Z");
-  await wrote(leads, "2026-11-13T06:00:00.000Z");
+  const { leads, store } = setup([], [], "2026-11-14T10:00:00Z");
+  const h = [msg("m1", "in", "пирог хочу", "2026-11-13T05:00:00Z")];
+  await leads.sync(DLG, h);
+  h.push(msg("m2", "in", "и манты", "2026-11-13T06:00:00Z"));
+  await leads.sync(DLG, h);
   assertEquals(store.leads.length, 1);
   assertEquals(store.leads[0].msgs_in, 2);
-  await wrote(leads, "2026-11-14T07:00:00.000Z");
+  h.push(msg("m3", "in", "а сегодня есть?", "2026-11-14T07:00:00Z"));
+  await leads.sync(DLG, h);
   assertEquals(store.leads.length, 2, "больше суток тишины - новое обращение");
+  assertEquals(store.leads[1].first_text, "а сегодня есть?");
 });
-Deno.test("обращения: ответ оператора без обращения клиента - не заявка", async () => {
+Deno.test("обращения: ответ продавца без обращения клиента - не заявка", async () => {
   const { leads, store } = setup([]);
-  assertEquals(await leads.operatorWrote("d1", "2026-11-13T05:00:00.000Z"), null);
+  assertEquals(await leads.sync(DLG, [msg("m1", "out", "Добрый день, напоминаем о заказе", "2026-11-13T05:00:00Z")]), 0);
   assertEquals(store.leads.length, 0);
 });
-Deno.test("обращения: первый ответ оператора запоминается, следующие - нет", async () => {
+Deno.test("обращения: первый ответ продавца запоминается, ответ бота не считается", async () => {
   const { leads, store } = setup([]);
-  await wrote(leads, "2026-11-13T05:00:00.000Z");
-  await leads.operatorWrote("d1", "2026-11-13T05:07:00.000Z");
-  await leads.operatorWrote("d1", "2026-11-13T05:20:00.000Z");
+  await leads.sync(DLG, [msg("m1", "in", "пирог хочу", "2026-11-13T05:00:00Z"), msg("m2", "out", "есть", "2026-11-13T05:07:00Z", "operator"),
+    msg("m3", "out", "авто", "2026-11-13T05:08:00Z", "program"), msg("m4", "out", "3500", "2026-11-13T05:20:00Z")]);
   assertEquals(store.leads[0].first_reply_at, "2026-11-13T05:07:00.000Z");
   assertEquals(store.leads[0].msgs_out, 2);
+  assertEquals(store.leads[0].last_at, "2026-11-13T05:20:00.000Z");
+});
+Deno.test("обращения: старше недели не берём", async () => {
+  const { leads, store } = setup([]);
+  assertEquals(await leads.sync(DLG, [msg("m1", "in", "пирог хочу", "2026-11-01T05:00:00Z")]), 0);
+  assertEquals(store.leads.length, 0);
+});
+Deno.test("обращения: обход всех диалогов «Узла» досчитывает пропущенное", async () => {
+  const store = new MemStore();
+  const pushed: Record<string, unknown>[] = [];
+  const hist: Record<string, UzelMessage[]> = {
+    a: [msg("a1", "in", "пирог", "2026-11-13T05:00:00Z"), msg("a2", "out", "есть", "2026-11-13T05:02:00Z")],
+    b: [msg("b1", "out", "рассылка", "2026-11-13T05:00:00Z")],
+  };
+  const dlg = (id: string, phone: string | null) => ({ id, chatId: phone ?? "1", contactName: "К" + id, assignedUserId: null,
+    addressKind: (phone ? "phone" : "lid") as "phone" | "lid", contactPhone: phone, bot: { leading: false, paused: null } });
+  const leads = new Leads({ store, model: null, modelName: "m", now: () => new Date("2026-11-13T10:00:00Z"),
+    uzelApi: { messages: (id) => Promise.resolve(hist[id]), channels: () => Promise.resolve([{ id: "c1" }]),
+      dialogs: () => Promise.resolve([dlg("a", "77011234567"), dlg("b", null)]) },
+    uchet: { menu: () => Promise.resolve(MENU), leadUpsert: (p) => { pushed.push(p); return Promise.resolve({ ok: true }); } } });
+  assertEquals(await leads.sweep(), 1);
+  assertEquals(store.leads.length, 1);
+  assertEquals(store.leads[0].phone, "77011234567");
+  assertEquals(store.leads[0].name, "Кa");
+  assertEquals(await leads.sweep(), 0, "второй обход - ничего нового");
+  assertEquals(pushed.length, 1);
 });
 
 const ORDER = { outcome: "order", stage: "done", city: "", other_city: false, items: [{ item_code: "P1", title: "пирог с мясом", qty: 1.5 }, { item_code: "", title: "торт наполеон", qty: 1 }],

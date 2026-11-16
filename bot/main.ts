@@ -37,6 +37,11 @@ const silent = async () => {
 // но не разбираются. Разбор - раз в 5 минут по затихшим разговорам.
 const leads = new Leads({ store, uchet, uzelApi: uzel, model: cfg.anthropicKey ? base.model : null, modelName: cfg.model,
   now: () => new Date() });
+// Обход всех диалогов «Узла»: через 30 секунд после запуска и раз в 30 минут - досчитать заявки, оповещения
+// о которых потерялись (бот лежал, а «Узел» держит неотправленное только сутки).
+const sweep = () => leads.sweep().catch((e) => store.journal("error", null, "обход диалогов: " + e));
+setTimeout(sweep, 30_000);
+setInterval(sweep, 30 * 60_000);
 if (cfg.anthropicKey) {
   const tick = () => leads.analyzeDue().catch((e) => store.journal("error", null, "разбор: " + e));
   setTimeout(tick, 60_000);
