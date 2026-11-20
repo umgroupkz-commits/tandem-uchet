@@ -4,3 +4,9 @@
 !server/proxy.mjs
 !supabase/functions/uchet/webkassa.js
 !supabase/functions/uchet/fiscal.js
+# экраны учёта для рабочей программы на адресе сервера (Dockerfile: /app/site); config.js не нужен - прокси пишет свой
+!*.html
+!*.css
+!app.js
+!js
+!vendor
