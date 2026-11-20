@@ -120,8 +120,8 @@ export class Leads {
   }
 
   async analyze(l: Lead): Promise<boolean> {
-    const msgs = (await this.d.uzelApi.messages(l.dialog_id, 100)).slice().sort((a, b) => atOf(a) - atOf(b))
-      .filter((m) => atOf(m) >= Date.parse(l.episode_start) - 60e3);
+    const msgs = episodeSlice((await this.d.uzelApi.messages(l.dialog_id, 100)).slice().sort((a, b) => atOf(a) - atOf(b)),
+      Date.parse(l.episode_start));
     const media: MediaDeps = { store: this.d.store, stt: null, ...this.d.media };
     const files = await clientFiles(msgs, media);
     const lines: string[] = [];
@@ -169,6 +169,25 @@ export class Leads {
       await this.d.store.journal("error", l.dialog_id, "учёт недоступен для обращения: " + String(e));
     }
   }
+}
+
+/** Сообщения одного обращения: от его начала до следующего (сообщение клиента после суток тишины), по тем же
+ *  правилам, что sync. Без этой границы разбор прошлого обращения видел и следующее, и один заказ считался
+ *  дважды - в обоих обращениях (20.11.2026: 26 900 ₸ у разговоров 14.11 и 17.11). Ответы продавца после суток
+ *  тишины без нового сообщения клиента в обращение не входят - как в sync. */
+export function episodeSlice(sorted: UzelMessage[], start: number): UzelMessage[] {
+  const out: UzelMessage[] = [];
+  let last = start;
+  for (const m of sorted) {
+    const t = atOf(m);
+    if (t < start - 60e3) continue;
+    const gap = t - last > EPISODE_GAP_H * 3600e3;
+    if (gap && m.direction === "in") break;
+    if (gap) continue;
+    out.push(m);
+    if (countable(m)) last = Math.max(last, t);
+  }
+  return out;
 }
 
 const WHO: Record<string, string> = { client: "Клиент", operator: "Продавец", phone_echo: "Продавец", program: "Бот" };
