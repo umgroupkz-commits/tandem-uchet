@@ -356,7 +356,9 @@ SECTIONS.counteragents = async (ctx) => {
 SECTIONS.users = async (ctx) => {
   const t = ctx.token;
   let r = await call("office_users_list", { token: t });
-  check("пользователи: список", r.ok && r.users.some((u) => u.login === "admin") && r.roles.length === 5, r);
+  // ролей пять основных и smm (0061, раздел «Заявки WhatsApp» бота)
+  check("пользователи: список", r.ok && r.users.some((u) => u.login === "admin")
+    && ["admin", "owner", "accountant", "technologist", "storekeeper"].every((x) => r.roles.includes(x)), r);
   const me = r.users.find((u) => u.login === ctx.login);
   r = await call("office_user_save", { token: t, id: me.id, login: me.login, name: me.name, role: "owner" });
   check("последнего администратора нельзя понизить — validation", r.ok === false && r.error === "validation", r);

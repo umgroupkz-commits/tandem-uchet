@@ -60,8 +60,12 @@ http.createServer(async (req, res) => {
     const payload = body.payload && typeof body.payload === "object" && !Array.isArray(body.payload) ? body.payload : {};
     if (!/^[a-z0-9_]{1,60}$/.test(action)) return send(res, 400, { ok: false, error: "Некорректное действие" });
     // IP клиента для счётчика неверных кодов в tandem_gate: x-real-ip ставит nginx ($remote_addr),
-    // без nginx — адрес соединения. Присланное клиентом _ip всегда перезаписывается.
-    payload._ip = String(req.headers["x-real-ip"] || req.socket.remoteAddress || "").slice(0, 64) || null;
+    // без nginx — адрес соединения. За Caddy (сервер PS.kz, CLIENT_IP_HEADER=x-forwarded-for) - последний адрес
+    // x-forwarded-for: его пишет сам Caddy, а x-real-ip он пропускает от клиента как есть. Присланное клиентом
+    // _ip всегда перезаписывается.
+    const xff = String(req.headers["x-forwarded-for"] || "").split(",").map((s) => s.trim()).filter(Boolean);
+    const fromHeader = process.env.CLIENT_IP_HEADER === "x-forwarded-for" ? xff[xff.length - 1] : req.headers["x-real-ip"];
+    payload._ip = String(fromHeader || req.socket.remoteAddress || "").slice(0, 64) || null;
     try {
       // 0053: фискальные действия кассы (Webkassa) - как в Edge Function uchet; настройки Webkassa - переменные
       // окружения WEBKASSA_* этого прокси.

@@ -9,6 +9,7 @@ import { FISCAL_ACTIONS, handleFiscal } from "./fiscal.js";
 const SB_URL = Deno.env.get("SUPABASE_URL")!;
 const SB_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const PAGE_URL = "https://umgroupkz-commits.github.io/tandem-uchet/";
+const MOVED_TO = "https://uchet.eneshka.kz/";   // сервер учёта в Казахстане (server/README.md, «Сервер PS.kz»)
 
 const CORS: Record<string, string> = {
   "access-control-allow-origin": "*",
@@ -72,6 +73,11 @@ Deno.serve(async (req: Request) => {
   if (req.method === "POST") {
     // Переезд на свой сервер (server/README.md): секрет UCHET_MAINTENANCE=1 закрывает запись сюда.
     // Ответ 503: касса считает его обрывом связи и держит чеки в очереди, а не помечает отклонёнными.
+    // 20.11.2026 учёт переехал на сервер PS.kz (MOVED_TO): запись сюда закрыта навсегда, а экран после
+    // обновления берёт новый адрес из config.js и досылает очередь туда.
+    if (MOVED_TO) {
+      return json({ ok: false, error: "Учёт переехал на новый сервер. Обновите страницу", moved_to: MOVED_TO }, 503);
+    }
     if (Deno.env.get("UCHET_MAINTENANCE") === "1") {
       return json({ ok: false, error: "Сервер учёта переезжает, запись временно закрыта. Повторите позже" }, 503);
     }

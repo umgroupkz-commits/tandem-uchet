@@ -1,5 +1,5 @@
 -- Полный снимок схемы учёта Тандем KZ (схема tandem + функции public.tandem_*).
--- Снят из боевой базы каталогом PostgreSQL 2026-11-06 запросом db/schema/snapshot-query.sql
+-- Снят из боевой базы каталогом PostgreSQL 2026-11-20 запросом db/schema/snapshot-query.sql
 -- и собран tools/build-schema-snapshot.mjs. Данных не содержит.
 -- Назначение: поднять пустую базу на собственном сервере одной командой
 --   psql -v ON_ERROR_STOP=1 -f db/schema/tandem_full.sql
@@ -19,6 +19,7 @@ create sequence if not exists tandem.client_order_lines_id_seq as bigint increme
 create sequence if not exists tandem.client_orders_id_seq as bigint increment 1 minvalue 1 maxvalue 9223372036854775807 start 1;
 create sequence if not exists tandem.item_code_seq as bigint increment 1 minvalue 1 maxvalue 9223372036854775807 start 90000;
 create sequence if not exists tandem.stock_moves_id_seq as bigint increment 1 minvalue 1 maxvalue 9223372036854775807 start 1;
+create sequence if not exists tandem.wa_leads_id_seq as bigint increment 1 minvalue 1 maxvalue 9223372036854775807 start 1;
 
 -- ---------------------------------------------------------------- таблицы
 create table if not exists tandem.assets (
@@ -556,6 +557,36 @@ create table if not exists tandem.users (
   training boolean default false not null
 );
 
+create table if not exists tandem.wa_leads (
+  id bigint default nextval('tandem.wa_leads_id_seq'::regclass) not null,
+  dialog_id text not null,
+  episode_start timestamp with time zone not null,
+  client_phone text,
+  client_name text,
+  lang text default 'ru'::text not null,
+  first_text text,
+  last_msg_at timestamp with time zone not null,
+  msgs_in integer default 0 not null,
+  msgs_out integer default 0 not null,
+  first_reply_at timestamp with time zone,
+  source text,
+  outcome text default 'pending'::text not null,
+  stage text default 'in_work'::text not null,
+  city text,
+  other_city boolean default false not null,
+  items jsonb default '[]'::jsonb not null,
+  total numeric(12,2),
+  total_menu numeric(12,2),
+  kind text,
+  for_date date,
+  reason text,
+  summary text,
+  analyzed_at timestamp with time zone,
+  model text,
+  created_at timestamp with time zone default now() not null,
+  updated_at timestamp with time zone default now() not null
+);
+
 
 -- ---------------------------------------------------------------- ограничения
 alter table tandem.assets add constraint assets_pkey PRIMARY KEY (name);
@@ -672,7 +703,14 @@ alter table tandem.units add constraint units_pkey PRIMARY KEY (id);
 alter table tandem.user_stores add constraint user_stores_pkey PRIMARY KEY (user_id, store_id);
 alter table tandem.users add constraint users_login_key UNIQUE (login);
 alter table tandem.users add constraint users_pkey PRIMARY KEY (id);
-alter table tandem.users add constraint users_role_check CHECK ((role = ANY (ARRAY['admin'::text, 'owner'::text, 'accountant'::text, 'technologist'::text, 'storekeeper'::text])));
+alter table tandem.users add constraint users_role_check CHECK ((role = ANY (ARRAY['admin'::text, 'owner'::text, 'accountant'::text, 'technologist'::text, 'storekeeper'::text, 'smm'::text])));
+alter table tandem.wa_leads add constraint wa_leads_client_phone_check CHECK ((client_phone ~ '^[0-9]{10,15}$'::text));
+alter table tandem.wa_leads add constraint wa_leads_dialog_id_episode_start_key UNIQUE (dialog_id, episode_start);
+alter table tandem.wa_leads add constraint wa_leads_kind_check CHECK ((kind = ANY (ARRAY['delivery'::text, 'pickup'::text])));
+alter table tandem.wa_leads add constraint wa_leads_lang_check CHECK ((lang = ANY (ARRAY['ru'::text, 'kz'::text])));
+alter table tandem.wa_leads add constraint wa_leads_outcome_check CHECK ((outcome = ANY (ARRAY['pending'::text, 'order'::text, 'no_order'::text, 'unclear'::text])));
+alter table tandem.wa_leads add constraint wa_leads_pkey PRIMARY KEY (id);
+alter table tandem.wa_leads add constraint wa_leads_stage_check CHECK ((stage = ANY (ARRAY['in_work'::text, 'ignored'::text, 'done'::text])));
 
 -- ---------------------------------------------------------------- индексы
 CREATE INDEX chart_lines_chart_idx ON tandem.chart_lines USING btree (chart_id);
@@ -699,6 +737,7 @@ CREATE INDEX sessions_user_idx ON tandem.sessions USING btree (user_id);
 CREATE INDEX stock_moves_doc_idx ON tandem.stock_moves USING btree (document_id);
 CREATE INDEX stock_moves_replay_idx ON tandem.stock_moves USING btree (store_id, item_code, id);
 CREATE INDEX stock_moves_store_item_idx ON tandem.stock_moves USING btree (store_id, item_code, move_date, id);
+CREATE INDEX wa_leads_episode_idx ON tandem.wa_leads USING btree (episode_start);
 
 -- ---------------------------------------------------------------- внешние ключи
 alter table tandem.cash_expenses add constraint cash_expenses_report_id_fkey FOREIGN KEY (report_id) REFERENCES tandem.daily_reports(id) ON DELETE CASCADE;
@@ -761,6 +800,7 @@ alter sequence tandem.client_order_events_id_seq owned by tandem.client_order_ev
 alter sequence tandem.client_order_lines_id_seq owned by tandem.client_order_lines.id;
 alter sequence tandem.client_orders_id_seq owned by tandem.client_orders.id;
 alter sequence tandem.stock_moves_id_seq owned by tandem.stock_moves.id;
+alter sequence tandem.wa_leads_id_seq owned by tandem.wa_leads.id;
 
 -- ---------------------------------------------------------------- функции
 CREATE OR REPLACE FUNCTION public.tandem_api(action text, payload jsonb DEFAULT '{}'::jsonb)
@@ -1407,7 +1447,7 @@ declare
   v_res   jsonb;
   v_hash  text;
   v_owner text;
-  v_service boolean := action in ('migrate','fiscal_config_set','schema_snapshot','test_cleanup','sync_items','sync_prices','recalc_ranks','set_packaging','set_short_list','bot_menu','bot_order_quote','bot_order_create','bot_order_events','bot_order_get','bot_order_cancel','bot_card_status','bot_client_history');
+  v_service boolean := action in ('migrate','fiscal_config_set','schema_snapshot','test_cleanup','sync_items','sync_prices','recalc_ranks','set_packaging','set_short_list','bot_menu','bot_order_quote','bot_order_create','bot_order_events','bot_order_get','bot_order_cancel','bot_card_status','bot_client_history','bot_lead_upsert','bot_lead_report');
   v_busy  jsonb := jsonb_build_object('ok', false, 'error', 'Слишком много неверных кодов. Подождите 5 минут', 'code', 'throttled');
   v_svc_ok   boolean := false;   -- служебное действие с верным ключом
   v_point_ok boolean := false;   -- верный код присланной активной точки
@@ -1529,6 +1569,8 @@ begin
       when 'bot_order_cancel' then tandem.corder_set_status(tandem.to_num(payload->>'id')::bigint, 'cancelled', 'bot', 'Бот', payload, null)
       when 'bot_card_status'  then tandem.corder_set_status(tandem.to_num(payload->>'order_id')::bigint, payload->>'to', 'telegram', payload->>'by_name', payload, null)
       when 'bot_client_history' then tandem.corder_history(payload->>'phone')
+      when 'bot_lead_upsert'  then tandem.lead_upsert(payload)
+      when 'bot_lead_report'  then tandem.office_leads('lead_report', payload, null::tandem.users)
     end;
     return v_res;
   end if;
@@ -2053,6 +2095,7 @@ begin
     when action like 'counteragent%' then 'counteragents'
     when action like 'user%'         then 'users'
     when action like 'cmenu%' or action like 'corder%' or action = 'client_settings_save' then 'clients'
+    when action like 'lead%'         then 'leads'
   end;
   if v_section is null then
     return tandem.err('unknown_action', 'Неизвестное действие: ' || action);
@@ -2091,6 +2134,8 @@ begin
     return tandem.office_stock(action, payload, v_user);
   elsif v_section = 'clients' then
     return tandem.office_clients(action, payload, v_user);
+  elsif v_section = 'leads' then
+    return tandem.office_leads(action, payload, v_user);
   end if;
 exception
   -- Minor: кривой uuid/число/boolean в payload — это ошибка ввода, а не сбой базы.
@@ -4578,6 +4623,74 @@ begin
 end $function$
 ;
 
+CREATE OR REPLACE FUNCTION tandem.lead_upsert(payload jsonb)
+ RETURNS jsonb
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO 'tandem', 'public'
+AS $function$
+declare
+  v_dialog text := btrim(coalesce(payload->>'dialog_id', ''));
+  v_start  timestamptz;
+  v_last   timestamptz;
+  v_phone  text := nullif(regexp_replace(coalesce(payload->>'phone', ''), '\D', '', 'g'), '');
+  v_lang   text := case when payload->>'lang' = 'kz' then 'kz' else 'ru' end;
+  a        jsonb := payload->'analysis';
+  v_id     bigint;
+begin
+  if v_dialog = '' or length(v_dialog) > 200 then return tandem.err('validation', 'Нет диалога'); end if;
+  begin
+    v_start := (payload->>'episode_start')::timestamptz;
+    v_last  := coalesce((payload->>'last_msg_at')::timestamptz, v_start);
+  exception when others then return tandem.err('validation', 'Неверное время обращения'); end;
+  if v_start is null then return tandem.err('validation', 'Нет времени обращения'); end if;
+  if v_phone is not null and v_phone !~ '^[0-9]{10,15}$' then v_phone := null; end if;
+  if a is not null and (coalesce(a->>'outcome', '') not in ('order', 'no_order', 'unclear')
+                        or coalesce(a->>'stage', '') not in ('in_work', 'ignored', 'done')) then
+    return tandem.err('validation', 'Итог разбора не из списка');
+  end if;
+
+  insert into tandem.wa_leads as l (dialog_id, episode_start, client_phone, client_name, lang, first_text, last_msg_at,
+                                    msgs_in, msgs_out, first_reply_at, source)
+  values (v_dialog, v_start, v_phone, left(nullif(btrim(payload->>'name'), ''), 200), v_lang,
+          left(payload->>'first_text', 1000), v_last,
+          greatest(coalesce(tandem.to_num(payload->>'msgs_in'), 0)::int, 0), greatest(coalesce(tandem.to_num(payload->>'msgs_out'), 0)::int, 0),
+          nullif(payload->>'first_reply_at', '')::timestamptz, left(nullif(btrim(payload->>'source'), ''), 200))
+  on conflict (dialog_id, episode_start) do update set
+    client_phone   = coalesce(excluded.client_phone, l.client_phone),
+    client_name    = coalesce(excluded.client_name, l.client_name),
+    lang           = excluded.lang,
+    first_text     = coalesce(l.first_text, excluded.first_text),
+    last_msg_at    = greatest(l.last_msg_at, excluded.last_msg_at),
+    msgs_in        = greatest(l.msgs_in, excluded.msgs_in),
+    msgs_out       = greatest(l.msgs_out, excluded.msgs_out),
+    first_reply_at = coalesce(l.first_reply_at, excluded.first_reply_at),
+    source         = coalesce(excluded.source, l.source),
+    updated_at     = now()
+  returning id into v_id;
+
+  if a is not null then
+    update tandem.wa_leads set
+      outcome     = a->>'outcome',
+      stage       = a->>'stage',
+      city        = left(nullif(btrim(a->>'city'), ''), 100),
+      other_city  = coalesce((a->>'other_city')::boolean, false),
+      items       = case when jsonb_typeof(a->'items') = 'array' then a->'items' else '[]'::jsonb end,
+      total       = tandem.to_num(a->>'total'),
+      total_menu  = tandem.to_num(a->>'total_menu'),
+      kind        = case when a->>'kind' in ('delivery', 'pickup') then a->>'kind' end,
+      for_date    = case when a->>'for_date' ~ '^\d{4}-\d{2}-\d{2}$' then (a->>'for_date')::date end,
+      reason      = left(nullif(btrim(a->>'reason'), ''), 500),
+      summary     = left(nullif(btrim(a->>'summary'), ''), 1000),
+      model       = left(a->>'model', 100),
+      analyzed_at = now(),
+      updated_at  = now()
+     where id = v_id;
+  end if;
+  return jsonb_build_object('ok', true, 'id', v_id);
+end $function$
+;
+
 CREATE OR REPLACE FUNCTION tandem.like_escape(p text)
  RETURNS text
  LANGUAGE sql
@@ -5306,6 +5419,77 @@ begin
     return jsonb_build_object('ok', true, 'id', v_id);
   end if;
 
+  return tandem.err('unknown_action', 'Неизвестное действие: ' || action);
+end $function$
+;
+
+CREATE OR REPLACE FUNCTION tandem.office_leads(action text, payload jsonb, v_user tandem.users)
+ RETURNS jsonb
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO 'tandem', 'public'
+AS $function$
+declare
+  v_from date := coalesce(nullif(payload->>'from', '')::date, (now() at time zone 'UTC' + interval '5 hours')::date);
+  v_to   date := coalesce(nullif(payload->>'to', '')::date, v_from);
+  t0 timestamptz; t1 timestamptz;
+begin
+  if v_to < v_from then return tandem.err('validation', 'Конец периода раньше начала'); end if;
+  if v_to - v_from > 366 then return tandem.err('validation', 'Период не больше года'); end if;
+  t0 := (v_from::timestamp - interval '5 hours') at time zone 'UTC';
+  t1 := ((v_to + 1)::timestamp - interval '5 hours') at time zone 'UTC';
+
+  if action = 'lead_list' then
+    return jsonb_build_object('ok', true, 'leads', coalesce((
+      select jsonb_agg(jsonb_build_object(
+        'id', l.id, 'first_at', l.episode_start, 'last_at', l.last_msg_at, 'phone', l.client_phone, 'name', l.client_name,
+        'lang', l.lang, 'first_text', left(l.first_text, 300), 'msgs_in', l.msgs_in, 'msgs_out', l.msgs_out,
+        'reply_min', case when l.first_reply_at is not null
+                          then greatest(round(extract(epoch from l.first_reply_at - l.episode_start) / 60)::int, 0) end,
+        'source', l.source, 'outcome', l.outcome, 'stage', l.stage, 'city', l.city, 'other_city', l.other_city, 'items', l.items, 'total', l.total, 'total_menu', l.total_menu,
+        'kind', l.kind, 'for_date', l.for_date, 'reason', l.reason, 'summary', l.summary, 'analyzed_at', l.analyzed_at)
+        order by l.episode_start desc)
+      from (select * from tandem.wa_leads where episode_start >= t0 and episode_start < t1
+             order by episode_start desc limit 3000) l), '[]'::jsonb));
+  end if;
+
+  if action = 'lead_report' then
+    -- Одна заявка бывает в нескольких строках, как в воронке: обработана и продана, обработана и в игноре.
+    -- «В работе» - и то, что модель ещё не разбирала (разговор не затих).
+    return (
+      with l as (select *, (episode_start at time zone 'UTC' + interval '5 hours')::date as d,
+                        (outcome = 'pending' or stage = 'in_work') as is_work
+                   from tandem.wa_leads where episode_start >= t0 and episode_start < t1),
+      days as (select d, count(*) received,
+                      count(*) filter (where first_reply_at is not null) processed,
+                      count(*) filter (where is_work) in_work,
+                      count(*) filter (where stage = 'ignored') ignored,
+                      count(*) filter (where other_city) other_city,
+                      count(*) filter (where outcome = 'order') sales,
+                      coalesce(sum(total) filter (where outcome = 'order'), 0) revenue,
+                      count(*) filter (where first_reply_at is null) no_reply
+                 from l group by d)
+      select jsonb_build_object('ok', true,
+        'received',   (select count(*) from l),
+        'processed',  (select count(*) from l where first_reply_at is not null),
+        'in_work',    (select count(*) from l where is_work),
+        'ignored',    (select count(*) from l where stage = 'ignored'),
+        'other_city', (select count(*) from l where other_city),
+        'sales',      (select count(*) from l where outcome = 'order'),
+        'revenue',    (select coalesce(sum(total), 0) from l where outcome = 'order'),
+        'no_reply',   (select count(*) from l where first_reply_at is null),
+        'no_order',   (select count(*) from l where outcome = 'no_order'),
+        'unclear',    (select count(*) from l where outcome = 'unclear'),
+        'avg_check',  (select round(avg(total)) from l where outcome = 'order' and total is not null),
+        'reply_median_min', (select round(percentile_cont(0.5) within group (order by extract(epoch from first_reply_at - episode_start) / 60))
+                               from l where first_reply_at is not null),
+        'reasons', coalesce((select jsonb_agg(jsonb_build_object('reason', reason, 'n', n) order by n desc)
+                               from (select reason, count(*) n from l where outcome = 'no_order' and reason is not null
+                                      group by reason order by count(*) desc limit 10) r), '[]'::jsonb),
+        'days', coalesce((select jsonb_agg(jsonb_build_object('date', d, 'received', received, 'processed', processed,
+                                             'in_work', in_work, 'ignored', ignored, 'other_city', other_city, 'sales', sales,
+                                             'revenue', revenue, 'no_reply', no_reply) order by d) from days), '[]'::jsonb)));
+  end if;
   return tandem.err('unknown_action', 'Неизвестное действие: ' || action);
 end $function$
 ;
@@ -6953,7 +7137,7 @@ begin
                   'active', active, 'must_change_pin', must_change_pin, 'created_at', created_at, 'training', training,
                   'store_ids', tandem.user_store_ids(id))
                   order by active desc, name), '[]'::jsonb) from tandem.users),
-      'roles', jsonb_build_array('admin','owner','accountant','technologist','storekeeper'),
+      'roles', jsonb_build_array('admin','owner','accountant','technologist','storekeeper','smm'),
       -- U: может ли смотрящий заводить и менять администраторов (форма прячет роль «admin» и кнопки)
       'can_manage_admins', v_user.role = 'admin');
   end if;
@@ -6965,7 +7149,7 @@ begin
     v_pin   := nullif(payload->>'pin','');
     if v_login !~ '^[a-z0-9_.-]{2,32}$' then return tandem.err('validation', 'Логин: 2–32 латинских буквы, цифры, _ . -'); end if;
     if v_name = '' then return tandem.err('validation', 'Имя пустое'); end if;
-    if v_role not in ('admin','owner','accountant','technologist','storekeeper') then
+    if v_role not in ('admin','owner','accountant','technologist','storekeeper','smm') then
       return tandem.err('validation', 'Роль не из списка');
     end if;
     -- U (owner9): раздел «Пользователи» теперь и у собственника — заводить сотрудников и сбрасывать им PIN.
@@ -8645,3 +8829,4 @@ alter table tandem.takeout_lines enable row level security;
 alter table tandem.units enable row level security;
 alter table tandem.user_stores enable row level security;
 alter table tandem.users enable row level security;
+alter table tandem.wa_leads enable row level security;
