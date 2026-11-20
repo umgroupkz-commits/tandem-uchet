@@ -9,7 +9,7 @@ services:
     mem_limit: 160m
     command: ["postgres", "-c", "shared_buffers=32MB", "-c", "max_connections=20", "-c", "work_mem=2MB",
               "-c", "maintenance_work_mem=16MB", "-c", "effective_cache_size=96MB"]
-  proxy:
+  uchet-proxy:
     container_name: tandem-proxy
     mem_limit: 96m
     environment:

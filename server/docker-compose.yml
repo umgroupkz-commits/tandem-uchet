@@ -16,7 +16,7 @@ services:
       interval: 5s
       retries: 20
     restart: unless-stopped
-  proxy:
+  uchet-proxy:   # не «proxy»: в сети дверей uzel-sites это имя службы «Узла» (compose даёт контейнеру имя службы)
     build:
       context: ..
       dockerfile: server/Dockerfile
