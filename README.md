@@ -1,7 +1,13 @@
 # Тандем KZ — учёт продаж и денег (прототип)
 
 Статическая страница (`index.html` + `app.js`) для GitHub Pages.
-API — edge-функция Supabase `uchet` (`https://qeehxcnnuzuwskznhdyg.supabase.co/functions/v1/uchet`), POST `{action, payload}`.
+**С 20.11.2026 API и база - на своём сервере PS.kz в Казахстане: `https://uchet.eneshka.kz/`** (`config.js`),
+POST `{action, payload}`; стек, копии и порядок работ - `server/README.md`, раздел «Сервер PS.kz». Причина -
+положение Тандема о персональных данных: хранить их в РК. Edge-функция Supabase `uchet` с тех пор в режиме
+«переехал» (`MOVED_TO`: на любую запись 503), данные Тандема в Supabase (Сеул) ещё лежат - удалить только по
+«да» Андрея после стабильной работы. Миграции теперь применяются на сервере (`docker exec -i tandem-db psql
+-U tandem -d tandem -v ON_ERROR_STOP=1 < db/migrations/<файл>`), а не через MCP Supabase.
+Прежний API - edge-функция Supabase `uchet` (`https://qeehxcnnuzuwskznhdyg.supabase.co/functions/v1/uchet`).
 
 Почему страница здесь, а не в Supabase: на домене `*.supabase.co` и Edge Functions, и Storage
 переписывают `text/html` в `text/plain` и ставят CSP `sandbox` — HTML там не отдать
