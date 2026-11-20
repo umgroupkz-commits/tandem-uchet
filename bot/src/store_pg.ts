@@ -32,7 +32,7 @@ export class PgStore implements Store {
     return r.rows[0] ? r.rows[0].value as T : null;
   }
   async setState(key: string, v: unknown) {
-    await this.q("insert into bot.state (key, value) values ($1, $2) on conflict (key) do update set value = excluded.value", [key, JSON.stringify(v)]);
+    await this.q("insert into bot.state (key, value) values ($1, $2) on conflict (key) do update set value = excluded.value", [key, JSON.stringify(v).replaceAll("\\u0000", "")]);   // NUL jsonb не принимает
   }
   async getCard(id: number) {
     const r = await this.q("select * from bot.cards where order_id = $1", [id]);
@@ -75,7 +75,7 @@ export class PgStore implements Store {
     await this.q("delete from bot.notices where order_id = $1 and kind = $2", [id, kind]);
   }
   async journal(kind: string, d: string | null, text: string) {
-    await this.q("insert into bot.journal (kind, dialog_id, text) values ($1, $2, $3)", [kind, d, text.slice(0, 2000)]);
+    await this.q("insert into bot.journal (kind, dialog_id, text) values ($1, $2, $3)", [kind, d, text.replaceAll("\u0000", "").slice(0, 2000)]);
   }
   // Обращения (src/leads.ts решает, новый это эпизод или продолжение; здесь только чтение и запись)
   private static LEAD = `dialog_id, episode_start, phone, name, lang, first_text, last_at, msgs_in, msgs_out, first_reply_at, analyzed_at`;
@@ -96,7 +96,7 @@ export class PgStore implements Store {
        on conflict (dialog_id, episode_start) do update set phone = excluded.phone, name = excluded.name, lang = excluded.lang,
          first_text = excluded.first_text, last_at = excluded.last_at, msgs_in = excluded.msgs_in, msgs_out = excluded.msgs_out,
          first_reply_at = excluded.first_reply_at, analyzed_at = excluded.analyzed_at`,
-      [l.dialog_id, l.episode_start, l.phone, l.name, l.lang, l.first_text?.slice(0, 1000) ?? null, l.last_at, l.msgs_in, l.msgs_out,
+      [l.dialog_id, l.episode_start, l.phone, l.name, l.lang, l.first_text?.replaceAll("\u0000", "").slice(0, 1000) ?? null, l.last_at, l.msgs_in, l.msgs_out,
         l.first_reply_at, l.analyzed_at]);
   }
   async leadsDue(quietBefore: Date, since: Date, limit: number) {

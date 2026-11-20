@@ -153,7 +153,7 @@ export class Leads {
       (past.length ? `\n\n# Прошлые обращения этого клиента (итог разбора)\n${past.join("\n")}` : "");
     const menu = await this.d.uchet.menu();
     const r = await this.d.model!.create({
-      model: this.d.modelName, max_tokens: 4000,
+      model: this.d.modelName, max_tokens: 8000,
       system: [{ type: "text", text: `${ANALYZE_RULES}\n\n# Меню\n${menuForAnalysis(menu)}`, cache_control: { type: "ephemeral" } }],
       messages: [{ role: "user", content: [
         { type: "text", text: `Сейчас ${nowText(now)} (Темиртау).${hint}\n\n# Переписка\n${lines.join("\n")}` },
@@ -239,7 +239,7 @@ export function transcriptLine(m: UzelMessage, note: { voice?: string; file?: st
   const who = m.direction === "in" ? "Клиент" : (WHO[m.author ?? ""] ?? "Продавец");
   const att = !m.attachment ? "" : note.file ? `[${note.file}] `
     : `[${KIND[m.attachment.kind] ?? "вложение"}] ` + (note.voice ? `расшифровка: «${note.voice}» ` : "");
-  const text = (m.text ?? "").trim();
+  const text = (m.text ?? "").replaceAll("\u0000", "").trim();   // нулевой символ из WhatsApp ломал запись в базу
   if (!att && !text) return null;
   return `[${when}] ${who}: ${att}${text}`;
 }
