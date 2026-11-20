@@ -44,7 +44,11 @@ export class GroqStt implements Stt {
     try {
       res = await this.f(STT_URL, { method: "POST", headers: { authorization: "Bearer " + this.key }, body: fd, signal: AbortSignal.timeout(60_000) });
     } catch (e) { throw new RetryLater("распознавание недоступно: " + String(e)); }
-    if (res.status === 429 || res.status >= 500) { await res.body?.cancel(); throw new RetryLater(`распознавание: ${res.status}`); }
+    // 401/403 - неверный ключ, а не плохой файл: отложить, иначе все голосовые запомнились бы пустыми (20.11.2026)
+    if (res.status === 429 || res.status >= 500 || res.status === 401 || res.status === 403) {
+      await res.body?.cancel();
+      throw new RetryLater(`распознавание: ${res.status}${res.status === 401 ? " - неверный GROQ_API_KEY" : ""}`);
+    }
     const j = await res.json().catch(() => ({})) as { text?: string; language?: string; error?: { message?: string } };
     if (res.status !== 200) throw new Error(`распознавание: ${res.status} ${j.error?.message ?? ""}`.trim());
     return { text: String(j.text ?? "").trim(), language: String(j.language ?? "") };

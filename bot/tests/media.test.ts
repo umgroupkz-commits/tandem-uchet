@@ -33,6 +33,8 @@ Deno.test("Groq: чужой язык - второй раз с русским", a
 Deno.test("Groq: 429 и 5xx - повторить позже, 400 - обычная ошибка", async () => {
   await assertRejects(() => new GroqStt("k", fakeFetch([{ status: 429, body: {} }]).f).transcribe(new Uint8Array([1]), "audio/ogg"), RetryLater);
   await assertRejects(() => new GroqStt("k", fakeFetch([{ status: 503, body: {} }]).f).transcribe(new Uint8Array([1]), "audio/ogg"), RetryLater);
+  await assertRejects(() => new GroqStt("k", fakeFetch([{ status: 401, body: {} }]).f).transcribe(new Uint8Array([1]), "audio/ogg"), RetryLater,
+    "неверный GROQ_API_KEY");
   const e = await assertRejects(() => new GroqStt("k", fakeFetch([{ status: 400, body: { error: { message: "bad file" } } }]).f).transcribe(new Uint8Array([1]), "audio/ogg"));
   assert(!(e instanceof RetryLater));
 });
