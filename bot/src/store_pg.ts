@@ -105,4 +105,8 @@ export class PgStore implements Store {
          and (analyzed_at is null or analyzed_at < last_at) order by last_at limit $3`, [quietBefore, since, limit]);
     return r.rows.map(PgStore.row);
   }
+  async reanalyzeOthers(dialogId: string, exceptStart: string) {
+    await this.q(`update bot.leads set analyzed_at = null where dialog_id = $1 and episode_start <> $2 and analyzed_at is not null`,
+      [dialogId, exceptStart]);
+  }
 }

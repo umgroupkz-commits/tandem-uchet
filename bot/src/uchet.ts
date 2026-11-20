@@ -9,7 +9,9 @@ export class Uchet {
   constructor(private url: string, private key: string, private f: Fetch = fetch, private now: () => number = Date.now) {}
   private async call<T>(action: string, payload: Record<string, unknown> = {}): Promise<T> {
     const res = await this.f(this.url, { method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ action, payload: { ...payload, service_key: this.key } }), signal: AbortSignal.timeout(10_000) });
+      // \u0000 из сообщений клиентов база (jsonb) не принимает - «unsupported Unicode escape sequence», 500 (20.11.2026)
+      body: JSON.stringify({ action, payload: { ...payload, service_key: this.key } }).replaceAll("\\u0000", ""),
+      signal: AbortSignal.timeout(10_000) });
     if (res.status >= 500) throw new Error(`учёт: ${res.status}`);
     return await res.json() as T;
   }
