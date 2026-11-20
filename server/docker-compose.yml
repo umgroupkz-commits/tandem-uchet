@@ -28,11 +28,19 @@ services:
       PGPASSWORD: ${DB_PASSWORD}
       PORT: "8787"
       CORS_ORIGIN: ${CORS_ORIGIN:-*}
-      # 0053: фискализация кассы через Webkassa (пусто - фискальные действия отвечают «не настроено»)
+      CLIENT_IP_HEADER: ${CLIENT_IP_HEADER:-x-real-ip}
+      # 0053: фискализация кассы через Webkassa (пусто - фискальные действия отвечают «не настроено»).
+      # 0060: WEBKASSA_TEST_* - тестовый стенд для учебной кассы, общий набор - для остальных.
+      WEBKASSA_MODE: ${WEBKASSA_MODE:-}
       WEBKASSA_BASE: ${WEBKASSA_BASE:-}
       WEBKASSA_API_KEY: ${WEBKASSA_API_KEY:-}
       WEBKASSA_LOGIN: ${WEBKASSA_LOGIN:-}
       WEBKASSA_PASSWORD: ${WEBKASSA_PASSWORD:-}
+      WEBKASSA_TEST_MODE: ${WEBKASSA_TEST_MODE:-}
+      WEBKASSA_TEST_BASE: ${WEBKASSA_TEST_BASE:-}
+      WEBKASSA_TEST_API_KEY: ${WEBKASSA_TEST_API_KEY:-}
+      WEBKASSA_TEST_LOGIN: ${WEBKASSA_TEST_LOGIN:-}
+      WEBKASSA_TEST_PASSWORD: ${WEBKASSA_TEST_PASSWORD:-}
     depends_on:
       db: { condition: service_healthy }
     ports: ["127.0.0.1:${PROXY_PORT:-8787}:8787"]
