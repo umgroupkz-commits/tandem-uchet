@@ -45,3 +45,21 @@ Deno.test("учёт: символ \\u0000 из текста клиента вы�
   assert(!body.includes("\\u0000"));
   assertEquals(JSON.parse(body).payload.first_text, "пирог хочу");
 });
+
+Deno.test("разбор: разбор видит итог прошлых обращений клиента; оплата прошлого заказа - followup без суммы", async () => {
+  const h = [msg("a1", "in", "Хочу сет на неделю за 19000", "2026-11-14T13:57:00Z"), msg("a2", "out", "Принято", "2026-11-14T14:00:00Z"),
+    msg("b1", "in", "Вот чек", "2026-11-16T04:56:00Z"), msg("b2", "out", "Во сколько доставить?", "2026-11-16T05:00:00Z")];
+  const store = new MemStore();
+  const model = new ScriptModel([verdict("order", "сет на неделю 19000"), verdict("followup", "оплатила прошлый заказ")] as never);
+  const pushed: Record<string, unknown>[] = [];
+  const leads = new Leads({ store, model, modelName: "m", now: () => new Date("2026-11-16T09:00:00Z"),
+    uzelApi: { messages: () => Promise.resolve(h) },
+    uchet: { menu: () => Promise.resolve(MENU), leadUpsert: (p) => { pushed.push(p); return Promise.resolve({ ok: true }); } } });
+  await leads.sync({ id: "d2", phone: "77011234567", name: "О" }, h);
+  assertEquals(await leads.analyzeDue(), 2);
+  const second = JSON.stringify(model.requests[1].messages);
+  assert(second.includes("Прошлые обращения этого клиента") && second.includes("14.11: заказ, 16500 ₸") && second.includes("сет на неделю 19000"), second);
+  const a = pushed.at(-1)!.analysis as { outcome: string; total: number | null; stage: string };
+  assertEquals([a.outcome, a.total, a.stage], ["followup", null, "done"]);
+  assert(!JSON.stringify(model.requests[0].messages).includes("Прошлые обращения"), "у первого обращения прошлых нет");
+});

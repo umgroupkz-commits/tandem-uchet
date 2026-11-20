@@ -29,6 +29,8 @@ export interface Store {
   leadsDue(quietBefore: Date, since: Date, limit: number): Promise<Lead[]>;
   /** Разобрать заново остальные обращения диалога (контакт оказался служебным - пересмотреть и их). */
   reanalyzeOthers(dialogId: string, exceptStart: string): Promise<void>;
+  /** Обращения диалога, от старых к новым. */
+  dialogLeads(dialogId: string): Promise<Lead[]>;
 }
 
 export class MemStore implements Store {
@@ -63,6 +65,10 @@ export class MemStore implements Store {
       .filter((l) => Date.parse(l.last_at) < quietBefore.getTime() && Date.parse(l.episode_start) >= since.getTime()
         && (!l.analyzed_at || Date.parse(l.analyzed_at) < Date.parse(l.last_at)))
       .sort((a, b) => Date.parse(a.last_at) - Date.parse(b.last_at)).slice(0, limit).map((l) => ({ ...l })));
+  }
+  dialogLeads(dialogId: string) {
+    return Promise.resolve(this.leads.filter((l) => l.dialog_id === dialogId)
+      .sort((a, b) => Date.parse(a.episode_start) - Date.parse(b.episode_start)).map((l) => ({ ...l })));
   }
   reanalyzeOthers(dialogId: string, exceptStart: string) {
     for (const l of this.leads) if (l.dialog_id === dialogId && l.episode_start !== exceptStart && l.analyzed_at) l.analyzed_at = null;

@@ -14,6 +14,7 @@ import { detectLang, maskPhonesIn, nowText, phoneOf } from "./menu.ts";
 import { clientFiles, type MediaDeps, voiceText } from "./media.ts";
 
 export const EPISODE_GAP_H = 24;   // тишина дольше суток - следующее сообщение клиента уже новое обращение
+const PRELUDE_H = 6;               // сообщения продавца перед обращением - в разбор, если не старше 6 часов
 export const QUIET_MIN = 40;       // столько минут без новых сообщений - разговор затих, пора разбирать
 const LOOKBACK_D = 7;              // старше недели не разбираем: история в «Узле» дальше не нужна
 const PER_TICK = 5;                // разборов за один проход: не забить модель после простоя
@@ -33,7 +34,7 @@ export interface LeadDeps {
   now(): Date;
 }
 
-export type Outcome = "order" | "no_order" | "unclear" | "internal";
+export type Outcome = "order" | "no_order" | "unclear" | "internal" | "followup";
 // Стадия - так считает воронку СММ (письмо СММщицы 13.11.2026): в работе, игнор, итог ясен.
 export type Stage = "in_work" | "ignored" | "done";
 export interface Analysis {
@@ -139,7 +140,17 @@ export class Leads {
     // Если другой разговор этого контакта уже показал, что это не покупатель, - разбор узнаёт об этом.
     const internalKey = `contact_internal:${l.dialog_id}`;
     const knownInternal = await this.d.store.getState<string>(internalKey);
-    const hint = knownInternal ? `\n\n# Справка о контакте\nДругой разговор с этим контактом уже показал, что это не покупатель: ${knownInternal}` : "";
+    // Чем кончились прошлые обращения клиента за неделю: оплата или уточнение прошлого заказа - не новый заказ
+    // (20.11.2026: чек на 19 000 ₸ 16.11 за сет, заказанный 14.11, считался второй продажей).
+    const past: string[] = [];
+    for (const p of await this.d.store.dialogLeads(l.dialog_id)) {
+      if (Date.parse(p.episode_start) >= Date.parse(l.episode_start)) continue;
+      const dg = await this.d.store.getState<Digest>(digestKey(p.dialog_id, p.episode_start));
+      if (dg) past.push(`- ${dayText(p.episode_start)}: ${OUTCOME_RU[dg.outcome] ?? dg.outcome}${dg.total ? `, ${dg.total} ₸` : ""}` +
+        `${dg.for_date ? `, на ${dg.for_date}` : ""}. ${dg.summary}`);
+    }
+    const hint = (knownInternal ? `\n\n# Справка о контакте\nДругой разговор с этим контактом уже показал, что это не покупатель: ${knownInternal}` : "") +
+      (past.length ? `\n\n# Прошлые обращения этого клиента (итог разбора)\n${past.join("\n")}` : "");
     const menu = await this.d.uchet.menu();
     const r = await this.d.model!.create({
       model: this.d.modelName, max_tokens: 4000,
@@ -160,6 +171,8 @@ export class Leads {
     const done: Lead = { ...l, analyzed_at: now.toISOString() };
     await this.push(done, a);
     await this.d.store.saveLead(done);
+    await this.d.store.setState(digestKey(l.dialog_id, l.episode_start),
+      { outcome: a.outcome, total: a.total, for_date: a.for_date, summary: a.summary.slice(0, 300) } satisfies Digest);
     // Контакт впервые оказался служебным - его прошлые разговоры (за неделю) разбираются заново со справкой.
     // Только в первый раз: иначе разговоры одного контакта перезапускали бы друг друга бесконечно.
     if (a.outcome === "internal" && !knownInternal) {
@@ -188,6 +201,14 @@ export class Leads {
  *  тишины без нового сообщения клиента в обращение не входят - как в sync. */
 export function episodeSlice(sorted: UzelMessage[], start: number): UzelMessage[] {
   const out: UzelMessage[] = [];
+  // Перед обращением - сообщения продавца, на которые клиент отвечает (продавец написал первым: «Сколько стоит
+  // доставка?» курьеру). Только до предыдущего сообщения клиента и не дальше 6 часов назад.
+  const before: UzelMessage[] = [];
+  for (const m of sorted.filter((x) => atOf(x) < start - 60e3).reverse()) {
+    if (m.direction === "in" || start - atOf(m) > PRELUDE_H * 3600e3) break;
+    before.unshift(m);
+  }
+  out.push(...before);
   let last = start;
   for (const m of sorted) {
     const t = atOf(m);
@@ -200,6 +221,12 @@ export function episodeSlice(sorted: UzelMessage[], start: number): UzelMessage[
   }
   return out;
 }
+
+interface Digest { outcome: Outcome; total: number | null; for_date: string | null; summary: string }
+const digestKey = (dialogId: string, start: string) => `lead_digest:${dialogId}:${start}`;
+const OUTCOME_RU: Record<string, string> = { order: "заказ", no_order: "не заказал", unclear: "непонятно", internal: "служебный",
+  followup: "продолжение прошлого заказа" };
+const dayText = (iso: string) => { const d = new Date(Date.parse(iso) + 5 * 3600e3).toISOString(); return `${d.slice(8, 10)}.${d.slice(5, 7)}`; };
 
 const WHO: Record<string, string> = { client: "Клиент", operator: "Продавец", phone_echo: "Продавец", program: "Бот" };
 const KIND: Record<string, string> = { image: "фото", video: "видео", audio: "аудио", voice: "голосовое", document: "документ", sticker: "стикер" };
@@ -225,7 +252,7 @@ export function menuForAnalysis(menu: Menu): string {
 export const ANALYZE_RULES = `Ты разбираешь переписку в WhatsApp между клиентом и продавцом «Енешки» (Темиртау: татарские пироги, выпечка, полуфабрикаты). Бот клиенту не отвечал, разговор вёл человек. Нужен итог для отчёта рекламщикам.
 stage - где разговор сейчас: "done" - итог ясен (договорились о заказе или клиент отказался, или разговор не о заказе); "in_work" - не закончен: клиент думает, уточняют детали, ждут ответа продавца или клиента; "ignored" - продавец ответил, а клиент пропал, так и не сказав, берёт или нет.
 city - город клиента, только если он сам его назвал или назвал адрес в нём; иначе пустая строка. other_city - true, если это не Темиртау и не Караганда (туда не возим); не назвал город - false.
-outcome: "order" - договорились о заказе: понятно, что берут, и продавец его принял (подтвердил, назвал сумму или время). "no_order" - клиент спрашивал или собирался, но не заказал, или разговор вообще не о заказе. "unclear" - нельзя понять: договорились звонком, переписка оборвана, заказ под вопросом. "internal" - пишет не покупатель: свои сотрудники, курьер, цех; магазины и точки, куда Енешка сдаёт товар (Шик, Аян, Принцип, рынок 6 мкр и другие), их ежедневные заявки и сверки; поставщики; предложения рекламы и сотрудничества, рассылки. Такие разговоры в отчёт о заявках не идут, items для них - пустой.
+outcome: "order" - договорились о заказе: понятно, что берут, и продавец его принял (подтвердил, назвал сумму или время). "no_order" - клиент спрашивал или собирался, но не заказал, или разговор вообще не о заказе. "unclear" - нельзя понять: договорились звонком, переписка оборвана, заказ под вопросом. "internal" - пишет не покупатель: свои сотрудники, курьер, цех; магазины и точки, куда Енешка сдаёт товар (Шик, Аян, Принцип, рынок 6 мкр и другие), их ежедневные заявки и сверки; поставщики; предложения рекламы и сотрудничества, рассылки. Такие разговоры в отчёт о заявках не идут, items для них - пустой. "followup" - клиент продолжает заказ из прошлого обращения (см. «Прошлые обращения этого клиента»): оплачивает его, присылает чек, уточняет время или адрес, спрашивает, где доставка, благодарит за полученное. Это не новый заказ; items пустой. Если сверх прошлого заказа он заказывает что-то новое - это order только на новое.
 Голосовые расшифрованы автоматически: «[голосовое] расшифровка: «…»». В расшифровке бывают ошибки в словах - бери смысл. Голосовое без расшифровки - содержание неизвестно. Фото и документы клиента приложены после переписки с теми же номерами, что в строках «[фото №1]», «[документ №1]» - смотри их: чек или квитанция об оплате (Kaspi, Halyk) - заказ оплачен; скрин рекламы или поста - видно, что хотят; фото прошлого заказа - что повторить.
 items: позиции заказа (для no_order - что клиент хотел, если ясно; для unclear - что обсуждали). item_code - код из меню в квадратных скобках, только если позиция совпадает точно; нет в меню или не ясно какая - пустая строка. title - как назвали. qty - количество в единице меню (кг или шт); «пачка» и «0,7» - это позиции «пачка 0,7 кг» по 1 шт.
 Чек об оплате от клиента (Kaspi, Halyk) - это заказ (order), даже если состав в переписке не назван (договорились раньше или звонком): total_stated = сумма чека, если продавец не называл другой итог. Исключение - чек за заказ, который уже договорён в этой же переписке: это тот же заказ, не второй.
@@ -239,7 +266,7 @@ export const ANALYSIS_SCHEMA = {
   type: "object", additionalProperties: false,
   required: ["outcome", "stage", "city", "other_city", "items", "total_stated", "kind", "for_date", "reason", "summary"],
   properties: {
-    outcome: { type: "string", enum: ["order", "no_order", "unclear", "internal"] },
+    outcome: { type: "string", enum: ["order", "no_order", "unclear", "internal", "followup"] },
     stage: { type: "string", enum: ["in_work", "ignored", "done"] },
     city: { type: "string" },
     other_city: { type: "boolean" },
@@ -261,7 +288,7 @@ interface RawAnalysis {
 // Цены и суммы - из меню. Сумма заказа: названная в переписке (продавцом, иначе клиентом без возражений продавца;
 // в ней доставка, скидки и акции), иначе по меню.
 export function priceAnalysis(menu: Menu, raw: RawAnalysis, model: string): Analysis {
-  const outcome: Outcome = ["order", "no_order", "unclear", "internal"].includes(raw.outcome) ? raw.outcome : "unclear";
+  const outcome: Outcome = ["order", "no_order", "unclear", "internal", "followup"].includes(raw.outcome) ? raw.outcome : "unclear";
   const items = (Array.isArray(raw.items) ? raw.items : []).filter((x) => x && Number(x.qty) > 0).map((x) => {
     const it = x.item_code ? menu.items.find((m) => m.item_code === x.item_code) ?? null : null;
     const qty = Math.round(Number(x.qty) * 1000) / 1000;
@@ -273,7 +300,7 @@ export function priceAnalysis(menu: Menu, raw: RawAnalysis, model: string): Anal
   const totalMenu = known.length ? known.reduce((s, x) => s + (x.sum ?? 0), 0) : null;
   const stated = Number(raw.total_stated) > 0 ? Math.round(Number(raw.total_stated)) : null;
   // Заказ - всегда итог; «игнор» при заказе не бывает. Стадия не из списка - «в работе», а не «итог».
-  const stage: Stage = outcome === "order" || outcome === "internal" ? "done" : (["in_work", "ignored", "done"].includes(raw.stage) ? raw.stage : "in_work");
+  const stage: Stage = outcome === "order" || outcome === "internal" || outcome === "followup" ? "done" : (["in_work", "ignored", "done"].includes(raw.stage) ? raw.stage : "in_work");
   const city = String(raw.city ?? "").trim().slice(0, 100) || null;
   return {
     outcome, items, stage, city, other_city: raw.other_city === true && !!city,

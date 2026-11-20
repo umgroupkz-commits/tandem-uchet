@@ -105,6 +105,10 @@ export class PgStore implements Store {
          and (analyzed_at is null or analyzed_at < last_at) order by last_at limit $3`, [quietBefore, since, limit]);
     return r.rows.map(PgStore.row);
   }
+  async dialogLeads(dialogId: string) {
+    const r = await this.q(`select ${PgStore.LEAD} from bot.leads where dialog_id = $1 order by episode_start`, [dialogId]);
+    return r.rows.map(PgStore.row);
+  }
   async reanalyzeOthers(dialogId: string, exceptStart: string) {
     await this.q(`update bot.leads set analyzed_at = null where dialog_id = $1 and episode_start <> $2 and analyzed_at is not null`,
       [dialogId, exceptStart]);
