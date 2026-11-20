@@ -62,7 +62,8 @@ async function iiko(path, body) {
     // RMS («authentication failed» внутри 502), и по отдельным товарам это повторяется
     // бесконечно. Пять попыток с растущей выдержкой, дальше — ошибка с пометкой skippable:
     // вызывающий пропускает такой товар, а не роняет весь прогон.
-    if (r.status >= 500) {
+    // 400 EXTERNAL_SYSTEM_TIMEOUT - тот же сбой их RMS, только другим кодом (20.11.2026 оборвал прогон)
+    if (r.status >= 500 || (r.status === 400 && /EXTERNAL_SYSTEM_TIMEOUT/.test(t))) {
       if (++fails5xx >= 5) throw Object.assign(new Error(path + " → HTTP " + r.status), { skippable: true });
       log(`  HTTP ${r.status}, жду ${Math.round(wait / 1000)} с (попытка ${fails5xx})`);
       await sleep(wait); wait = Math.min(wait * 2, 60000); continue;
