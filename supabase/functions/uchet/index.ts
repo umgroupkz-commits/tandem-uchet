@@ -9,7 +9,9 @@ import { FISCAL_ACTIONS, handleFiscal } from "./fiscal.js";
 const SB_URL = Deno.env.get("SUPABASE_URL")!;
 const SB_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const PAGE_URL = "https://umgroupkz-commits.github.io/tandem-uchet/";
-const MOVED_TO = "https://uchet.eneshka.kz/";   // сервер учёта в Казахстане (server/README.md, «Сервер PS.kz»)
+// С 20.11.2026 рабочая база - сервер PS.kz (https://uchet.eneshka.kz/), а Supabase по решению Андрея - ТЕСТОВАЯ база
+// для обучения (копия рабочей на 20.11). Впишите сюда адрес рабочего сервера, чтобы снова закрыть запись в Supabase.
+const MOVED_TO = "";
 
 const CORS: Record<string, string> = {
   "access-control-allow-origin": "*",
@@ -73,7 +75,7 @@ Deno.serve(async (req: Request) => {
   if (req.method === "POST") {
     // Переезд на свой сервер (server/README.md): секрет UCHET_MAINTENANCE=1 закрывает запись сюда.
     // Ответ 503: касса считает его обрывом связи и держит чеки в очереди, а не помечает отклонёнными.
-    // 20.11.2026 учёт переехал на сервер PS.kz (MOVED_TO): запись сюда закрыта навсегда, а экран после
+    // MOVED_TO задан - запись сюда закрыта (так было 20.11.2026 в час переезда на PS.kz), а экран после
     // обновления берёт новый адрес из config.js и досылает очередь туда.
     if (MOVED_TO) {
       return json({ ok: false, error: "Учёт переехал на новый сервер. Обновите страницу", moved_to: MOVED_TO }, 503);

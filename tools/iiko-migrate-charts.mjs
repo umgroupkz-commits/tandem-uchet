@@ -4,12 +4,12 @@
 // Ответы кэшируются в data/iiko/charts/<productId>.json, повторный запуск берёт кэш
 // и не ходит в iiko за уже полученным, поэтому обрыв на 429 не теряет сделанного.
 // Переменные окружения: IIKO_API_KEY, IIKO_APP_ID, IIKO_CLIENT_SECRET, TANDEM_SERVICE_KEY,
-//   TANDEM_API_URL (адрес учёта; по умолчанию Supabase, после переезда — https://<адрес>/api/).
+//   TANDEM_API_URL (адрес учёта; по умолчанию рабочая база https://uchet.eneshka.kz/, Supabase - тестовая).
 // Запуск: node tools/iiko-migrate-charts.mjs [--dry] [--limit=N] [--skip-costs] [--only-costs]
 // Прогресс пишется в data/iiko/charts.log — запускайте в фоне и смотрите лог.
 import fs from "node:fs";
 const IIKO = "https://api-ru.iiko.services";
-const UCHET = process.env.TANDEM_API_URL || "https://qeehxcnnuzuwskznhdyg.supabase.co/functions/v1/uchet";
+const UCHET = process.env.TANDEM_API_URL || "https://uchet.eneshka.kz/";   // рабочая база (PS.kz) с 20.11.2026
 const CACHE = (process.env.IIKO_CACHE || "data/iiko") + "/charts";   // IIKO_CACHE - как в iiko-migrate.mjs
 const LOG = (process.env.IIKO_CACHE || "data/iiko") + "/charts.log";
 const args = process.argv.slice(2);

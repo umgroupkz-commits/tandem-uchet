@@ -9,7 +9,8 @@
 //   --from-cache — не ходить в iiko, взять data/iiko/*.json из прошлого запуска.
 import fs from "node:fs";
 const IIKO = "https://api-ru.iiko.services";
-const UCHET = "https://qeehxcnnuzuwskznhdyg.supabase.co/functions/v1/uchet";
+// адрес учёта: с 20.11.2026 рабочая база - сервер PS.kz; Supabase - тестовая база (TANDEM_API_URL=...supabase.co/functions/v1/uchet)
+const UCHET = process.env.TANDEM_API_URL || "https://uchet.eneshka.kz/";
 const CACHE = process.env.IIKO_CACHE || "data/iiko";   // IIKO_CACHE - другая папка (проверка в tools/iiko-obnovlenie.mjs)
 const DRY = process.argv.includes("--dry");
 const FROM_CACHE = process.argv.includes("--from-cache");

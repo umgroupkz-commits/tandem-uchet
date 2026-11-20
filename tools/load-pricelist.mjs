@@ -6,7 +6,7 @@
 import fs from "fs"; import path from "path"; import { fileURLToPath } from "url"; import { createRequire } from "module";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const XLSX = createRequire(import.meta.url)(path.join(root, "vendor/xlsx.full.min.js"));
-const UCHET = process.env.TANDEM_API_URL || "https://qeehxcnnuzuwskznhdyg.supabase.co/functions/v1/uchet";
+const UCHET = process.env.TANDEM_API_URL || "https://uchet.eneshka.kz/";   // рабочая база (PS.kz) с 20.11.2026
 const KEY = process.env.TANDEM_SERVICE_KEY || "";
 const file = process.argv[2], DRY = process.argv.includes("--dry");
 if (!file) { console.error("укажите файл прейскуранта"); process.exit(2); }

@@ -4,8 +4,13 @@
 //
 // Переменные окружения: PGHOST, PGPORT, PGUSER, PGPASSWORD, PGDATABASE — подключение к базе
 //   (pg читает их сам; пароль отдельной переменной, а не внутри postgres://…, где знаки / # ? +
-//   ломают разбор адреса), PORT (8787), CORS_ORIGIN (* или адрес сайта), PG_STATEMENT_TIMEOUT_MS (20000).
+//   ломают разбор адреса), PORT (8787), CORS_ORIGIN (* или адрес сайта), PG_STATEMENT_TIMEOUT_MS (20000),
+//   SITE_DIR - папка с экранами учёта (Dockerfile: /app/site): прокси отдаёт их сам, и рабочая программа живёт на
+//   том же адресе, что и сервер (с 20.11.2026: https://uchet.eneshka.kz/; GitHub Pages - тестовая база в Supabase).
+//   Рабочий config.js прокси пишет сам: адрес сервера - тот, с которого открыт экран.
 import http from "node:http";
+import fs from "node:fs";
+import path from "node:path";
 import pg from "pg";
 import { FISCAL_ACTIONS, handleFiscal } from "../supabase/functions/uchet/fiscal.js";
 
@@ -34,9 +39,47 @@ const fiscalDeps = {
   config: async () => process.env,
 };
 
+// Экраны учёта (SITE_DIR): только файлы с известными расширениями и только внутри папки. GET / без text/html
+// в Accept (проверки curl, бот) по-прежнему получает {"ok":true,...}.
+const SITE = process.env.SITE_DIR ? path.resolve(process.env.SITE_DIR) : "";
+const TYPES = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8",
+  ".svg": "image/svg+xml", ".png": "image/png", ".ico": "image/x-icon", ".json": "application/json; charset=utf-8",
+  ".woff2": "font/woff2", ".txt": "text/plain; charset=utf-8" };
+const PAGE_HEADERS = { "x-content-type-options": "nosniff", "referrer-policy": "same-origin", "x-frame-options": "SAMEORIGIN" };
+const CONFIG_JS = "// Рабочая база учёта Тандема (сервер PS.kz): экраны и сервер на одном адресе.\n" +
+  "window.TANDEM_API_URL = location.origin + \"/\";\n";
+function serveSite(req, res) {
+  let p;
+  try { p = decodeURIComponent(new URL(req.url, "http://x").pathname); } catch { return false; }
+  if (p === "/") {
+    if (!/text\/html/.test(String(req.headers.accept || ""))) return false;
+    p = "/index.html";
+  }
+  if (p === "/config.js") {
+    res.writeHead(200, { "content-type": TYPES[".js"], "cache-control": "no-cache", ...PAGE_HEADERS });
+    return res.end(req.method === "HEAD" ? undefined : CONFIG_JS), true;
+  }
+  const file = path.resolve(SITE, "." + p);
+  const type = TYPES[path.extname(file).toLowerCase()];
+  if (!type || !file.startsWith(SITE + path.sep) || path.basename(file).startsWith(".")) return false;
+  let st;
+  try { st = fs.statSync(file); } catch { return false; }
+  if (!st.isFile()) return false;
+  // Страницы - всегда свежие; скрипты и стили приходят с ?v=<сборка>, им хватит пяти минут
+  res.writeHead(200, { "content-type": type, "content-length": st.size,
+    "cache-control": type.startsWith("text/html") ? "no-cache" : "public, max-age=300", ...PAGE_HEADERS });
+  if (req.method === "HEAD") return res.end(), true;
+  fs.createReadStream(file).on("error", () => res.destroy()).pipe(res);
+  return true;
+}
+
 http.createServer(async (req, res) => {
   if (req.method === "OPTIONS") { res.writeHead(200, CORS); return res.end("ok"); }
-  if (req.method === "GET") return send(res, 200, { ok: true, service: "tandem-uchet-proxy" });
+  if (req.method === "GET" || req.method === "HEAD") {
+    if (SITE && serveSite(req, res)) return;
+    const root = new URL(req.url, "http://x").pathname === "/";
+    return send(res, SITE && !root ? 404 : 200, SITE && !root ? { ok: false, error: "Нет такой страницы" } : { ok: true, service: "tandem-uchet-proxy" });
+  }
   if (req.method !== "POST") return send(res, 405, { ok: false, error: "Метод не поддерживается" });
   // Тело копится кусками Buffer и декодируется один раз: при склейке в строку по кускам русская буква,
   // разрезанная границей куска, превращалась в U+FFFD — тихо, с ответом ok:true.
