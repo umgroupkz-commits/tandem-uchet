@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Вписать ключ в bot.env без показа на экране и в журнале. На сервере Енешки, в ~/bot-eneshka:
-#   bash vpisat.sh UZEL_API_KEY | ANTHROPIC_API_KEY | TELEGRAM_BOT_TOKEN | TELEGRAM_OWNER_ID
+#   bash vpisat.sh UZEL_API_KEY | ANTHROPIC_API_KEY | GROQ_API_KEY | TELEGRAM_BOT_TOKEN | TELEGRAM_OWNER_ID
 # Файл правится на месте (тот же файл, права 600 остаются), прежнее значение заменяется.
 # Бот подхватит ключ после перезапуска: docker compose up -d --force-recreate bot
 set -euo pipefail
 cd "$(dirname "$0")"
 
-IMENA="UZEL_API_KEY ANTHROPIC_API_KEY TELEGRAM_BOT_TOKEN TELEGRAM_OWNER_ID"
+IMENA="UZEL_API_KEY ANTHROPIC_API_KEY GROQ_API_KEY TELEGRAM_BOT_TOKEN TELEGRAM_OWNER_ID"
 name="${1:-}"
 case " $IMENA " in
   *" $name "*) [ -n "$name" ] || { echo "Укажите имя: $IMENA" >&2; exit 2; } ;;

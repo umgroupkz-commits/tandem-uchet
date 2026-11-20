@@ -5,12 +5,13 @@ import { api } from "./api.js?v=30";
 import { el, errText, today, isoDate } from "./ui.js?v=30";
 import { fmtDate, fmtDateTime, fmtMoney } from "./inputs.js?v=30";
 
-const OUTCOME = { order: "заказ", no_order: "не заказали", unclear: "непонятно", pending: "разговор идёт" };
-// Статус заявки словами воронки СММ (13.11.2026): продажа, в работе, игнор, отказ.
-const STATUS = { sale: "продажа", work: "в работе", ignored: "игнор", refused: "отказ", unclear: "непонятно" };
-const statusOf = (l) => l.outcome === "order" ? "sale" : l.outcome === "pending" || l.stage === "in_work" ? "work"
+const OUTCOME = { order: "заказ", no_order: "не заказали", unclear: "непонятно", pending: "разговор идёт", internal: "служебная" };
+// Статус заявки словами воронки СММ (13.11.2026): продажа, в работе, игнор, отказ. «Служебная» (0063) - пишет не
+// покупатель (цех, курьер, точки, поставщики, реклама): в списке видна, в цифры сводки не входит.
+const STATUS = { sale: "продажа", work: "в работе", ignored: "игнор", refused: "отказ", unclear: "непонятно", internal: "служебная" };
+const statusOf = (l) => l.outcome === "internal" ? "internal" : l.outcome === "order" ? "sale" : l.outcome === "pending" || l.stage === "in_work" ? "work"
   : l.stage === "ignored" ? "ignored" : l.outcome === "no_order" ? "refused" : "unclear";
-const STATUS_CLASS = { sale: "ok", work: "", ignored: "warn", refused: "dim", unclear: "dim" };
+const STATUS_CLASS = { sale: "ok", work: "", ignored: "warn", refused: "dim", unclear: "dim", internal: "dim" };
 // Фильтр: статус или отдельная метка (без ответа продавца, другой город).
 const FILTERS = { ...STATUS, no_reply: "без ответа", other_city: "другой город" };
 const pass = (l, f) => !f || (f === "no_reply" ? l.reply_min == null : f === "other_city" ? !!l.other_city : statusOf(l) === f);
@@ -83,7 +84,9 @@ function kpis(r) {
     el("div", { style: "display:flex;gap:8px;flex-wrap:wrap;margin:0 0 8px" },
       box("Без ответа продавца", String(r.no_reply), "написали, а им не ответили", r.no_reply > 0),
       box("Отказ", String(r.no_order), "почему - внизу страницы"),
-      box("Первый ответ", r.reply_median_min != null ? `${r.reply_median_min} мин` : "—", "медиана")));
+      box("Первый ответ", r.reply_median_min != null ? `${r.reply_median_min} мин` : "—", "медиана")),
+    r.internal ? el("div", { class: "dim", style: "margin:0 0 8px" },
+      `Служебных разговоров (цех, курьер, точки, поставщики, реклама): ${r.internal} - в цифры выше не входят, в списке помечены «служебная».`) : null);
 }
 
 const itemsText = (items) => (items || []).map((x) => `${x.title} ${String(x.qty).replace(".", ",")}${x.unit ? " " + x.unit : ""}`).join("; ");

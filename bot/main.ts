@@ -11,6 +11,7 @@ import { makeApp } from "./src/app.ts";
 import { inSchedule } from "./src/menu.ts";
 import { Leads } from "./src/leads.ts";
 import { SmmReports } from "./src/smm.ts";
+import { GroqStt } from "./src/media.ts";
 
 const cfg = loadConfig(Deno.env.toObject());
 const store = new PgStore(cfg.databaseUrl);
@@ -35,8 +36,9 @@ const silent = async () => {
 };
 // Обращения и разбор переписки (src/leads.ts). Модель - та же, что у бота; без ключа Anthropic заявки считаются,
 // но не разбираются. Разбор - раз в 5 минут по затихшим разговорам.
+// Разбор видит фото и PDF клиента и слышит голосовые (src/media.ts); без GROQ_API_KEY голосовые остаются пометкой.
 const leads = new Leads({ store, uchet, uzelApi: uzel, model: cfg.anthropicKey ? base.model : null, modelName: cfg.model,
-  now: () => new Date() });
+  now: () => new Date(), media: { download: (p) => uzel.download(p), stt: cfg.groqKey ? new GroqStt(cfg.groqKey) : null } });
 // Обход всех диалогов «Узла»: через 30 секунд после запуска и раз в 30 минут - досчитать заявки, оповещения
 // о которых потерялись (бот лежал, а «Узел» держит неотправленное только сутки).
 const sweep = () => leads.sweep().catch((e) => store.journal("error", null, "обход диалогов: " + e));

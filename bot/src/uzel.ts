@@ -28,7 +28,12 @@ export interface UzelEvent {
 }
 export interface UzelMessage {
   id: string; direction: "in" | "out"; type: string; text: string | null; author: string | null;
-  attachment: { kind: string } | null; occurredAt: string | null; createdAt?: string | null;
+  attachment: UzelAttachment | null; occurredAt: string | null; createdAt?: string | null;
+}
+// Вложение сообщения: url - путь в API «Узла» (/v1/attachments/<id>), файл отдаётся по ключу бота.
+export interface UzelAttachment {
+  kind: string; id?: string; mimeType?: string | null; byteSize?: number | null; durationSeconds?: number | null;
+  state?: string; url?: string;
 }
 export interface UzelDialog {
   id: string; chatId: string; contactName: string | null; assignedUserId: string | null;
@@ -57,6 +62,13 @@ export class UzelClient {
     const r = await this.req("GET", `/v1/dialogs/${encodeURIComponent(id)}/messages?limit=${limit}`);
     if (r.status !== 200) throw new Error(`Узел: история ${r.status}`);
     return r.json.data as UzelMessage[];
+  }
+  /** Файл вложения (голосовое, фото, документ) - для разбора заявок. */
+  async download(path: string): Promise<{ bytes: Uint8Array; mime: string }> {
+    if (!path.startsWith("/v1/attachments/")) throw new Error("Узел: не путь вложения");
+    const res = await this.f(this.base + path, { headers: { authorization: "Bearer " + this.key }, signal: AbortSignal.timeout(30_000) });
+    if (res.status !== 200) { await res.body?.cancel(); throw new Error(`Узел: вложение ${res.status}`); }
+    return { bytes: new Uint8Array(await res.arrayBuffer()), mime: res.headers.get("content-type") ?? "" };
   }
   async channels(): Promise<{ id: string }[]> {
     const r = await this.req("GET", "/v1/channels");

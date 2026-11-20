@@ -8,6 +8,7 @@ export interface LeadReport {
   ok: boolean; error?: string; message?: string;
   received: number; processed: number; in_work: number; ignored: number; other_city: number; sales: number;
   revenue: number; no_reply: number; no_order: number; avg_check: number | null; reply_median_min: number | null;
+  internal?: number;   // 0063: служебные разговоры (цех, курьер, точки, поставщики) - в цифры не входят
   reasons: { reason: string; n: number }[];
 }
 export interface SmmDeps {
@@ -39,6 +40,7 @@ export function summaryText(r: LeadReport, from: string, to: string, officeUrl: 
   ];
   if (r.reply_median_min != null) lines.push(`Первый ответ продавца: ${r.reply_median_min} мин (медиана)`);
   if (r.reasons.length) lines.push("", "Почему не заказали: " + r.reasons.map((x) => `${x.reason} - ${x.n}`).join("; "));
+  if (r.internal) lines.push("", `Не считались: служебные разговоры (цех, курьер, точки, поставщики) - ${r.internal}`);
   if (!r.received) lines.push("", "Обращений не было.");
   lines.push("", `Подробно по каждой заявке: ${officeUrl}`);
   return lines.join("\n");

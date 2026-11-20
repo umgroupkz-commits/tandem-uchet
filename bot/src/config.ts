@@ -2,6 +2,8 @@
 export interface Config {
   uzelBase: string; uzelKey: string; uzelWebhookSecret: string;
   uchetUrl: string; uchetKey: string; anthropicKey: string; model: string;
+  /** Ключ Groq для расшифровки голосовых в разборе заявок; пусто - голосовые разбору не слышны. */
+  groqKey: string;
   tgToken: string; tgWebhookSecret: string; telegramOwnerId: number;
   databaseUrl: string; publicBase: string; port: number;
   /** BOT_MODE=silent — бот слушает и записывает, но никому не пишет. Замок сильнее настроек учёта:
@@ -27,7 +29,7 @@ export function loadConfig(env: Record<string, string | undefined>): Config {
     uzelBase: env.UZEL_BASE_URL!.replace(/\/$/, ""), uzelKey: env.UZEL_API_KEY!,
     uzelWebhookSecret: env.UZEL_WEBHOOK_SECRET ?? "",
     uchetUrl: env.UCHET_API_URL!, uchetKey: env.UCHET_SERVICE_KEY!, anthropicKey: env.ANTHROPIC_API_KEY ?? "",
-    model: env.BOT_MODEL || "claude-sonnet-5-5",
+    model: env.BOT_MODEL || "claude-sonnet-5-5", groqKey: env.GROQ_API_KEY ?? "",
     tgToken: env.TELEGRAM_BOT_TOKEN ?? "", tgWebhookSecret: env.TELEGRAM_WEBHOOK_SECRET ?? "",
     telegramOwnerId: env.TELEGRAM_OWNER_ID ? num("TELEGRAM_OWNER_ID", env.TELEGRAM_OWNER_ID) : 0,
     databaseUrl: env.DATABASE_URL!, publicBase: env.PUBLIC_BASE_URL!.replace(/\/$/, ""),
