@@ -4,7 +4,7 @@
 import fs from "node:fs";
 import { execFileSync } from "node:child_process";
 
-const API = process.env.TANDEM_API_URL || "https://qeehxcnnuzuwskznhdyg.supabase.co/functions/v1/uchet";
+const API = process.env.TANDEM_API_URL || "https://uchet.eneshka.kz/";   // рабочая база (PS.kz) с 20.11.2026; Supabase - тестовая
 const key = process.env.TANDEM_SERVICE_KEY || fs.readFileSync("data/service_key.txt", "utf8").trim();
 const res = await fetch(API, { method: "POST", headers: { "content-type": "application/json" },
   body: JSON.stringify({ action: "schema_snapshot", payload: { service_key: key } }) });
