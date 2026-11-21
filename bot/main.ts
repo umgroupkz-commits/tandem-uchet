@@ -20,7 +20,7 @@ const uzel = new UzelClient(cfg.uzelBase, cfg.uzelKey);
 const uchet = new Uchet(cfg.uchetUrl, cfg.uchetKey);
 const tg = new Telegram(cfg.tgToken);
 // Сводка по заявкам WhatsApp для группы СММ (src/smm.ts): группу назначает владелец командой /smm.
-const smm = new SmmReports({ uchet, tg, store, now: () => new Date(), officeUrl: "https://umgroupkz-commits.github.io/tandem-uchet/office.html" });
+const smm = new SmmReports({ uchet, tg, store, now: () => new Date(), officeUrl: "https://uchet.eneshka.kz/office.html" });
 const cards = new Cards({ tg, uchet, store, ownerId: cfg.telegramOwnerId, smm });
 const base = { uchet, uzel, store, model: new ClaudeModel(cfg.anthropicKey), modelName: cfg.model, now: () => new Date(), uuid: () => crypto.randomUUID() };
 // Бот отвечает клиентам, только если молчать не велит ни один из трёх уровней: BOT_MODE в bot.env (замок на
