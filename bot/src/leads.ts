@@ -159,7 +159,7 @@ export class Leads {
         { type: "text", text: `Сейчас ${nowText(now)} (Темиртау).${hint}\n\n# Переписка\n${lines.join("\n")}` },
         ...[...files.values()].flatMap((f) => [{ type: "text", text: `Вложение клиента: ${f.label}` }, f.block]),
       ] }],
-      output_config: { effort: "medium", format: { type: "json_schema", schema: ANALYSIS_SCHEMA } },
+      output_config: { effort: "high", format: { type: "json_schema", schema: ANALYSIS_SCHEMA } },
       betas: ["server-side-fallback-2026-07-01"], fallbacks: "default",
     });
     if (r.stop_reason === "refusal" || r.stop_reason === "max_tokens") throw new Error("модель не дала разбор: " + r.stop_reason);
@@ -172,7 +172,24 @@ export class Leads {
     await this.push(done, a);
     await this.d.store.saveLead(done);
     await this.d.store.setState(digestKey(l.dialog_id, l.episode_start),
-      { outcome: a.outcome, total: a.total, for_date: a.for_date, summary: a.summary.slice(0, 300) } satisfies Digest);
+      { outcome: a.outcome, total: a.total, for_date: a.for_date, summary: a.summary.slice(0, 300), analysis: a } satisfies Digest);
+    // Продолжение назвало окончательную сумму прошлого заказа (клиентка убрала часть позиций, «к оплате 26900») -
+    // сумма исправляется в самом заказе, а не остаётся первоначальной (20.11.2026: 47 500 вместо 26 900).
+    const finalSum = Math.round(Number(raw.total_stated));
+    if (a.outcome === "followup" && finalSum > 0) {
+      const earlier = (await this.d.store.dialogLeads(l.dialog_id)).filter((p) => Date.parse(p.episode_start) < Date.parse(l.episode_start));
+      for (const p of earlier.reverse()) {
+        const dg = await this.d.store.getState<Digest>(digestKey(p.dialog_id, p.episode_start));
+        if (dg?.outcome !== "order" || !dg.analysis) continue;
+        if (dg.total !== finalSum) {
+          const fixed: Analysis = { ...dg.analysis, total: finalSum };
+          await this.push(p, fixed);
+          await this.d.store.setState(digestKey(p.dialog_id, p.episode_start), { ...dg, total: finalSum, analysis: fixed });
+          await this.d.store.journal("analysis", p.dialog_id, `сумма заказа исправлена продолжением: ${dg.total ?? "-"} -> ${finalSum} ₸`);
+        }
+        break;
+      }
+    }
     // Контакт впервые оказался служебным - его прошлые разговоры (за неделю) разбираются заново со справкой.
     // Только в первый раз: иначе разговоры одного контакта перезапускали бы друг друга бесконечно.
     if (a.outcome === "internal" && !knownInternal) {
@@ -222,7 +239,7 @@ export function episodeSlice(sorted: UzelMessage[], start: number): UzelMessage[
   return out;
 }
 
-interface Digest { outcome: Outcome; total: number | null; for_date: string | null; summary: string }
+interface Digest { outcome: Outcome; total: number | null; for_date: string | null; summary: string; analysis?: Analysis }
 const digestKey = (dialogId: string, start: string) => `lead_digest:${dialogId}:${start}`;
 const OUTCOME_RU: Record<string, string> = { order: "заказ", no_order: "не заказал", unclear: "непонятно", internal: "служебный",
   followup: "продолжение прошлого заказа" };
@@ -252,7 +269,8 @@ export function menuForAnalysis(menu: Menu): string {
 export const ANALYZE_RULES = `Ты разбираешь переписку в WhatsApp между клиентом и продавцом «Енешки» (Темиртау: татарские пироги, выпечка, полуфабрикаты). Бот клиенту не отвечал, разговор вёл человек. Нужен итог для отчёта рекламщикам.
 stage - где разговор сейчас: "done" - итог ясен (договорились о заказе или клиент отказался, или разговор не о заказе); "in_work" - не закончен: клиент думает, уточняют детали, ждут ответа продавца или клиента; "ignored" - продавец ответил, а клиент пропал, так и не сказав, берёт или нет.
 city - город клиента, только если он сам его назвал или назвал адрес в нём; иначе пустая строка. other_city - true, если это не Темиртау и не Караганда (туда не возим); не назвал город - false.
-outcome: "order" - договорились о заказе: понятно, что берут, и продавец его принял (подтвердил, назвал сумму или время). "no_order" - клиент спрашивал или собирался, но не заказал, или разговор вообще не о заказе. "unclear" - нельзя понять: договорились звонком, переписка оборвана, заказ под вопросом. "internal" - пишет не покупатель: свои сотрудники, курьер, цех; магазины и точки, куда Енешка сдаёт товар (Шик, Аян, Принцип, рынок 6 мкр и другие), их ежедневные заявки и сверки; поставщики; предложения рекламы и сотрудничества, рассылки. Такие разговоры в отчёт о заявках не идут, items для них - пустой. "followup" - клиент продолжает заказ из прошлого обращения (см. «Прошлые обращения этого клиента»): оплачивает его, присылает чек, уточняет время или адрес, спрашивает, где доставка, благодарит за полученное. Это не новый заказ; items пустой. Если сверх прошлого заказа он заказывает что-то новое - это order только на новое.
+outcome: "order" - договорились о заказе: понятно, что берут, и продавец его принял (подтвердил, назвал сумму или время). "no_order" - клиент спрашивал или собирался, но не заказал, или разговор вообще не о заказе. "unclear" - нельзя понять: договорились звонком, переписка оборвана, заказ под вопросом. "internal" - пишет не покупатель: свои сотрудники, курьер, цех; магазины и точки, куда Енешка сдаёт товар (Шик, Аян, Принцип, рынок 6 мкр и другие), их ежедневные заявки и сверки; поставщики; предложения рекламы и сотрудничества, рассылки. Такие разговоры в отчёт о заявках не идут, items для них - пустой. "followup" - клиент продолжает заказ из прошлого обращения (см. «Прошлые обращения этого клиента»): оплачивает его, присылает чек, уточняет время или адрес, спрашивает, где доставка, благодарит за полученное. Это не новый заказ; items пустой; total_stated - окончательная сумма к оплате прошлого заказа, если продавец назвал её здесь («к оплате 26900»), иначе 0. Если сверх прошлого заказа он заказывает что-то новое - это order только на новое.
+order - только когда заказ принят: продавец подтвердил его или назвал итог, дату, время, и клиент не отказался. «Хочу заказать сет» и вопрос продавца «на какое число?», на который клиент не ответил, - это не order, а unclear (stage ignored).
 Голосовые расшифрованы автоматически: «[голосовое] расшифровка: «…»». В расшифровке бывают ошибки в словах - бери смысл. Голосовое без расшифровки - содержание неизвестно. Фото и документы клиента приложены после переписки с теми же номерами, что в строках «[фото №1]», «[документ №1]» - смотри их: чек или квитанция об оплате (Kaspi, Halyk) - заказ оплачен; скрин рекламы или поста - видно, что хотят; фото прошлого заказа - что повторить.
 items: позиции заказа (для no_order - что клиент хотел, если ясно; для unclear - что обсуждали). item_code - код из меню в квадратных скобках, только если позиция совпадает точно; нет в меню или не ясно какая - пустая строка. title - как назвали. qty - количество в единице меню (кг или шт); «пачка» и «0,7» - это позиции «пачка 0,7 кг» по 1 шт.
 Чек об оплате от клиента (Kaspi, Halyk) - это заказ (order), даже если состав в переписке не назван (договорились раньше или звонком): total_stated = сумма чека, если продавец не называл другой итог. Исключение - чек за заказ, который уже договорён в этой же переписке: это тот же заказ, не второй.
@@ -264,19 +282,22 @@ summary - одна-две фразы по-русски: что хотел кли
 
 export const ANALYSIS_SCHEMA = {
   type: "object", additionalProperties: false,
-  required: ["outcome", "stage", "city", "other_city", "items", "total_stated", "kind", "for_date", "reason", "summary"],
+  // Порядок полей - порядок, в котором модель их пишет: сначала что было (summary), потом вывод (outcome).
+  // Когда outcome шёл первым, модель решала до того, как описала разговор: «хочу сет» без ответа клиента
+  // становилось заказом, а summary тут же говорило «клиент не ответил» (20.11.2026).
+  required: ["summary", "items", "total_stated", "kind", "for_date", "city", "other_city", "outcome", "stage", "reason"],
   properties: {
-    outcome: { type: "string", enum: ["order", "no_order", "unclear", "internal", "followup"] },
-    stage: { type: "string", enum: ["in_work", "ignored", "done"] },
-    city: { type: "string" },
-    other_city: { type: "boolean" },
+    summary: { type: "string" },
     items: { type: "array", items: { type: "object", additionalProperties: false, required: ["item_code", "title", "qty"],
       properties: { item_code: { type: "string" }, title: { type: "string" }, qty: { type: "number" } } } },
     total_stated: { type: "number" },
     kind: { type: "string", enum: ["delivery", "pickup", "unknown"] },
     for_date: { type: "string" },
+    city: { type: "string" },
+    other_city: { type: "boolean" },
+    outcome: { type: "string", enum: ["order", "no_order", "unclear", "internal", "followup"] },
+    stage: { type: "string", enum: ["in_work", "ignored", "done"] },
     reason: { type: "string" },
-    summary: { type: "string" },
   },
 };
 

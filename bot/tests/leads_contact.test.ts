@@ -63,3 +63,23 @@ Deno.test("разбор: разбор видит итог прошлых обр�
   assertEquals([a.outcome, a.total, a.stage], ["followup", null, "done"]);
   assert(!JSON.stringify(model.requests[0].messages).includes("Прошлые обращения"), "у первого обращения прошлых нет");
 });
+
+Deno.test("разбор: продолжение с окончательной суммой исправляет сумму прошлого заказа", async () => {
+  const h = [msg("a1", "in", "Беру всё по списку", "2026-11-14T10:00:00Z"), msg("a2", "out", "Итог 47500", "2026-11-14T10:05:00Z"),
+    msg("b1", "in", "Наличкой", "2026-11-17T08:35:00Z"), msg("b2", "out", "К оплате 26900", "2026-11-17T08:36:00Z")];
+  const store = new MemStore();
+  const follow = { content: [text(JSON.stringify({ outcome: "followup", stage: "done", city: "", other_city: false, items: [],
+    total_stated: 26900, kind: "unknown", for_date: "", reason: "", summary: "продолжение, к оплате 26900" }))], stop_reason: "end_turn" };
+  const model = new ScriptModel([verdict("order", "заказ полуфабрикатов"), follow] as never);
+  const pushed: Record<string, unknown>[] = [];
+  const leads = new Leads({ store, model, modelName: "m", now: () => new Date("2026-11-17T12:00:00Z"),
+    uzelApi: { messages: () => Promise.resolve(h) },
+    uchet: { menu: () => Promise.resolve(MENU), leadUpsert: (p) => { pushed.push(p); return Promise.resolve({ ok: true }); } } });
+  await leads.sync({ id: "d3", phone: "77011234567", name: "А" }, h);
+  assertEquals(await leads.analyzeDue(), 2);
+  const fixes = pushed.filter((p) => p.episode_start === "2026-11-14T10:00:00.000Z" && p.analysis);
+  assertEquals((fixes.at(-1)!.analysis as { outcome: string; total: number }).total, 26900, "сумма заказа - окончательная");
+  assertEquals((fixes.at(-1)!.analysis as { outcome: string }).outcome, "order");
+  const last = pushed.at(-1)!;
+  assert(last.episode_start === "2026-11-14T10:00:00.000Z" || (last.analysis as { total: number | null }).total === null);
+});
