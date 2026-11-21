@@ -1,6 +1,6 @@
-import { api, session, LONG_MS } from "../office/api.js?v=31";
-import { el, fmt, toast, debounce, today } from "../office/ui.js?v=31";
-import { fmtMoney, fmtDate } from "../office/inputs.js?v=31";
+import { api, session, LONG_MS } from "../office/api.js?v=32";
+import { el, fmt, toast, debounce, today } from "../office/ui.js?v=32";
+import { fmtMoney, fmtDate } from "../office/inputs.js?v=32";
 
 // ---------------------------------------------------------------- единый слой вызовов
 // Экраны склада не разбирают ответ сервера сами: ask() возвращает уже удачный ответ,

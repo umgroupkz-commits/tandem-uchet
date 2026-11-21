@@ -1,5 +1,5 @@
 -- Полный снимок схемы учёта Тандем KZ (схема tandem + функции public.tandem_*).
--- Снят из боевой базы каталогом PostgreSQL 2026-11-20 запросом db/schema/snapshot-query.sql
+-- Снят из боевой базы каталогом PostgreSQL 2026-11-21 запросом db/schema/snapshot-query.sql
 -- и собран tools/build-schema-snapshot.mjs. Данных не содержит.
 -- Назначение: поднять пустую базу на собственном сервере одной командой
 --   psql -v ON_ERROR_STOP=1 -f db/schema/tandem_full.sql
@@ -708,7 +708,7 @@ alter table tandem.wa_leads add constraint wa_leads_client_phone_check CHECK ((c
 alter table tandem.wa_leads add constraint wa_leads_dialog_id_episode_start_key UNIQUE (dialog_id, episode_start);
 alter table tandem.wa_leads add constraint wa_leads_kind_check CHECK ((kind = ANY (ARRAY['delivery'::text, 'pickup'::text])));
 alter table tandem.wa_leads add constraint wa_leads_lang_check CHECK ((lang = ANY (ARRAY['ru'::text, 'kz'::text])));
-alter table tandem.wa_leads add constraint wa_leads_outcome_check CHECK ((outcome = ANY (ARRAY['pending'::text, 'order'::text, 'no_order'::text, 'unclear'::text, 'internal'::text])));
+alter table tandem.wa_leads add constraint wa_leads_outcome_check CHECK ((outcome = ANY (ARRAY['pending'::text, 'order'::text, 'no_order'::text, 'unclear'::text, 'internal'::text, 'followup'::text])));
 alter table tandem.wa_leads add constraint wa_leads_pkey PRIMARY KEY (id);
 alter table tandem.wa_leads add constraint wa_leads_stage_check CHECK ((stage = ANY (ARRAY['in_work'::text, 'ignored'::text, 'done'::text])));
 
@@ -4645,7 +4645,7 @@ begin
   exception when others then return tandem.err('validation', 'Неверное время обращения'); end;
   if v_start is null then return tandem.err('validation', 'Нет времени обращения'); end if;
   if v_phone is not null and v_phone !~ '^[0-9]{10,15}$' then v_phone := null; end if;
-  if a is not null and (coalesce(a->>'outcome', '') not in ('order', 'no_order', 'unclear', 'internal')
+  if a is not null and (coalesce(a->>'outcome', '') not in ('order', 'no_order', 'unclear', 'internal', 'followup')
                         or coalesce(a->>'stage', '') not in ('in_work', 'ignored', 'done')) then
     return tandem.err('validation', 'Итог разбора не из списка');
   end if;
@@ -5459,7 +5459,7 @@ begin
     return (
       with l as (select *, (episode_start at time zone 'UTC' + interval '5 hours')::date as d,
                         (outcome = 'pending' or stage = 'in_work') as is_work
-                   from tandem.wa_leads where episode_start >= t0 and episode_start < t1 and outcome <> 'internal'),
+                   from tandem.wa_leads where episode_start >= t0 and episode_start < t1 and outcome not in ('internal', 'followup')),
       days as (select d, count(*) received,
                       count(*) filter (where first_reply_at is not null) processed,
                       count(*) filter (where is_work) in_work,
@@ -5481,6 +5481,7 @@ begin
         'no_order',   (select count(*) from l where outcome = 'no_order'),
         'unclear',    (select count(*) from l where outcome = 'unclear'),
         'internal',   (select count(*) from tandem.wa_leads where outcome = 'internal' and episode_start >= t0 and episode_start < t1),
+        'followup',   (select count(*) from tandem.wa_leads where outcome = 'followup' and episode_start >= t0 and episode_start < t1),
         'avg_check',  (select round(avg(total)) from l where outcome = 'order' and total is not null),
         'reply_median_min', (select round(percentile_cont(0.5) within group (order by extract(epoch from first_reply_at - episode_start) / 60))
                                from l where first_reply_at is not null),

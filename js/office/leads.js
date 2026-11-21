@@ -1,9 +1,9 @@
 // Раздел «Заявки WhatsApp» (0061): обращения клиентов Енешки и итог разбора переписки ботом - для рекламы.
 // Бот молча читает разговор клиента с продавцом и пишет: был ли заказ, что заказали, сумма, время первого
 // обращения. Смотрят СММ (роль smm - только этот раздел), собственник и администратор. Обновляется сам.
-import { api } from "./api.js?v=31";
-import { el, errText, today, isoDate } from "./ui.js?v=31";
-import { fmtDate, fmtDateTime, fmtMoney } from "./inputs.js?v=31";
+import { api } from "./api.js?v=32";
+import { el, errText, today, isoDate } from "./ui.js?v=32";
+import { fmtDate, fmtDateTime, fmtMoney } from "./inputs.js?v=32";
 
 const OUTCOME = { order: "заказ", no_order: "не заказали", unclear: "непонятно", pending: "разговор идёт", internal: "служебная",
   followup: "продолжение заказа" };

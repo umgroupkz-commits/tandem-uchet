@@ -1,10 +1,10 @@
-import { api, can } from "./api.js?v=31";
-import { el, fmt, toast, debounce, modal, confirmDlg, errText, saveFailed } from "./ui.js?v=31";
-import { loadXlsx } from "./stock.js?v=31";
-import { numInput, parseNum, fmtDate, fmtMoney } from "./inputs.js?v=31";
+import { api, can } from "./api.js?v=32";
+import { el, fmt, toast, debounce, modal, confirmDlg, errText, saveFailed } from "./ui.js?v=32";
+import { loadXlsx } from "./stock.js?v=32";
+import { numInput, parseNum, fmtDate, fmtMoney } from "./inputs.js?v=32";
 // hooks.editDoc ставит stock.js при загрузке (он уже импортирован выше ради loadXlsx): ссылка на приход
 // из карточки открывает тот же документ, что и журнал склада.
-import { hooks, stores, setStores } from "./stock-common.js?v=31";
+import { hooks, stores, setStores } from "./stock-common.js?v=32";
 
 const TYPES = { goods: "товар", dish: "блюдо", prepared: "полуфабрикат", service: "услуга" };
 let groups = [], state = { q: "", group_id: "", item_type: "", active: "true", page: 1 };

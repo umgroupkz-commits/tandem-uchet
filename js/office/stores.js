@@ -1,5 +1,5 @@
-import { api, can } from "./api.js?v=31";
-import { el, toast, modal, errText, saveFailed, confirmDlg, fmt } from "./ui.js?v=31";
+import { api, can } from "./api.js?v=32";
+import { el, toast, modal, errText, saveFailed, confirmDlg, fmt } from "./ui.js?v=32";
 
 let root, data, pts;
 // Склады — по алфавиту, выключенные внизу: «Учебный склад кухни» стоял последним из 30 в порядке точек.
