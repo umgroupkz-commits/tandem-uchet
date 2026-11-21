@@ -1,5 +1,5 @@
-import { api, session } from "./api.js?v=30";
-import { el, toast, modal, errText } from "./ui.js?v=30";
+import { api, session } from "./api.js?v=31";
+import { el, toast, modal, errText } from "./ui.js?v=31";
 
 const ROLES = { admin: "администратор", owner: "собственник", accountant: "бухгалтер", technologist: "технолог", storekeeper: "кладовщик", smm: "СММ (заявки WhatsApp)" };
 // Склады — полным списком, с выключенными: склад, закреплённый за пользователем и потом
