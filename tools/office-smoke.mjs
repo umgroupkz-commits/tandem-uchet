@@ -360,8 +360,17 @@ SECTIONS.users = async (ctx) => {
   check("пользователи: список", r.ok && r.users.some((u) => u.login === "admin")
     && ["admin", "owner", "accountant", "technologist", "storekeeper"].every((x) => r.roles.includes(x)), r);
   const me = r.users.find((u) => u.login === ctx.login);
-  r = await call("office_user_save", { token: t, id: me.id, login: me.login, name: me.name, role: "owner" });
-  check("последнего администратора нельзя понизить — validation", r.ok === false && r.error === "validation", r);
+  // «Последнего администратора нельзя понизить» проверяется, только если он и правда последний. В рабочей базе
+  // администраторов два (admin и andrey): понижение проходит, и 22.11.2026 тест на её копии понизил admin до
+  // собственника - на живой базе (smoke-live.ps1) было бы то же самое. Вернуть роль после понижения тест не может:
+  // собственник администратора не назначает.
+  const admins = r.users.filter((u) => u.role === "admin" && u.active !== false && !u.training);
+  if (admins.length === 1 && admins[0].login === ctx.login) {
+    r = await call("office_user_save", { token: t, id: me.id, login: me.login, name: me.name, role: "owner" });
+    check("последнего администратора нельзя понизить — validation", r.ok === false && r.error === "validation", r);
+  } else {
+    console.log(`  skip последнего администратора нельзя понизить — администраторов ${admins.length}, понижать не стал`);
+  }
   r = await call("office_user_save", { token: t, login: "zz_test_sklad", name: "ZZ_TEST_Кладовщик", role: "storekeeper", pin: TP });
   check("пользователь: создание", r.ok && r.id, r);
   const uid = r.id;
@@ -417,7 +426,7 @@ SECTIONS.users = async (ctx) => {
         "doc:production:edit", "doc:production:view", "doc:transfer:edit", "doc:transfer:view",
         "doc:sale:edit", "doc:sale:view", "doc:writeoff:edit", "doc:writeoff:view",
         "nomenclature:edit", "nomenclature:view", "stock:edit", "stock:view", "stores:edit", "stores:view",
-        "users:edit", "users:view"] },
+        "users:edit", "users:view", "leads:view"] },   // leads:view - раздел «Заявки WhatsApp» (0061)
     zz_test_buh: { role: "accountant", name: "ZZ_TEST_Бухгалтер",
       perms: ["charts:view", "clients:view", "counteragents:edit", "counteragents:view",
         "doc:invoice_in:edit", "doc:invoice_in:view", "doc:sale:edit", "doc:sale:view", "nomenclature:view", "stock:edit", "stock:view", "stores:view"] },
@@ -1607,7 +1616,21 @@ SECTIONS.training = async (ctx) => {
 };
 
 // Меню заказов клиентов (миграция 0049): своя цена, отметка «сверена», стоп-лист, меню для бота.
+// Разделы бота (cmenu, corders, corders_kitchen) зовут bot_* ключом бота: в базе с заданным bot_key_hash служебный
+// ключ для них не годится. Без TANDEM_BOT_KEY такие разделы пропускаются: на живой базе десятки отказов подряд
+// запирали бы вход с этого адреса на 10 минут (счётчик неверных кодов по IP).
+let botKeyChecked = null;
+async function botKeyOk(section) {
+  if (botKeyChecked === null) {
+    const r = await call("bot_menu", {});
+    botKeyChecked = !(r.ok === false && r.error === "forbidden");
+  }
+  if (!botKeyChecked) console.log(`  skip раздел ${section} — ключ бота не подошёл (задайте TANDEM_BOT_KEY)`);
+  return botKeyChecked;
+}
+
 SECTIONS.cmenu = async (ctx) => {
+  if (!(await botKeyOk("cmenu"))) return;
   const t = ctx.token;
   let r = await call("office_item_save", { token: t, name: "ZZ_TEST_пирог меню", item_type: "dish", unit_id: "кг", for_sale: true, price: 1600 }); const pie = r.code;
   r = await call("office_item_save", { token: t, name: "ZZ_TEST_мука меню", item_type: "goods", unit_id: "кг" }); const muka = r.code;
@@ -1673,6 +1696,7 @@ SECTIONS.cmenu = async (ctx) => {
 };
 
 SECTIONS.corders = async (ctx) => {
+  if (!(await botKeyOk("corders"))) return;
   const t = ctx.token;
   const pin = process.env.TANDEM_OWNER_PIN || "";
   if (!pin) { console.log("  пропуск: нужен TANDEM_OWNER_PIN (действия точки — кодом)"); return; }
@@ -1775,7 +1799,11 @@ SECTIONS.corders = async (ctx) => {
   r = await P("check_list", { date: iso(0) });
   check("касса: чек заказа в списке на 10 000", r.ok !== false && JSON.stringify(r).includes(o1.uid) , null);
 
-  r = await call("bot_order_create", { ...base, uid: uid(), kind: "delivery", address: "ZZ_TEST ул. Мира 1", client_phone: phone, client_name: "ZZ_TEST_Клиент" });
+  // Доставка - от суммы client_min_order из настроек базы (в рабочей 10 000 ₸, в песочнице меньше): белешей столько,
+  // чтобы заказ прошёл минимум (1,5 кг × 4500 = 6750 + 500 за штуку).
+  const belQty = Math.max(2, Math.ceil((Number(S.client_min_order || 0) - 6750) / 500));
+  r = await call("bot_order_create", { ...base, lines: [{ item_code: pie, qty: 1.5 }, { item_code: bel, qty: belQty }],
+    uid: uid(), kind: "delivery", address: "ZZ_TEST ул. Мира 1", client_phone: phone, client_name: "ZZ_TEST_Клиент" });
   const o2 = r.order;
   check("доставка: создана", r.ok && o2.kind === "delivery", r);
   r = await call("bot_card_status", { order_id: o2.id, to: "awaiting_prepay", by_name: "ZZ_TEST_телеграм" });
@@ -1818,6 +1846,7 @@ SECTIONS.corders = async (ctx) => {
 };
 
 SECTIONS.corders_kitchen = async (ctx) => {
+  if (!(await botKeyOk("corders_kitchen"))) return;
   const t = ctx.token;
   const pin = process.env.TANDEM_OWNER_PIN || "";
   if (!pin) { console.log("  пропуск: нужен TANDEM_OWNER_PIN"); return; }
