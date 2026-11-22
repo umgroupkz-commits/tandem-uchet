@@ -72,8 +72,19 @@ if (!creds && process.env.TANDEM_TRAINING_CODE) {
 if (!creds) { console.error("нет учёток: задайте TOUR_CREDS или TANDEM_TRAINING_CODE"); process.exit(2); }
 await js(`localStorage.setItem("tandem_training", ${JSON.stringify(JSON.stringify({ creds, at: new Date().toISOString() }))}); return true;`);
 
+// Между уроками страница может ещё перезагружаться (урок кончается выходом): ждём движок уроков, а не падаем всем
+// прогоном - 22.11.2026 прогон роли sklad оборвался на третьем уроке «TandemTour is not defined».
+async function tourReady() {
+  for (let i = 0; i < 40; i++) {
+    try { if (await js(`return typeof TandemTour !== "undefined" && document.readyState === "complete"`)) return true; } catch { /* страница меняется */ }
+    await sleep(500);
+  }
+  return false;
+}
+
 // Список уроков: id или role:<роль> (все уроки роли по порядку).
 let ids = [];
+await tourReady();
 for (const a of args) {
   if (a.startsWith("role:")) ids.push(...(await js(`return TandemTour.lessons(${JSON.stringify(a.slice(5))}).map((l) => l.id)`)) || []);
   else ids.push(a);
@@ -81,6 +92,7 @@ for (const a of args) {
 let ok = 0, bad = 0;
 for (const id of ids) {
   events.length = 0;
+  if (!(await tourReady())) { console.log(`FAIL ${id}: движок уроков не загрузился за 20 с`); bad++; continue; }
   const info = await js(`const l = TandemTour.lessons().find((x) => x.id === ${JSON.stringify(id)}); return l ? {page: l.page, mobile: !!l.mobile, n: l.steps.length} : null`);
   if (!info) { console.log(`FAIL ${id}: урока нет`); bad++; continue; }
   // Узкий экран (TOUR_WIDTH < 500) или урок для телефона — настоящая эмуляция: окно без рамки уже 500 px не сжимается.

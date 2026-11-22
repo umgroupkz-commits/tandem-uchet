@@ -1,8 +1,8 @@
 // Раздел «Заказы клиентов» (0049–0051): меню заказов для бота со своей ценой и отметкой «цена сверена»,
 // список заказов с журналом, настройки окон готовности и доставки. Права — раздел clients.
-import { api, can, session } from "./api.js?v=32";
-import { el, toast, errText, modal, today } from "./ui.js?v=32";
-import { itemPicker, fmtDate, fmtMoney } from "./inputs.js?v=32";
+import { api, can, session } from "./api.js?v=33";
+import { el, toast, errText, modal, today } from "./ui.js?v=33";
+import { itemPicker, fmtDate, fmtMoney } from "./inputs.js?v=33";
 
 const UNITS = ["кг", "шт", "сет"];
 const READY = { fresh: "печём под заказ", stock: "с витрины" };

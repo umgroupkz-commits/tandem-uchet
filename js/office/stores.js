@@ -1,5 +1,5 @@
-import { api, can } from "./api.js?v=32";
-import { el, toast, modal, errText, saveFailed, confirmDlg, fmt } from "./ui.js?v=32";
+import { api, can } from "./api.js?v=33";
+import { el, toast, modal, errText, saveFailed, confirmDlg, fmt } from "./ui.js?v=33";
 
 let root, data, pts;
 // Склады — по алфавиту, выключенные внизу: «Учебный склад кухни» стоял последним из 30 в порядке точек.
@@ -188,7 +188,7 @@ function editPoint(x) {
   setModeHint();
   const le = el("select", { disabled: ro }, el("option", { value: "" }, "—"),
     ...pts.legal_entities.map((v) => el("option", { value: v, selected: x && x.legal_entity === v }, v)));
-  const pin = el("input", { inputmode: "numeric", autocomplete: "off", readonly: ro, placeholder: x && x.has_pin ? "не менять" : "4–8 цифр" });
+  const pin = el("input", { inputmode: "numeric", autocomplete: "off", readonly: ro, placeholder: x && x.has_pin ? "не менять" : "6-8 цифр" });   // 0068: новые коды точек от 6 цифр
   const active = el("input", { type: "checkbox", checked: x ? x.active : true, disabled: ro });
   const chosen = new Set(x ? x.item_categories : []);
   const cats = el("div", { class: "cats" }, ...pts.categories.map((c) => el("label", { class: "chk" },

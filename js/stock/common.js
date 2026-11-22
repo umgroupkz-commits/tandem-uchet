@@ -1,6 +1,6 @@
-import { api, session, LONG_MS } from "../office/api.js?v=32";
-import { el, fmt, toast, debounce, today } from "../office/ui.js?v=32";
-import { fmtMoney, fmtDate } from "../office/inputs.js?v=32";
+import { api, session, LONG_MS } from "../office/api.js?v=33";
+import { el, fmt, toast, debounce, today } from "../office/ui.js?v=33";
+import { fmtMoney, fmtDate } from "../office/inputs.js?v=33";
 
 // ---------------------------------------------------------------- единый слой вызовов
 // Экраны склада не разбирают ответ сервера сами: ask() возвращает уже удачный ответ,
@@ -311,6 +311,45 @@ export function confirmMinus(warnings, lines, storeName) {
     function onKey(e) {
       if (e.key === "Escape") { e.preventDefault(); close(false); return; }
       // Фокус не уходит из окна: Tab ходит между двумя кнопками.
+      if (e.key === "Tab") { e.preventDefault(); (document.activeElement === fix ? go : fix).focus(); }
+    }
+    fix.addEventListener("click", () => close(false));
+    go.addEventListener("click", () => close(true));
+    ov.addEventListener("click", (e) => { if (e.target === ov) close(false); });
+    document.addEventListener("keydown", onKey, true);
+    if (shell) shell.inert = true;
+    document.body.append(ov);
+    fix.focus({ preventScroll: true });
+  });
+}
+
+// ---------------------------------------------------------------- вопрос перед проведением
+// Окно самой программы, как «Уйдут в минус»: главная кнопка и фокус - безопасный ответ (no), второстепенная -
+// «сделать всё равно» (yes); Esc и касание фона - тоже безопасный ответ. Системное «ОК / Отмена» по привычке
+// подтверждают не глядя. Возвращает Promise<boolean>: true - yes.
+export function askSheet({ title, lines = [], note = "", no = "Не проводить", yes = "Провести всё равно" }) {
+  return new Promise((resolve) => {
+    const fix = el("button", { type: "button", class: "big" }, no);
+    const go = el("button", { type: "button", class: "ghost" }, yes);
+    const box = el("div", { class: "sheet", role: "alertdialog", "aria-modal": "true", "aria-labelledby": "q_title" },
+      el("h2", { id: "q_title" }, title),
+      ...lines.map((t) => el("div", { class: "warnbox" }, t)),
+      note ? el("div", { class: "dim", style: "margin-top:8px" }, note) : null,
+      el("div", { class: "macts" }, fix, go));
+    const ov = el("div", { class: "sheet-bg" }, box);
+    const shell = document.getElementById("shell");
+    const back = document.activeElement;
+    let done = false;
+    function close(v) {
+      if (done) return; done = true;
+      document.removeEventListener("keydown", onKey, true);
+      ov.remove();
+      if (shell) shell.inert = false;
+      if (!v && back && back.focus && document.contains(back)) { try { back.focus({ preventScroll: true }); } catch {} }
+      resolve(v);
+    }
+    function onKey(e) {
+      if (e.key === "Escape") { e.preventDefault(); close(false); return; }
       if (e.key === "Tab") { e.preventDefault(); (document.activeElement === fix ? go : fix).focus(); }
     }
     fix.addEventListener("click", () => close(false));

@@ -1,6 +1,6 @@
-import { api, can } from "./api.js?v=32";
-import { el, fmt, toast, debounce, modal, confirmDlg, today, isoDate, errText } from "./ui.js?v=32";
-import { numInput, parseNum, numStr, enterNext, fmtDate, fmtMoney, itemPicker } from "./inputs.js?v=32";
+import { api, can, LONG_MS } from "./api.js?v=33";
+import { el, fmt, toast, debounce, modal, confirmDlg, today, isoDate, errText } from "./ui.js?v=33";
+import { numInput, parseNum, numStr, enterNext, fmtDate, fmtMoney, itemPicker, csvSafe } from "./inputs.js?v=33";
 
 const TYPES = { dish: "блюдо", prepared: "полуфабрикат", goods: "товар" };
 let root, table, pager, groups = [];
@@ -370,7 +370,7 @@ async function editChart(code, chartId) {
   async function print() {
     if (m.dirty && !confirmDlg("Карта не сохранена. Напечатать так, как сейчас на экране?")) return;
     let mod = null;
-    try { mod = await import("./print.js?v=32"); } catch { mod = null; }
+    try { mod = await import("./print.js?v=33"); } catch { mod = null; }
     if (!mod || typeof mod.printChart !== "function") { toast("Печать техкарты пока недоступна — обновите страницу позже", "bad"); return; }
     const k = calc();
     const ln = lines.map((l) => {
@@ -492,7 +492,8 @@ async function loadReport() {
   const out = host.querySelector(":scope > .out");
   const n = ++fcSeq;
   const req = { point_id: fc.point_id || null, group_id: fc.group_id || null, date: fc.date };
-  const r = await api("foodcost_report", req);
+  // Фудкост меню считается секунды, под нагрузкой дольше 20 с: обычный таймаут писал «Нет связи с сервером» (ревизия 22.11.2026)
+  const r = await api("foodcost_report", req, { timeout: LONG_MS });
   if (n !== fcSeq) return;
   fcData = null; fcBase = null;
   if (!r.ok) { out.innerHTML = ""; out.append(el("div", { class: "err" }, errText(r))); host.querySelector(".fc-info").textContent = ""; host.querySelector(".fc-csv").onclick = null; return; }
@@ -500,7 +501,7 @@ async function loadReport() {
   // (цена точки, а если её нет — общая); тогда сравниваем с отчётом по общим ценам: совпавшая цена
   // считается общей — так позиция с ценой точки, равной общей, в фильтр не попадёт (это видно в подсказке).
   if (req.point_id && !r.rows.some((x) => "point_price" in x)) {
-    const b = await api("foodcost_report", { ...req, point_id: null });
+    const b = await api("foodcost_report", { ...req, point_id: null }, { timeout: LONG_MS });
     if (n !== fcSeq) return;
     if (b.ok) fcBase = new Map(b.rows.map((x) => [x.code, x.price]));
   }
@@ -552,7 +553,9 @@ function drawReport() {
   // CSV — по текущему фильтру и сортировке, с русскими заголовками и названиями вместо кодов;
   // десятичная запятая и «;» — как читает русский Excel.
   csvBtn.onclick = async () => {
-    const cell = (v) => { const s = v == null ? "" : String(v); return /[;"\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+    // csvSafe: текст с = + - @ в начале Excel выполнил бы как формулу - перед ним апостроф; числа и намеренная
+    // формула кода iiko (artCell) не трогаются.
+    const cell = (v) => { const s = csvSafe(v); return /[;"\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
     const dec = (v) => v == null || v === "" ? "" : String(v).replace(".", ",");
     // Код iiko — для сверки с iiko (этап 2): из строки отчёта, а если сервер его не отдаёт — из номенклатуры.
     let art = null;

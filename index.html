@@ -156,7 +156,7 @@ button.tfb-btn,#tfb-ov button{width:auto}
   <header>
     <div>
       <h1>Тандем KZ · дневной отчёт</h1>
-      <div class="sub">Заполняется в конце смены · сборка 32</div>
+      <div class="sub">Заполняется в конце смены · сборка 33</div>
     </div>
   </header>
 
@@ -167,7 +167,7 @@ button.tfb-btn,#tfb-ov button{width:auto}
     <label for="lpoint">Точка</label>
     <select id="lpoint"></select>
     <label for="lpin">Код точки</label>
-    <input id="lpin" type="password" inputmode="numeric" autocomplete="off" placeholder="4 цифры">
+    <input id="lpin" type="password" inputmode="numeric" autocomplete="off" placeholder="код точки">
     <div style="margin-top:16px"><button id="btn-login">Войти</button></div>
     <div class="err" id="lerr"></div>
     <div class="hint">Код выдаёт руководитель. Телефон запомнит вход — вводить каждый день не нужно.</div>
@@ -201,13 +201,15 @@ button.tfb-btn,#tfb-ov button{width:auto}
     <div class="rrow"><span>Чеков за день</span><b id="kcount">—</b></div>
     <div class="chk bad" id="klate" hidden></div>
     <div class="chk bad" id="kqueue" hidden></div>
+    <div class="chk bad" id="kfiscal" hidden></div>
     <a class="kassalink" href="kassa.html">← Вернуться в кассу</a>
   </div>
 
   <div class="card">
     <h2>Смена</h2>
     <label for="date">Дата</label>
-    <input id="date" type="date">
+    <input id="date" type="date" min="2024-01-01">
+    <div class="chk wait" id="prevday" hidden></div>
     <label for="shift_by">Смену сдал</label>
     <input id="shift_by" placeholder="Фамилия и инициалы">
     <div class="hint" id="firstby" hidden></div>
@@ -224,7 +226,7 @@ button.tfb-btn,#tfb-ov button{width:auto}
     <input id="transfer" inputmode="decimal" placeholder="0">
     <label for="card">Карта через терминал, ₸</label>
     <input id="card" inputmode="decimal" placeholder="0">
-    <div class="hint" id="moneyhint" hidden>Суммы собраны из чеков кассы и здесь не правятся. Ошибку исправляют в самом чеке: касса → «Смена» → «Исправить».</div>
+    <div class="hint" id="moneyhint" hidden>Суммы собраны из чеков кассы и здесь не правятся. Ошибку в чеке исправляют в кассе, вкладка «Смена»: чек, пробитый в налоговой, отменяют («Отменить чек» - будет чек возврата) и пробивают заново; чек без фискального признака - «Исправить».</div>
     <div class="tot"><span>Итого выручка</span><span id="total">0 ₸</span></div>
   </div>
 
@@ -410,6 +412,18 @@ button.tfb-btn,#tfb-ov button{width:auto}
     <div id="ddebts"></div>
   </div>
 
+  <div class="card" id="rlog-card" hidden>
+    <h2>Записи развоза</h2>
+    <div class="hint" style="margin:0 0 10px">Ошибочную запись водителя отменяет собственник с причиной: в долг она больше не входит, в списке остаётся с пометкой «отменена».</div>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>Дата</th><th>Куда</th><th style="text-align:right">Отвёз</th><th style="text-align:right">Принял</th><th style="text-align:right">Возврат</th><th>Заметка</th><th></th></tr></thead>
+        <tbody id="rlog"></tbody>
+      </table>
+    </div>
+    <div class="msg" id="rlogmsg"></div>
+  </div>
+
   <div class="card">
     <h2>Все отчёты</h2>
     <div class="hint" style="margin:0 0 10px">Нажмите на строку — раскроется весь отчёт: позиции, расходы, отмены чеков, комментарий.</div>
@@ -469,9 +483,9 @@ button.tfb-btn,#tfb-ov button{width:auto}
   </div>
 </div>
 
-<script src="config.js?v=32"></script>
-<script src="js/feedback.js?v=32"></script>
-<script src="js/tour.js?v=32"></script>
-<script src="app.js?v=32"></script>
+<script src="config.js?v=33"></script>
+<script src="js/feedback.js?v=33"></script>
+<script src="js/tour.js?v=33"></script>
+<script src="app.js?v=33"></script>
 </body>
 </html>

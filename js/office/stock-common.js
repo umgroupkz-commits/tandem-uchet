@@ -1,7 +1,7 @@
 // Общее для экранов склада бэк-офиса: справочники документов, права, список складов пользователя
 // и мелкие помощники вкладок. Журнал и форма документа — stock.js, отчёты — stock-reports.js.
-import { session } from "./api.js?v=32";
-import { el } from "./ui.js?v=32";
+import { session } from "./api.js?v=33";
+import { el } from "./ui.js?v=33";
 
 export const TYPES = { invoice_in: "Приход", transfer: "Перемещение", writeoff: "Списание", production: "Производство", inventory: "Инвентаризация", sale: "Продажа" };
 // Продажу заводит отчёт точки, а не человек: в «+ Новый документ» её нет.
@@ -13,6 +13,8 @@ export const REASONS = { spoilage: "порча", defect: "брак", tasting: "�
   hospitality: "представительские", internal: "хозяйственные нужды", other: "прочее" };
 export const perms = () => (session() && session().permissions) || [];
 export const canDoc = (type) => perms().includes("doc:" + type + ":edit");
+// Смотреть документы типа (S-R3 8): журнал и карточка документа на сервере проверяют doc:<тип>:view.
+export const canViewDoc = (type) => perms().includes("doc:" + type + ":view");
 export const canAnyDoc = () => MANUAL.some(canDoc);
 export const canSales = () => perms().includes("doc:sale:view");
 // Список складов держим полным: выключенный склад должен читаться в карточке старого

@@ -1,7 +1,7 @@
 import { ask, el, fmtMoney, fmtDate, today, toast, debounce, itemPicker, linesTable, drafts, warningsText, readyNotes, commentOf,
-  withBusy, saveDoc, postDoc, showPosted, newKey, draftHint, okNum, numOf, hasNum, selectOnFocus } from "./common.js?v=32";
-import { isoDate } from "../office/ui.js?v=32";
-import { numStr } from "../office/inputs.js?v=32";
+  withBusy, saveDoc, postDoc, showPosted, newKey, draftHint, okNum, numOf, hasNum, selectOnFocus, askSheet } from "./common.js?v=33";
+import { isoDate } from "../office/ui.js?v=33";
+import { numStr, mulRound2, sumMoney } from "../office/inputs.js?v=33";
 
 const SCN = "receive";
 const shift = (days) => { const t = new Date(); t.setDate(t.getDate() + days); return isoDate(t); };
@@ -47,7 +47,8 @@ export async function mount(root, ctx) {
     oninput: (e) => { d.comment = e.target.value; save(); } });
   // строки: у каждого поля подпись над ним (linesTable), сумма — по кол-ву и цене
   const tot = el("div", { class: "tot" }, el("span", {}, "Сумма прихода"), el("span", {}, "0 ₸"));
-  const lineSum = (l) => (numOf(l.qty) || 0) * (numOf(l.price) || 0);
+  // Сумма строки до тиына так же, как при проведении (S-R3 10): «2,5 × 12,37» - 30,93 и здесь, и в документе.
+  const lineSum = (l) => mulRound2(numOf(l.qty) || 0, numOf(l.price) || 0);
   // «Итого по накладной (на бумаге)» — необязательное: живая сверка с суммой строк, как в бэк-офисе.
   // Сумма строк — по строкам с копейками (как считает сервер), иначе «расходится на 0,01» на ровной накладной.
   const r2 = (x) => Math.round(x * 100) / 100;
@@ -66,7 +67,7 @@ export async function mount(root, ctx) {
     paperNote.classList.add(Math.abs(diff) < 0.005 ? "ok" : "bad"); paperNote.textContent = t;
     return t;
   }
-  const total = () => { const s = r2(lines.reduce((a, l) => a + r2(lineSum(l)), 0)); tot.lastChild.textContent = fmtMoney(s) + " ₸"; paperCheck(s); return s; };
+  const total = () => { const s = sumMoney(lines.map(lineSum)); tot.lastChild.textContent = fmtMoney(s) + " ₸"; paperCheck(s); return s; };
   const toPicker = () => { picker.input.scrollIntoView({ block: "center" }); picker.input.focus({ preventScroll: true }); };
   const table = linesTable(lines, {
     columns: [{ key: "qty", title: "Кол-во", input: true }, { key: "price", title: "Цена", input: true },
@@ -120,6 +121,16 @@ export async function mount(root, ctx) {
           lines: lines.map((l) => ({ item_code: l.item_code, qty: numOf(l.qty), price: numOf(l.price) })) }, save);
         if (s.already) return showPosted(ctx, SCN, st.id, s, () => mount(root, ctx), d);
         d.server_id = s.id; save();
+        // S-R3 3: тот же № накладной у этого поставщика уже есть (сервер отдаёт dup_of) - спрашиваем, как бэк-офис:
+        // иначе накладную, которую бухгалтер уже внёс, кладовщик проводил второй раз. Не проводим - черновик остаётся.
+        if (s.dup_of) {
+          const x = s.dup_of;
+          const go = await askSheet({ title: "Такая накладная уже есть",
+            lines: ["У поставщика «" + d.supplier.name + "» уже есть накладная № " + (d.ext_number || "").trim() + ": " + x.number
+              + " от " + fmtDate(x.doc_date) + " (" + (x.status === "posted" ? "проведена" : "черновик") + ")."],
+            note: "Проверьте, не внесена ли она второй раз. Если это другая накладная с тем же номером - проведите всё равно." });
+          if (!go) { err.textContent = "Не проведено: такая накладная уже есть (" + x.number + "). Черновик " + s.number + " сохранён."; return; }
+        }
         const p = await postDoc(s.id);
         if (p.already) return showPosted(ctx, SCN, st.id, p, () => mount(root, ctx), d);
         drafts.clear(SCN, st.id);

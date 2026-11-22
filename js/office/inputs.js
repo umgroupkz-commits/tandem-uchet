@@ -2,8 +2,8 @@
 // Числовое поле браузера (type=number) здесь не годится: в Chrome с английским интерфейсом запятая
 // в нём молча пропадает (0,065 → 65), колёсико мыши меняет число под курсором (2900 → 2899,999),
 // а щелчок ставит каретку в начало, и набранное дописывается к старому (0,06 → 650,06).
-import { api } from "./api.js?v=32";
-import { el, debounce } from "./ui.js?v=32";
+import { api } from "./api.js?v=33";
+import { el, debounce } from "./ui.js?v=33";
 
 // Разбор числа, как его пишут люди: «1 234,5», «1234.5», «0,065», неразрывные пробелы из Excel.
 // Пусто — null; не число — NaN (форма решает, ругаться ли).
@@ -13,6 +13,30 @@ export function parseNum(v) {
   const s = String(v).replace(/[\s  ]/g, "").replace(",", ".");
   if (s === "") return null;
   return /^-?(\d+\.?\d*|\.\d+)$/.test(s) ? Number(s) : NaN;
+}
+// Сумма строки «кол-во × цена» до тиына - так же, как сервер (numeric, половина - от нуля). Math.round
+// над двоичным произведением ошибался: 2,5 × 12,37 = 30,924999… давало 30,92, а сервер проводил 30,93, и
+// форма, журнал и проведённый документ показывали три разные суммы. Числа переводятся в десятичные
+// (до 6 знаков, как numStr) и перемножаются целыми.
+export function mulRound2(a, b) {
+  const x = Number(a), y = Number(b);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return 0;
+  if (Math.abs(x) >= 1e15 || Math.abs(y) >= 1e15) return Math.round(x * y * 100) / 100;   // toFixed ушёл бы в «1e+21»
+  const big = (n) => { const s = Math.abs(n).toFixed(6).replace(".", ""); return BigInt(s) * (n < 0 ? -1n : 1n); };
+  const p = big(x) * big(y);                       // масштаб 10^12
+  const neg = p < 0n, q = neg ? -p : p;
+  const cents = (q + 5000000000n) / 10000000000n;   // до 10^2, половина - от нуля
+  return Number(neg ? -cents : cents) / 100;
+}
+// Сумма денег по строкам без накопления ошибки двоичной дроби: складываются целые тиыны.
+export function sumMoney(list) {
+  return list.reduce((a, v) => a + Math.round(Number(v || 0) * 100), 0) / 100;
+}
+// Текстовая ячейка CSV: начало с = + - @ (или табуляции) Excel выполнил бы как формулу (CSV-инъекция) -
+// такой текст получает апостроф впереди. Числа («-46», «12,5») не трогаются.
+export function csvSafe(v) {
+  const s = String(v ?? "");
+  return /^[=+\-@\t\r]/.test(s) && !/^[-+]?\d+([.,]\d+)?$/.test(s) ? "'" + s : s;
 }
 // Число для поля ввода: с запятой, без разрядов и без хвоста плавающей точки (0.1+0.2 → «0,3»).
 export function numStr(v) {

@@ -1,9 +1,9 @@
-import { api, can } from "./api.js?v=32";
-import { el, fmt, toast, debounce, modal, confirmDlg, today, isoDate, errText, uid, saveFailed } from "./ui.js?v=32";
-import { parseNum, numStr, numInput, enterNext, fmtDate, fmtDateTime, fmtMoney, itemPicker } from "./inputs.js?v=32";
-import { TYPES, MANUAL, REASONS, perms, canDoc, canAnyDoc, canSales, stores, setStores, active, opts, myIds, setMyIds, mine,
-  seqs, nextSeq, tabOut, sel, hooks } from "./stock-common.js?v=32";
-import { loadSales, loadTurnover, loadOrders, loadC1, loadReports, loadReady, srResync, resetReports } from "./stock-reports.js?v=32";
+import { api, can } from "./api.js?v=33";
+import { el, fmt, toast, debounce, modal, confirmDlg, today, isoDate, errText, uid, saveFailed } from "./ui.js?v=33";
+import { parseNum, numStr, numInput, enterNext, fmtDate, fmtDateTime, fmtMoney, itemPicker, mulRound2, sumMoney, csvSafe } from "./inputs.js?v=33";
+import { TYPES, MANUAL, REASONS, perms, canDoc, canViewDoc, canAnyDoc, canSales, stores, setStores, active, opts, myIds, setMyIds, mine,
+  seqs, nextSeq, tabOut, sel, hooks } from "./stock-common.js?v=33";
+import { loadSales, loadTurnover, loadOrders, loadC1, loadReports, loadReady, srResync, resetReports } from "./stock-reports.js?v=33";
 
 let root, state = { tab: "docs", doc_type: "", store_id: "", status: "", q: "", date_from: "", date_to: "", page: 1 };
 let table, pager;
@@ -140,12 +140,14 @@ function drawShell() {
   // извне (openDocs из отчёта), остаётся в списке и выключенным — иначе фильтр стоял бы невидимым;
   // склада, которого нет в справочнике вовсе, фильтр не держит.
   if (state.store_id && !stores.some((s) => s.id === state.store_id)) state.store_id = "";
+  if (state.doc_type && !canViewDoc(state.doc_type)) state.doc_type = "";
   const jStores = mine(active());
   if (state.store_id && !jStores.some((s) => s.id === state.store_id)) jStores.push(stores.find((s) => s.id === state.store_id));
   root.append(el("div", { class: "tools" },
       el("input", { placeholder: "Номер, № накладной, поставщик, комментарий", value: state.q, style: "flex:2 1 340px;min-width:340px",
         oninput: debounce((e) => { state.q = e.target.value; state.page = 1; loadDocs(); }, 300) }),
-      sel({ "": "все типы", ...TYPES }, state.doc_type, (v) => { state.doc_type = v; state.page = 1; loadDocs(); }),
+      // Типы - только те, что роль может смотреть (doc:<тип>:view): прочих сервер в журнале не отдаёт.
+      sel({ "": "все типы", ...Object.fromEntries(Object.entries(TYPES).filter(([k]) => canViewDoc(k))) }, state.doc_type, (v) => { state.doc_type = v; state.page = 1; loadDocs(); }),
       sel({ "": myIds.length ? "мои склады" : "все склады", ...opts(jStores) }, state.store_id, (v) => { state.store_id = v; state.page = 1; loadDocs(); }),
       sel({ "": "все", draft: "черновики", posted: "проведённые" }, state.status, (v) => { state.status = v; state.page = 1; loadDocs(); }),
       newBtn),
@@ -203,7 +205,8 @@ async function loadDocs() {
 
 // CSV для Excel: «;», BOM, числа с запятой. Скачивается без всплывающего окна.
 function csvFile(name, rows) {
-  const q = (v) => { const s = String(v ?? ""); return /[;"\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+  // csvSafe: текст с = + - @ в начале Excel выполнил бы как формулу - перед ним апостроф (числа не трогаются).
+  const q = (v) => { const s = csvSafe(v); return /[;"\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
   const a = document.createElement("a");
   a.href = URL.createObjectURL(new Blob(["﻿" + rows.map((r) => r.map(q).join(";")).join("\r\n")], { type: "text/csv;charset=utf-8" }));
   a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
@@ -421,11 +424,13 @@ async function editDoc(id, newType, preset) {
     if (i >= 0 && i < all.length - 1) all[i + 1].focus(); else focusSearch();
   };
   const qkey = isInv ? "fact_qty" : "qty";
-  const lineSum = (l) => r2(num0(l[qkey]) * num0(l.price));
-  const docSum = () => r2(lines.reduce((a, l) => a + lineSum(l), 0));
+  // Сумма строки - до тиына так же, как при проведении (mulRound2), итог - из сумм строк: форма, журнал и
+  // проведённый документ показывают одну цифру (раньше 50,25 в форме, 50,24 в журнале и 50,26 после проведения).
+  const lineSum = (l) => mulRound2(num0(l[qkey]), num0(l.price));
+  const docSum = () => sumMoney(lines.map(lineSum));
   // Цена из суммы строки (накладная, где по строке только сумма): до 4 знаков; если при большом
   // количестве кол-во × цена с 4 знаками не даёт ту же сумму до тиына — до 6: итог должен сойтись с бумагой.
-  const priceOf = (s, q) => { const p4 = Math.round(s / q * 1e4) / 1e4; return Math.abs(r2(q * p4) - s) < 0.005 ? p4 : Math.round(s / q * 1e6) / 1e6; };
+  const priceOf = (s, q) => { const p4 = Math.round(s / q * 1e4) / 1e4; return Math.abs(mulRound2(q, p4) - s) < 0.005 ? p4 : Math.round(s / q * 1e6) / 1e6; };
   let liveCells = [];   // ячейки «Сумма» у инвентаризации: пересчитываются при вводе без перерисовки таблицы
   let paper = null, paperNote = null;
   // Ввод в строке меняет только свои ячейки и итог; полная перерисовка — при добавлении и удалении строк
@@ -586,31 +591,43 @@ async function editDoc(id, newType, preset) {
     const found = new Map();
     for (let from = 0; from < rows.length; from += 1000) {
       const chunk = rows.slice(from, from + 1000);
-      const r = await api("items_lookup_list", { keys: chunk.map((x) => ({ code: x.code || null, name: x.name || null })) });
+      // prefer: 'artikul' (S-R3 4) - сначала артикул iiko и артикул без ведущих нулей (Excel превращает «02580»
+      // в 2580), потом код учёта: иначе «2580» находил чужую позицию с кодом учёта 2580.
+      const r = await api("items_lookup_list", { prefer: "artikul", keys: chunk.map((x) => ({ code: x.code || null, name: x.name || null })) });
       if (!r.ok) { err.textContent = errText(r); return; }
       for (const x of (r.rows || [])) found.set(from + x.i, x);
     }
     // Одна позиция может прийти файлом несколькими строками (разные группы отчёта) — складываем
     // и количество, и сумму. Сумма строки с минусом не берётся: факт у неё 0.
-    const got = new Map(), miss = [];
+    const add = (map, row, it) => {
+      const s = row.qty > 0 && row.sum > 0 ? row.sum : 0;
+      const prev = map.get(it.item_code);
+      if (prev) { prev.qty += row.qty; prev.sum += s; } else map.set(it.item_code, { it, qty: row.qty, sum: s });
+    };
+    const got = new Map(), miss = [], doubt = [];
     rows.forEach((row, i) => {
       const it = found.get(i);
       if (!it) { if (row.qty > 0) miss.push(row); return; }   // ненайденный ноль грузить некуда и незачем
-      const s = row.qty > 0 && row.sum > 0 ? row.sum : 0;
-      const prev = got.get(it.item_code);
-      if (prev) { prev.qty += row.qty; prev.sum += s; } else got.set(it.item_code, { it, qty: row.qty, sum: s });
+      // Код совпал, а название другое (name_differs) - сами не грузим: строка уходит на проверку ниже.
+      if (it.name_differs) { doubt.push({ row, it }); return; }
+      add(got, row, it);
     });
-    let loadedSum = 0; const noPrice = [];
-    for (const [itemCode, v] of got) {
-      const val = Math.round(v.qty * 1000) / 1000;
-      // цена — от округлённого факта: факт × цена должен вернуть сумму файла, а не потерять тиыны на округлении
-      const price = val > 0 && v.sum > 0 ? Math.round(v.sum / val * 1e6) / 1e6 : null;
-      if (val > 0 && price === null) noPrice.push(v.it.name);
-      if (price !== null) loadedSum += r2(val * price);
-      const line = lines.find((l) => l.item_code === itemCode);
-      if (line) { line.fact_qty = val; if (price !== null) line.price = price; }
-      else lines.push({ item_code: itemCode, name: v.it.name, unit_id: v.it.unit_id, qty: "", fact_qty: val, price: price ?? "" });
-    }
+    // Факт и цена (сумма / факт) в строки документа. Повторный вызов с тем же набором ставит те же числа.
+    const apply = (map) => {
+      let sum = 0; const np = [];
+      for (const [itemCode, v] of map) {
+        const val = Math.round(v.qty * 1000) / 1000;
+        // цена - от округлённого факта: факт × цена должен вернуть сумму файла, а не потерять тиыны на округлении
+        const price = val > 0 && v.sum > 0 ? Math.round(v.sum / val * 1e6) / 1e6 : null;
+        if (val > 0 && price === null) np.push(v.it.name);
+        if (price !== null) sum += mulRound2(val, price);
+        const line = lines.find((l) => l.item_code === itemCode);
+        if (line) { line.fact_qty = val; if (price !== null) line.price = price; }
+        else lines.push({ item_code: itemCode, name: v.it.name, unit_id: v.it.unit_id, qty: "", fact_qty: val, price: price ?? "" });
+      }
+      return { sum, np };
+    };
+    const { sum: loadedSum, np: noPrice } = apply(got);
     drawLines();
     const sumOf = (list) => r2(list.reduce((a, x) => a + (Number(x.sum) || 0), 0));
     warn.className = "warnbox"; warn.hidden = false; warn.innerHTML = "";
@@ -641,10 +658,27 @@ async function editDoc(id, newType, preset) {
       for (const w of miss) mt.append(el("tr", {}, el("td", {}, w.name), el("td", {}, w.code), el("td", { class: "num" }, fmt(w.qty)), el("td", { class: "num" }, w.sum ? fmtMoney(w.sum) : "")));
       warn.append(mt);
     }
+    // На проверку (S-R3 4): код из файла нашёл позицию с другим названием - например, Excel срезал нули у кода
+    // iiko, и он совпал с кодом учёта другой позиции, или позицию переименовали. Человек смотрит пары и
+    // решает: загрузить их одной кнопкой или завести псевдоним / поправить файл и загрузить заново.
+    if (doubt.length) {
+      const dt = el("table");
+      dt.append(el("tr", {}, ...["В файле", "Код", "Нашлось в учёте", "Кол-во"].map((h, i) => el("th", { class: i === 3 ? "num" : "" }, h))));
+      for (const d of doubt) dt.append(el("tr", {}, el("td", {}, d.row.name), el("td", {}, d.row.code), el("td", {}, d.it.name), el("td", { class: "num" }, fmt(d.row.qty))));
+      const take = el("button", { class: "small", onclick: (e) => {
+        for (const d of doubt) add(got, d.row, d.it);
+        apply(got); drawLines(); e.target.remove();
+        toast(`Загружено ещё ${doubt.length} поз. - проверьте их факт в таблице`);
+      } }, "Загрузить и эти строки");
+      warn.append(el("div", { style: "font-weight:600;margin-top:8px" }, `На проверку ${doubt.length} поз.: код из файла нашёл позицию с другим названием - эти строки не загружены`),
+        dt, el("div", { class: "actions" }, take));
+    }
     // Строки, которых нет в файле, но есть в документе (например, после «заполнить позициями
     // с остатком»), остаются без факта — провести такой документ сервер не даст. Раз файл —
     // полный остаток склада по iiko, их честно обнулить; но решает человек, одной кнопкой.
-    const empty = lines.filter((l) => l.fact_qty === "" || l.fact_qty == null);
+    // позиции строк «на проверку» в файле есть - им 0 не ставится
+    const pend = new Set(doubt.map((d) => d.it.item_code));
+    const empty = lines.filter((l) => (l.fact_qty === "" || l.fact_qty == null) && !pend.has(l.item_code));
     const acts = el("div", { class: "actions" });
     if (empty.length) {
       warn.append(el("div", {}, `Без факта ${empty.length} поз.: их нет в файле`));
@@ -891,7 +925,7 @@ async function editDoc(id, newType, preset) {
       if (!o) return;
     }
     let mod;
-    try { mod = await import("./print.js?v=32"); }
+    try { mod = await import("./print.js?v=33"); }
     catch (e) { toast("Печать не загрузилась: " + (e && e.message ? e.message : e), "bad"); return; }
     try {
       const res = await mod.printDoc(formDoc(), o);
@@ -964,7 +998,8 @@ function balEmpty() {
 }
 async function loadBalances() {
   const out = tabOut("bal-root", () => [el("div", { class: "tools" },
-    sel({ "": myIds.length ? "мои склады" : "все склады", ...opts(mine(stores)) }, bal.store_id, (v) => { bal.store_id = v; bal.page = 1; loadBalances(); }),
+    // «Все склады» - без учебных и складов служебных точек (сервер, S-R3 2); учебный склад - выбором из списка.
+    sel({ "": myIds.length ? "мои склады" : "все склады (без учебных)", ...opts(mine(stores)) }, bal.store_id, (v) => { bal.store_id = v; bal.page = 1; loadBalances(); }),
     el("input", { placeholder: "Поиск позиции", value: bal.q, oninput: debounce((e) => { bal.q = e.target.value; bal.page = 1; loadBalances(); }, 300) }),
     el("label", { style: "margin:0" }, el("input", { type: "checkbox", checked: bal.nonzero, onchange: (e) => { bal.nonzero = e.target.checked; bal.page = 1; loadBalances(); } }), " только с остатком"),
     el("span", { class: "dim bal-sum" }),
@@ -1008,7 +1043,9 @@ async function showMoves(x) {
   let reval = false;
   for (const mv of rows) {
     const isReval = Number(mv.qty) === 0; reval = reval || isReval;
-    t.append(el("tr", { class: "row", onclick: () => { m.close(); editDoc(mv.document_id); } },
+    // Документ открывается, только если роль может смотреть документы его типа (doc:<тип>:view) - иначе сервер откажет.
+    const open = canViewDoc(mv.doc_type);
+    t.append(el("tr", { class: open ? "row" : "", onclick: open ? () => { m.close(); editDoc(mv.document_id); } : null },
       el("td", { style: "white-space:nowrap" }, fmtDate(mv.move_date)), el("td", {}, `${TYPES[mv.doc_type] || mv.doc_type} ${mv.number}`),
       isReval ? el("td", { class: "num dim" }, "переоценка") : el("td", { class: "num" + (Number(mv.qty) < 0 ? " bad" : "") }, fmt(mv.qty)),
       el("td", { class: "num" }, isReval ? "" : priceTxt(mv.unit_cost)), el("td", { class: "num" }, fmtMoney(isReval && mv.adj != null ? mv.adj : mv.sum)),

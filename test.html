@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="theme-color" content="#1F3864">
-<title>Тандем KZ — обучение</title>
+<title>Тандем KZ - обучение</title>
 <style>
   :root{--ink:#1B2430;--ink2:#4A5568;--muted:#6B7588;--line:#E2E7EF;--bg:#F5F7FB;--card:#fff;
         --accent:#1F3864;--accent2:#3E6EA8;--soft:#E8EEF8;--ok:#0B6B4F;--okbg:#E3F3EC;--warnbg:#FCF3E1;--warn:#7A5710;--bad:#B4453C}
@@ -54,7 +54,7 @@
   .links a{display:block;border:1px solid var(--line);border-radius:10px;padding:10px 12px;background:#fff;color:var(--ink);text-decoration:none}
   .links a b{display:block;color:var(--accent)}
   .links a span{font-size:13px;color:var(--ink2)}
-  /* Телефон: входы — карточками, без горизонтальной прокрутки. */
+  /* Телефон: входы - карточками, без горизонтальной прокрутки. */
   @media (max-width:600px){
     #creds,#creds tbody,#creds tr,#creds td{display:block}
     #creds tr:first-child{display:none}
@@ -69,19 +69,20 @@
 <div class="wrap">
   <header>
     <h1>Обучение работе в программе</h1>
-    <div class="sub">Тандем KZ · выберите свою роль — программа сама проведёт по каждой функции: покажет кнопку, объяснит и попросит нажать</div>
+    <div class="sub">Тандем KZ · выберите свою роль - программа сама проведёт по каждой функции: покажет кнопку, объяснит и попросит нажать</div>
   </header>
+  <div class="note" style="margin-bottom:6px">Здесь тестовая база: экраны те же, что в работе, но данные не настоящие, и ошибка ничего не испортит. Работают в рабочей программе - <b>https://uchet.eneshka.kz</b>: там настоящие продажи, склад и деньги, вход своим логином или кодом своей точки.</div>
 
   <h2>1. Код обучения</h2>
   <div class="card" id="codebox">
     <div id="askcode">
-      <p>Введите код обучения — его даёт руководитель. После этого здесь появятся все логины и коды для учебной работы, а уроки будут подставлять их сами.</p>
+      <p>Введите код обучения - его даёт руководитель. После этого здесь появятся все логины и коды для учебной работы, а уроки будут подставлять их сами.</p>
       <div class="row"><input type="password" id="code" autocomplete="off" placeholder="код обучения" aria-label="Код обучения">
         <button id="codebtn" type="button">Открыть</button></div>
       <div class="err" id="codeerr"></div>
     </div>
     <div id="credsbox" hidden>
-      <p>Учебные входы для всех ролей. Обучение идёт в рабочей программе, но только на учебных складах и точках: настоящие данные учебные учётки изменить не могут.</p>
+      <p>Учебные входы для всех ролей. Уроки идут на учебных складах и точках тестовой базы; для работы эти входы не годятся.</p>
       <div class="tbl"><table id="creds"></table></div>
       <div class="row" style="margin-top:10px"><button class="ghost small" id="forget" type="button">Забыть на этом устройстве</button></div>
     </div>
@@ -97,7 +98,7 @@
 
     <h2>4. Теперь сами</h2>
     <div class="card">
-      <p>Когда уроки пройдены — сделайте то же самое без подсказок, как в обычный рабочий день. Отметьте, что получилось. Что непонятно — кнопка «✎ Замечание» на том экране, где случилось.</p>
+      <p>Когда уроки пройдены - сделайте то же самое без подсказок, как в обычный рабочий день. Отметьте, что получилось. Что непонятно - кнопка «✎ Замечание» на том экране, где случилось.</p>
       <ol class="self" id="self"></ol>
     </div>
   </div>
@@ -114,18 +115,20 @@
   </div>
 </div>
 
-<script src="config.js?v=32"></script>
-<script src="js/tour.js?v=32"></script>
-<script src="js/tours/sklad.js?v=32"></script>
-<script src="js/tours/buh.js?v=32"></script>
-<script src="js/tours/tech.js?v=32"></script>
-<script src="js/tours/kassa.js?v=32"></script>
-<script src="js/tours/point.js?v=32"></script>
-<script src="js/tours/owner.js?v=32"></script>
+<script src="config.js?v=33"></script>
+<script src="js/tour.js?v=33"></script>
+<script src="js/tours/sklad.js?v=33"></script>
+<script src="js/tours/buh.js?v=33"></script>
+<script src="js/tours/tech.js?v=33"></script>
+<script src="js/tours/kassa.js?v=33"></script>
+<script src="js/tours/point.js?v=33"></script>
+<script src="js/tours/owner.js?v=33"></script>
 <script>
 // Страница обучения: код обучения → учебные входы всех ролей (их же уроки подставляют сами) → роль →
 // уроки по порядку (движок js/tour.js ведёт прямо в рабочих экранах) → «теперь сами» без подсказок.
-const API = window.TANDEM_API_URL || "https://qeehxcnnuzuwskznhdyg.supabase.co/functions/v1/uchet";
+// Учатся только в тестовой базе: на рабочем адресе вместо страницы - заглушка со ссылкой туда (js/tour.js).
+if (window.TandemTour) TandemTour.workStub();
+const API = window.TANDEM_API_URL || (/\.github\.io$/.test(location.hostname) ? "https://qeehxcnnuzuwskznhdyg.supabase.co/functions/v1/uchet" : location.origin + "/");   // без config.js: GitHub Pages - тестовая база, иначе этот же адрес
 const ROLES = [
   { id: "sklad", name: "Кладовщик кухни", about: "приход, перемещение, списание, акт приготовления, пересчёт, телефон" },
   { id: "buh", name: "Бухгалтер", about: "проверка приходов, журнал, ведомость, закупки, расход для 1С" },
@@ -134,14 +137,14 @@ const ROLES = [
   { id: "point", name: "Точка без кассы", about: "дневной отчёт, исправление, заявка на кухню" },
   { id: "owner", name: "Собственник, заведующая", about: "сводка, прибыль, отчёты, сотрудники, замечания" },
 ];
-// «Теперь сами»: то же, что в уроках, но без подсказок — как обычный рабочий день.
+// «Теперь сами»: то же, что в уроках, но без подсказок - как обычный рабочий день.
 const SELF = {
   sklad: ["Внесите сегодняшнюю приходную накладную с бумаги на «Учебный склад кухни» и распечатайте её.",
     "Переместите выпечку и сырьё на «Учебный склад точки», распечатайте накладную без цен.",
     "Спишите испорченное с причиной.", "Проведите акт приготовления полуфабриката, затем выпечки.",
     "Примите накладную с телефона.", "Вечером пересчитайте 5 позиций с телефона.",
     "Найдите приход по номеру с бумаги, отмените проведение, исправьте цену, проведите снова."],
-  buh: ["Внесите вчерашнюю накладную на «Учебный склад кассы», одну строку — только суммой; сверьте «Итого по накладной».",
+  buh: ["Внесите вчерашнюю накладную на «Учебный склад кассы», одну строку - только суммой; сверьте «Итого по накладной».",
     "Найдите накладную по номеру поставщика и распечатайте.", "Проверьте все приходы за вчера.",
     "Откройте ведомость учебного склада кухни за месяц, скачайте в Excel.", "Посмотрите закупки по поставщикам.",
     "Сформируйте расход для 1С."],
@@ -182,14 +185,14 @@ function drawCreds() {
   const t = $("creds"); t.innerHTML = "";
   t.append(h("tr", {}, h("th", {}, "Роль"), h("th", {}, "Где"), h("th", {}, "Логин / точка"), h("th", {}, "PIN / код"), h("th", {}, "")));
   const row = (name, where, href, login, pin) => t.append(h("tr", {}, h("td", {}, name), h("td", {}, h("a", { href }, where)),
-    h("td", { class: "code", "data-k": "логин:" }, login || "—"), h("td", { class: "code", "data-k": "PIN / код:" }, pin || "—"), h("td", {}, pin ? copyBtn(pin) : null)));
+    h("td", { class: "code", "data-k": "логин:" }, login || "-"), h("td", { class: "code", "data-k": "PIN / код:" }, pin || "-"), h("td", {}, pin ? copyBtn(pin) : null)));
   if (c.sklad) row("Кладовщик", "бэк-офис, телефон", "office.html", c.sklad.login, c.sklad.pin);
   if (c.buh) row("Бухгалтер", "бэк-офис", "office.html", c.buh.login, c.buh.pin);
   if (c.tech) row("Технолог", "бэк-офис", "office.html", c.tech.login, c.tech.pin);
   if (c.owner) row("Собственник (учебный)", "бэк-офис", "office.html", c.owner.login, c.owner.pin);
   if (c.kassa) row("Продавец", "касса", "kassa.html", c.kassa.point_name || "Учебная касса", c.kassa.pin);
   if (c.point) row("Точка без кассы", "экран точки, заявка", "index.html", c.point.point_name || "Учебная точка", c.point.pin);
-  if (c.owner_code) row("Сводка собственника (учебные точки)", "экран точки → вход по коду", "index.html", "—", c.owner_code);
+  if (c.owner_code) row("Сводка собственника (учебные точки)", "экран точки → вход по коду", "index.html", "-", c.owner_code);
 }
 async function openCode() {
   const code = $("code").value.trim(); $("codeerr").textContent = "";
@@ -197,7 +200,7 @@ async function openCode() {
   $("codebtn").disabled = true;
   let r = null;
   try { r = await (await fetch(API, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "training_info", payload: { code } }) })).json(); }
-  catch (e) { r = { ok: false, error: "Нет связи — попробуйте ещё раз" }; }
+  catch (e) { r = { ok: false, error: "Нет связи - попробуйте ещё раз" }; }
   $("codebtn").disabled = false;
   if (!r || !r.ok) { $("codeerr").textContent = (r && (r.message || r.error)) || "Код не подошёл"; return; }
   LS.set("tandem_training", { creds: r.creds, at: new Date().toISOString() });
@@ -219,7 +222,7 @@ function drawRoles() {
 function drawLessons() {
   const r = ROLES.find((x) => x.id === role); $("rolebox").hidden = !r; if (!r) return;
   const done = TandemTour.done(); const ls = TandemTour.lessons(role); const have = !!credsData();
-  $("lessonsh").textContent = "3. Уроки — " + r.name;
+  $("lessonsh").textContent = "3. Уроки - " + r.name;
   const box = $("lessons"); box.innerHTML = "";
   if (!ls.length) box.append(h("p", {}, "Уроки этой роли готовятся."));
   ls.forEach((l, i) => {

@@ -59,6 +59,12 @@ const mo = await call("fiscal_money", { ...who, kind: "out", sum: 300, reason: "
 ok("изъятие 300 на хозтовары", mo.ok, mo.ok ? "в кассе Webkassa " + mo.cash : mo.error);
 const mo2 = await call("fiscal_money", { ...who, kind: "out", sum: 300, reason: "Хозтовары", ext: ext + "-out" });
 ok("повтор изъятия не задваивает", mo2.ok && mo2.done, JSON.stringify(mo2).slice(0, 120));
+// 0065: журнал внесений и изъятий дня (вкладка «Смена» кассы)
+const jr = await call("fiscal_journal", { ...who, date: day });
+if (/Неизвестное действие/.test(jr.error || "")) console.log("     пропуск журнала: сервер собран до 0065");
+else ok("журнал дня: в нём внесение 2 000 и изъятие 300", jr.ok && (jr.journal || []).filter((m) => m.ok && m.kind === "in" && Number(m.sum) === 2000).length >= 1
+  && (jr.journal || []).filter((m) => m.reason === "Хозтовары" && Number(m.sum) === 300 && Date.parse(m.at) > Date.now() - 600000).length >= 1,
+  jr.ok ? "внесено " + jr.in + ", изъято " + jr.out : jr.error);
 
 const x = await call("fiscal_x", who);
 ok("X-отчёт", x.ok, x.ok ? "смена " + x.report.ShiftNumber + ", документов " + x.report.DocumentCount : x.error);

@@ -1,11 +1,11 @@
 // Интерактивная обучалка (сборка 22). Человек выбирает роль на странице обучения (test.html), и программа
 // ведёт его по урокам прямо в рабочих экранах: подсвечивает кнопку или поле, объясняет, просит нажать или
-// ввести — и сама переходит к следующему шагу, когда действие сделано. Урок может идти через несколько
+// ввести - и сама переходит к следующему шагу, когда действие сделано. Урок может идти через несколько
 // страниц (бэк-офис → склад с телефона): состояние урока живёт в localStorage и подхватывается на
 // следующей странице.
 // Обычный скрипт (не модуль): его подключают и модульные страницы, и index.html с классическим app.js.
-// Уроки описываются в js/tours/<роль>.js вызовами TandemTour.register({...}) — формат в docs/tour-format.md.
-// Автопрогон (для проверки уроков и показа «как это делается»): TandemTour.start(id, {autoplay: true}) —
+// Уроки описываются в js/tours/<роль>.js вызовами TandemTour.register({...}) - формат в docs/tour-format.md.
+// Автопрогон (для проверки уроков и показа «как это делается»): TandemTour.start(id, {autoplay: true}) -
 // движок сам нажимает и вводит; в консоль пишет «[tour] ok N» / «[tour] FAIL N: …» / «[tour] done id».
 (function () {
   if (window.TandemTour) return;
@@ -24,6 +24,14 @@
   const norm = (s) => String(s == null ? "" : s).replace(/[\s ]+/g, " ").trim().toLowerCase();
   const log = (m) => { try { console.info("[tour] " + m); } catch (e) { /* */ } };
 
+  // Учатся только в тестовой базе (решение Андрея 20.11.2026): GitHub Pages, где config.js ставит TANDEM_TEST_BASE,
+  // и стенды разработки на своём компьютере (localhost, 127.0.0.1 - они отдают config.js рабочего вида). На рабочем
+  // адресе уроки не идут, а страницы обучения показывают заглушку со ссылкой на ту же страницу в тестовой базе.
+  const TEST_SITE = "https://umgroupkz-commits.github.io/tandem-uchet/";
+  const host = String(location.hostname || "");
+  const localHost = !host || host === "localhost" || host === "[::1]" || /^127\./.test(host) || /\.(localhost|test)$/.test(host);
+  const workSite = !window.TANDEM_TEST_BASE && !localHost;
+
   // ------------------------------------------------------------------ учётки обучения
   // Приходят со страницы обучения по коду обучения (действие training_info) и лежат в localStorage этого
   // браузера: {creds: {sklad: {login, pin, name}, buh, tech, owner, kassa: {point, point_name, pin},
@@ -40,10 +48,10 @@
 
   // ------------------------------------------------------------------ поиск элемента по описанию
   // Описание цели: строка (CSS) или {css|sel, text, exact, placeholder, near, within, nth}.
-  //   text — видимый текст элемента (без учёта регистра, вхождение; exact — целиком); берётся самый
+  //   text - видимый текст элемента (без учёта регистра, вхождение; exact - целиком); берётся самый
   //          «внутренний» подходящий элемент; sel ограничивает теги (по умолчанию кнопки, ссылки, вкладки…);
-  //   placeholder — поле с такой подсказкой; near — поле ввода у подписи с этим текстом;
-  //   within — где искать: "modal" (верхнее открытое окно) или такое же описание; nth — какой по счёту.
+  //   placeholder - поле с такой подсказкой; near - поле ввода у подписи с этим текстом;
+  //   within - где искать: "modal" (верхнее открытое окно) или такое же описание; nth - какой по счёту.
   function visible(n) {
     if (!n || !n.isConnected) return false;
     const r = n.getBoundingClientRect(); if (r.width < 1 || r.height < 1) return false;
@@ -52,7 +60,10 @@
   function topModal() {
     const all = [...document.querySelectorAll(".overlay > .card, .overlay .card, [role=dialog], .modal, .sheet, .dlg, #tfb-ov > div")]
       .filter((n) => visible(n) && !n.closest(".tt-ui"));
-    return all.length ? all[all.length - 1] : null;
+    // Вложенная .card внутри окна - часть окна, а не окно: блок «пробивать фискальные чеки» в карточке точки (0054)
+    // забирал на себя поиск, и урок owner.stores не находил «Как точка сдаёт продажи».
+    const outer = all.filter((n) => !all.some((m) => m !== n && m.contains(n)));
+    return outer.length ? outer[outer.length - 1] : null;
   }
   function scope(spec) {
     if (!spec.within) return document;
@@ -62,7 +73,7 @@
   const CONTROLS = "input, select, textarea";
   function find(spec) {
     if (!spec) return null;
-    // Массив — запасные цели по порядку: первая, что есть на экране (колонка бывает не всегда).
+    // Массив - запасные цели по порядку: первая, что есть на экране (колонка бывает не всегда).
     if (Array.isArray(spec)) { for (const x of spec) { const n = find(x); if (n) return n; } return null; }
     if (typeof spec === "string") spec = { css: spec };
     const root = scope(spec); if (!root) return null;
@@ -94,8 +105,8 @@
     }
     return c[spec.nth || 0] || null;
   }
-  // Условие шага (until / wait): описание цели — «появилось на экране»; {gone: цель} — «исчезло»;
-  // {textOnPage: "…"} — такой текст есть где-то на экране (например, «Проведено» во всплывающем сообщении).
+  // Условие шага (until / wait): описание цели - «появилось на экране»; {gone: цель} - «исчезло»;
+  // {textOnPage: "…"} - такой текст есть где-то на экране (например, «Проведено» во всплывающем сообщении).
   function cond(spec) {
     if (!spec) return true;
     if (spec.gone) return !find(spec.gone);
@@ -167,7 +178,7 @@
     ui = { dims, ring, card };
   }
   function dropUi() { if (!ui) return; [...ui.dims, ui.ring, ui.card].forEach((n) => n.remove()); ui = null; }
-  // Затемнение вокруг цели четырьмя полосами; клики сквозь них проходят (pointer-events: none) — обучалка
+  // Затемнение вокруг цели четырьмя полосами; клики сквозь них проходят (pointer-events: none) - обучалка
   // подсказывает, но не запирает экран: если что-то пошло не так, человек всегда может нажать сам.
   function place(target) {
     const W = window.innerWidth, H = window.innerHeight, [t, l, r, b] = ui.dims;
@@ -217,12 +228,13 @@
   function stepPage(s) { return (s && s.page) || (lesson() && lesson().page) || pageName(); }
 
   function start(id, opts) {
+    if (workSite) { log("FAIL уроки идут только в тестовой базе: " + TEST_SITE); return false; }
     const l = lessons[id]; if (!l) { log("FAIL нет урока " + id); return false; }
     // Урок начинается «с чистого листа»: выходим из учёток, под которыми были раньше (их ключи урок называет
     // сам в reset), иначе бэк-офис открылся бы под чужим логином и шаг «Войдите» не нашёл бы формы.
     // После урока прежний вход НЕ возвращается: человек остаётся во входе урока и делает «Теперь сами» под
     // той же ролью (10.10: после урока технолога бэк-офис вернулся к кладовщику, и техкарта не правилась).
-    // Возвращаются только ключи keep — вход рабочего планшета кассы и телефона точки.
+    // Возвращаются только ключи keep - вход планшета кассы (уроки кассы).
     const saved = ls.get("tandem_tour_saved") || {};
     for (const k of l.keep || []) {
       try { if (!(k in saved)) saved[k] = localStorage.getItem(k); } catch (e) { /* */ }
@@ -235,7 +247,7 @@
     if (target !== pageName() || (opts && opts.reload)) { location.href = target + (l.hash || ""); return true; }
     run(); return true;
   }
-  // Возвращаются только ключи keep этого урока: прежние версии обучалки сохраняли и вход бэк-офиса — такой
+  // Возвращаются только ключи keep этого урока: прежние версии обучалки сохраняли и вход бэк-офиса - такой
   // старый ключ в браузере не должен вернуть человека в чужую роль.
   function restoreSaved(keys) {
     const saved = ls.get("tandem_tour_saved"); if (!saved) return;
@@ -249,7 +261,7 @@
     const l = lesson();
     if (done && l) { const d = ls.get(DONE) || {}; d[l.id] = new Date().toISOString(); ls.set(DONE, d); log("done " + l.id); }
     st = null; save(); cur = null; clearInterval(timer); timer = null; dropUi();
-    // Вернуть то, что было до обучения (вход точки, сессия бэк-офиса), — только когда урок закончился или
+    // Вернуть то, что было до обучения (вход точки, сессия бэк-офиса), - только когда урок закончился или
     // прерван, а не между уроками (следующий урок сам сотрёт, что ему нужно).
     restoreSaved(l && l.keep);
   }
@@ -268,7 +280,7 @@
     buildUi(); place(null);
     const c = ui.card; c.innerHTML = "";
     c.append(mk("div", "tt-top", "Урок пройден"), mk("h4", null, "Готово: «" + l.title + "»"));
-    const p = mk("p", null, next ? "Дальше — урок «" + next.title + "»." : "Все уроки этой роли пройдены. Теперь попробуйте сами, без подсказок: список заданий — на странице обучения.");
+    const p = mk("p", null, next ? "Дальше - урок «" + next.title + "»." : "Все уроки этой роли пройдены. Теперь попробуйте сами, без подсказок: список заданий - на странице обучения.");
     const btns = mk("div", "tt-btns");
     const toList = mk("button", null, "К списку уроков");
     toList.onclick = () => { dropUi(); location.href = "test.html#" + role; };
@@ -283,9 +295,9 @@
       case "click": return "Нажмите на подсвеченное" + (s.target && s.target.text ? ": «" + s.target.text + "»" : "") + ".";
       case "type": return "Введите в подсвеченное поле: «" + tpl(s.label || s.value) + "».";
       case "select": return "Выберите в подсвеченном списке: «" + tpl(s.label || s.value) + "».";
-      case "fill": return "Введите " + (s.fields || []).map((f) => (f.label ? f.label + " — " : "") + "«" + tpl(f.show || f.value) + "»").join(", ")
+      case "fill": return "Введите " + (s.fields || []).map((f) => (f.label ? f.label + " - " : "") + "«" + tpl(f.show || f.value) + "»").join(", ")
         + " (или нажмите «Подставить за меня»).";
-      case "wait": return "Подождите — программа ответит сама.";
+      case "wait": return "Подождите - программа ответит сама.";
       default: return "";
     }
   }
@@ -299,7 +311,7 @@
       const l = lesson();
       c.append(mk("div", "tt-top", l.title + " · шаг " + (i + 1) + " из " + steps().length));
       if (cur && cur.onOtherPage) {
-        c.append(mk("h4", null, "Этот шаг — на другом экране"), mk("p", null, "Урок продолжается на странице «" + stepPage(s) + "»."));
+        c.append(mk("h4", null, "Этот шаг - на другом экране"), mk("p", null, "Урок продолжается на странице «" + stepPage(s) + "»."));
         const b = mk("button", "tt-main", "Открыть"); b.onclick = () => { location.href = stepPage(s); };
         const btns = mk("div", "tt-btns"); btns.append(quit(), b); c.append(btns);
         placeCard(null); return;
@@ -307,8 +319,8 @@
       if (s.title) c.append(mk("h4", null, s.title));
       if (s.text) { const p = mk("p"); p.innerHTML = tpl(s.text); c.append(p); }
       const h = hintFor(s); if (h && s.action !== "next") c.append(mk("div", "tt-do", h));
-      if (cur && cur.lost) c.append(mk("div", "tt-warn", "Не вижу этого на экране. Если окно закрылось или вы ушли в другой раздел — нажмите «Назад» или вернитесь туда, где были."));
-      if (cur && cur.absent) c.append(mk("div", "tt-do", s.missing || "Сейчас этого нет на экране — шаг можно пропустить."));
+      if (cur && cur.lost) c.append(mk("div", "tt-warn", "Не вижу этого на экране. Если окно закрылось или вы ушли в другой раздел - нажмите «Назад» или вернитесь туда, где были."));
+      if (cur && cur.absent) c.append(mk("div", "tt-do", s.missing || "Сейчас этого нет на экране - шаг можно пропустить."));
       const btns = mk("div", "tt-btns");
       btns.append(quit());
       if (i > 0) { const b = mk("button", null, "Назад"); b.onclick = () => go(i - 1); btns.append(b); }
@@ -319,7 +331,7 @@
       }
       if (s.action === "next" || s.optional || (cur && cur.lost)) {
         const b = mk("button", s.action === "next" || (cur && cur.absent) ? "tt-main" : null, s.action === "next" ? (s.button || "Дальше") : "Пропустить шаг");
-        // «Дальше» у шага-объяснения ведёт на следующий шаг; пропуск (или объяснение, которого нет на экране) —
+        // «Дальше» у шага-объяснения ведёт на следующий шаг; пропуск (или объяснение, которого нет на экране) -
         // мимо зависимых шагов (skipAlso).
         const skip = s.optional && (s.action !== "next" || (cur && cur.absent));
         b.onclick = () => go(skip ? skipNext(i, s) : i + 1); btns.append(b);
@@ -343,10 +355,10 @@
     else if (s.action === "type" || s.action === "select") { setValue(target, s.value); if (s.action === "select" && matches(target, s.value)) cur.changed = true; }
     else if (s.action === "fill") for (const f of s.fields || []) setValue(find(f.target), f.value);
   }
-  // Пропуск необязательного шага: вместе с ним — skipAlso следующих (они идут в окне, которое он открывал).
+  // Пропуск необязательного шага: вместе с ним - skipAlso следующих (они идут в окне, которое он открывал).
   function skipNext(i, s) { return i + 1 + (s.skipAlso || 0); }
   function fieldsOk(s) { return (s.fields || []).every((f) => matches(find(f.target), f.value)); }
-  // Цель шага: своя (target) или — у fill без target — общий блок всех его полей (форма входа целиком),
+  // Цель шага: своя (target) или - у fill без target - общий блок всех его полей (форма входа целиком),
   // чтобы подсветка обводила форму, а карточка вставала рядом, а не поверх неё.
   function targetOf(s) {
     if (s.target) return find(s.target);
@@ -372,20 +384,20 @@
     const target = targetOf(s);
     // Шаг поиска перед «Выберите из подсказки»: человек может искать своими словами и сам выбрать из подсказки,
     // не дожидаясь следующего шага (10.10 урок «Перемещение» на этом встал). Запоминаем, что было в поле и
-    // была ли цель через шаг (строка позиции), — по ним видно, что выбор уже сделан.
+    // была ли цель через шаг (строка позиции), - по ним видно, что выбор уже сделан.
     const nx = l.steps[i + 1], nx2 = l.steps[i + 2];
     const pickPair = s.action === "type" && !!s.until && !!nx && nx.action === "click" && !!nx.target;
     if (s.action === "type" && target && cur.startVal === undefined) cur.startVal = String(target.value || "");
     if (pickPair && cur.after2 === undefined) cur.after2 = !!(nx2 && nx2.target && find(nx2.target));
     if (pickPair && cond(s.until)) cur.untilSeen = true;
     // Нажатие могло быть клавиатурой (↓ Enter в подсказке, Enter в форме): цель была и исчезла, а цель
-    // следующего шага, которой в начале не было, появилась — действие сделано.
+    // следующего шага, которой в начале не было, появилась - действие сделано.
     if (s.action === "click" && !s.navigates && nx && nx.target) {
       if (cur.nextAtStart === undefined) cur.nextAtStart = !!find(nx.target);
       if (target) cur.seenTarget = true;
     }
-    // Цель ищется до 10 с (экраны дорисовываются по ответу сервера); дольше — «не вижу» и выход вперёд/назад.
-    // Необязательный шаг без цели (например, неразобранных замечаний нет) — не «не вижу», а «пропускаем»:
+    // Цель ищется до 10 с (экраны дорисовываются по ответу сервера); дольше - «не вижу» и выход вперёд/назад.
+    // Необязательный шаг без цели (например, неразобранных замечаний нет) - не «не вижу», а «пропускаем»:
     // через 4 с карточка объясняет (missing), автопрогон пропускает его и skipAlso следующих за ним шагов.
     cur.absent = !!s.optional && !!s.target && !target && Date.now() - cur.since > 4000;
     if (cur.absent && st.autoplay) { log("ok " + (i + 1) + " (пропущен: нет на экране)"); go(skipNext(i, s)); return; }
@@ -394,15 +406,15 @@
     render(i, s, target);
     if (target && !cur.scrolled) { cur.scrolled = true; try { target.scrollIntoView({ block: "center", inline: "nearest" }); } catch (e) { /* */ } }
     // Автопрогон: действие за человека через полсекунды после появления цели.
-    // Выключенную кнопку (экран ещё загружает данные) автопрогон не нажимает — ждёт, пока включится.
+    // Выключенную кнопку (экран ещё загружает данные) автопрогон не нажимает - ждёт, пока включится.
     if (st.autoplay && !cur.played && (target || (!s.target && s.action !== "fill")) && !(s.action === "click" && target && target.disabled)
         && Date.now() - cur.since > (s.delay || 500)) {
       cur.played = true; cur.playedAt = Date.now();
       if (s.action === "next") { log("ok " + (i + 1)); go(i + 1); return; }
       act(s, target);
     }
-    // Условие перехода. click — переход после нажатия на цель (и, если задано, когда выполнилось until);
-    // type/select/fill — когда значение совпало; wait — когда выполнилось until; next — только кнопкой.
+    // Условие перехода. click - переход после нажатия на цель (и, если задано, когда выполнилось until);
+    // type/select/fill - когда значение совпало; wait - когда выполнилось until; next - только кнопкой.
     let ready = false;
     if (s.action === "click") ready = ((!!cur.clicked && Date.now() - cur.clicked > 250) || (s.match === false && !!s.until)
         || (!st.autoplay && cur.seenTarget && !target && cur.nextAtStart === false && !!find(nx.target))) && cond(s.until);
@@ -416,20 +428,20 @@
     else if (s.action === "wait") ready = cond(s.until);
     if (ready) { if (st.autoplay) log("ok " + (i + 1)); go(i + 1); return; }
     // Человек сам выбрал из подсказки: нажатие пришлось на цель следующего шага, или подсказка была, исчезла,
-    // а цель через шаг (строка позиции) появилась. Оба шага сделаны — к шагу после выбора.
+    // а цель через шаг (строка позиции) появилась. Оба шага сделаны - к шагу после выбора.
     if (pickPair && !st.autoplay) {
       const picked = (cur.pickedAhead && Date.now() - cur.pickedAhead > 250 && cond(nx.until))
         || (cur.untilSeen && !find(nx.target) && !cur.after2 && !!nx2 && !!nx2.target && !!find(nx2.target));
       if (picked) { go(i + 2); return; }
     }
-    // Список (точки, склады) мог ещё не загрузиться с сервера, когда автопрогон выбирал, — выбрать ещё раз.
+    // Список (точки, склады) мог ещё не загрузиться с сервера, когда автопрогон выбирал, - выбрать ещё раз.
     if (st.autoplay && cur.played && (s.action === "fill" || s.action === "select") && Date.now() - cur.playedAt > 2500) {
       cur.playedAt = Date.now(); act(s, target);
     }
     if (st.autoplay && Date.now() - cur.since > (s.timeout || 20000)) { log("FAIL " + (i + 1) + ": шаг не завершился за " + ((s.timeout || 20000) / 1000) + " с"); stop(false); }
   }
   // Нажатие на цель ловим на всплытии до обработчиков экрана (capture): экран мог тут же перерисоваться.
-  // Выбор из подсказки прямо на шаге поиска (цель следующего шага): ловим и нажатие, и его начало —
+  // Выбор из подсказки прямо на шаге поиска (цель следующего шага): ловим и нажатие, и его начало -
   // подсказка может исчезнуть ещё до click.
   function pickAhead(e) {
     if (!st || !cur || cur.step.action !== "type") return;
@@ -447,7 +459,7 @@
     const t = find(cur.step.target);
     if (t && (t === e.target || t.contains(e.target))) {
       cur.clicked = Date.now();
-      // Нажатие уводит на другую страницу (navigates: true) — шаг засчитываем сразу, до ухода со страницы.
+      // Нажатие уводит на другую страницу (navigates: true) - шаг засчитываем сразу, до ухода со страницы.
       if (cur.step.navigates) { st.step = cur.i + 1; save(); }
     }
   }, true);
@@ -465,7 +477,7 @@
     addEventListener("resize", () => { if (ui && cur) render(cur.i, cur.step, targetOf(cur.step)); });
     addEventListener("scroll", () => { if (ui && cur) render(cur.i, cur.step, targetOf(cur.step)); }, true);
   }
-  // Подгрузка уроков роли (js/tours/<роль>.js) — на рабочей странице, где урок продолжается.
+  // Подгрузка уроков роли (js/tours/<роль>.js) - на рабочей странице, где урок продолжается.
   function loadRole(role, cb) {
     if (order.some((id) => lessons[id].role === role)) { cb(); return; }
     const b = scriptBase(); const sc = document.createElement("script");
@@ -477,14 +489,53 @@
     if (!st || !st.lesson) { st = null; return; }
     loadRole(st.role, () => {
       if (!lessons[st.lesson]) { log("FAIL нет урока " + st.lesson); st = null; save(); return; }
+      // Рабочий адрес: урок, начатый здесь раньше, не продолжаем - закрываем его и возвращаем вход, который был до
+      // урока (keep: вход планшета кассы), иначе касса утром открылась бы с подсказками урока и учебной точкой.
+      if (workSite) { log("урок " + st.lesson + " закрыт: на рабочем адресе уроки не идут"); stop(false); return; }
       run();
     });
+  }
+
+  // Страница обучения на рабочем адресе (test.html, guide.html, proverka-kassy.html): вместо содержимого -
+  // куда идти учиться. Содержимое страницы остаётся в разметке, но скрыто: её скрипты работают без ошибок.
+  // true - заглушка показана.
+  function workStub() {
+    if (!workSite) return false;
+    if (document.getElementById("tt-stub")) return true;
+    const css = document.createElement("style");
+    css.textContent = "body > :not(#tt-stub){display:none!important}";
+    document.head.append(css);
+    const box = mk("div"); box.id = "tt-stub";
+    // Своя светлая карточка: у страницы может быть тёмная тема (proverka-kassy.html), а текст здесь тёмный.
+    box.setAttribute("style", "box-sizing:border-box;width:calc(100% - 32px);max-width:560px;margin:40px auto;padding:20px;background:#fff;"
+      + "border:1px solid #E2E7EF;border-radius:12px;font:16px/1.5 system-ui,-apple-system,'Segoe UI',Roboto,Arial,sans-serif;color:#1B2430");
+    const h = mk("h1", null, "Обучение - в тестовой базе");
+    h.setAttribute("style", "font-size:24px;line-height:1.25;margin:0 0 12px;color:#1F3864");
+    const p = mk("p", null, "Это рабочая программа: здесь настоящие продажи, склад и деньги. Уроки, маршрут и план проверки "
+      + "проходят в тестовой базе - там те же экраны и красная плашка «ТЕСТОВАЯ БАЗА» сверху, а данные не настоящие, "
+      + "поэтому ошибиться нельзя.");
+    p.setAttribute("style", "margin:0 0 16px");
+    const a = document.createElement("a");
+    a.href = TEST_SITE + pageName() + location.hash; a.textContent = "Открыть эту страницу в тестовой базе";
+    a.setAttribute("style", "display:inline-block;padding:12px 18px;border-radius:8px;background:#1F3864;color:#fff;font-weight:600;text-decoration:none");
+    const n = mk("p", null, "Код обучения даёт руководитель.");
+    n.setAttribute("style", "margin:16px 0 0;font-size:14px;color:#4A5568");
+    box.append(h, p, a, n);
+    document.body.prepend(box);
+    document.title = "Тандем KZ - обучение в тестовой базе";
+    return true;
   }
 
   window.TandemTour = {
     register(l) { if (!lessons[l.id]) order.push(l.id); lessons[l.id] = l; },
     lessons(role) { return order.map((id) => lessons[id]).filter((l) => !role || l.role === role); },
     start, stop: () => stop(false), creds, find, done: () => ls.get(DONE) || {}, active: () => st,
+    workSite: () => workSite, workStub, testSite: TEST_SITE,
   };
-  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", resume); else resume();
+  function init() {
+    // Ссылки только для обучения (в шапке бэк-офиса «Обучение» и «Маршрут проверки»): на рабочем адресе их нет.
+    if (!workSite) for (const n of document.querySelectorAll("[data-test-only]")) n.hidden = false;
+    resume();
+  }
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init); else init();
 })();

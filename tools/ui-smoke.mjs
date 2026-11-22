@@ -81,11 +81,21 @@ try {
   check("памятки: переключение роли", await js("return [...document.querySelectorAll('section')].filter((s) => !s.hidden).map((s) => s.id).join() === 'r-owner'"));
   await go("help.html#kassa");
   check("памятки: памятка продавца кассы", await js("return document.querySelector('nav button[aria-selected=true]').textContent === 'Касса' && !document.getElementById('r-kassa').hidden"));
+  // Касса (0066): учебные точки в списке входа - только в режиме обучения. С кодом учебной кассы тест входит как
+  // ученик: кладёт учётки обучения в localStorage, как страница обучения, и тогда касса обязана быть в списке. Без кода
+  // список - только рабочие кассы; в базе без кассовых точек экран должен объяснить, почему он пуст.
+  const KPIN = process.env.TANDEM_KASSA_PIN || "", KPOINT = process.env.TANDEM_KASSA_POINT || "ucheb_kassa";
   await go("kassa.html");
-  check("касса: на входе есть точка с кассой", await until("[...document.getElementById('lpoint').options].some((o) => o.value)"), await js("return document.getElementById('lerr').textContent"));
+  if (KPIN) {
+    await js(`localStorage.setItem("tandem_training", ${JSON.stringify(JSON.stringify({ creds: { kassa: { point: KPOINT, pin: KPIN } }, at: "ui-smoke" }))}); return true;`);
+    await go("kassa.html");
+  }
+  const hasKassa = await until("[...document.getElementById('lpoint').options].some((o) => o.value)");
+  const why = await js("return document.getElementById('lerr').textContent");
+  check(KPIN ? "касса: в режиме обучения на входе есть учебная касса" : "касса: на входе есть точка с кассой или объяснение, почему их нет",
+    hasKassa || (!KPIN && /Режим «касса» включает администратор/.test(why)), why);
   check("экраны без входа: ошибок в консоли нет", pageErrors.length === 0, pageErrors);
 
-  const KPIN = process.env.TANDEM_KASSA_PIN || "", KPOINT = process.env.TANDEM_KASSA_POINT || "ucheb_kassa";
   if (!KPIN) console.log("\n== касса пропущена: задайте TANDEM_KASSA_PIN");
   else {
     console.log("\n== касса (чек набирается, но не пробивается)");

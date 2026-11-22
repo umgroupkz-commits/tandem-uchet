@@ -1,9 +1,12 @@
 // Заявка точки на кухню на завтра (миграция 0038). Точка выбирает позиции только из своего меню,
 // до отсечки (по умолчанию 20:00 по времени Казахстана) заявку можно править; после — кухня печёт
 // по сводному плану, а заявка этого дня только читается.
-import { el, fmt, toast, debounce } from "../office/ui.js?v=32";
+import { el, fmt, toast, debounce } from "../office/ui.js?v=33";
 
-const API = window.TANDEM_API_URL || "https://qeehxcnnuzuwskznhdyg.supabase.co/functions/v1/uchet";
+// Без config.js (не загрузился): на GitHub Pages - тестовая база Supabase, на любом другом адресе - сервер на том же
+// адресе (рабочий прокси и стенды отдают экраны и API вместе). Раньше запасным везде был Supabase, и рабочий экран
+// без config.js молча писал бы в тестовую базу (ревизия 22.11.2026).
+const API = window.TANDEM_API_URL || (/\.github\.io$/.test(location.hostname) ? "https://qeehxcnnuzuwskznhdyg.supabase.co/functions/v1/uchet" : location.origin + "/");
 const $ = (id) => document.getElementById(id);
 // menu — меню точки загружено; note — сообщение над заявкой ({kind: ok|warn|bad, text});
 // lost — неотправленный черновик дня, на который приём уже закрыт; sending — идёт отправка;
@@ -59,6 +62,9 @@ const dayName = (iso) => { const d = new Date(iso + "T12:00:00");
   return d.toLocaleDateString("ru-RU", { day: "numeric", month: "long" }) + ", " + d.toLocaleDateString("ru-RU", { weekday: "long" }); };
 const addDays = (iso, n) => { const d = new Date(iso + "T12:00:00"); d.setDate(d.getDate() + n); return d.toISOString().slice(0, 10); };
 
+// Режим обучения (0066): в браузере есть учётки обучения (страница обучения кладёт их в tandem_training) или это
+// тестовая база. Только тогда в списке есть учебные точки; точка, в которую этот телефон уже входил (keep), остаётся.
+const trainingMode = () => !!window.TANDEM_TEST_BASE || !!((store.get("tandem_training", null) || {}).creds);
 async function initLogin() {
   $("shell").hidden = true; $("login").hidden = false;
   const saved = store.get("tandem_login", null);
@@ -66,7 +72,7 @@ async function initLogin() {
   $("lwho").value = store.get("tandem_order_who", "") || store.get("tandem_kassa_seller", "") || "";
   const sel = $("lpoint"); sel.innerHTML = "";
   try {
-    const pts = await post({ action: "points", payload: {} });
+    const pts = await post({ action: "points", payload: { training: trainingMode(), keep: (saved && saved.point_id) || "" } });
     if (!Array.isArray(pts)) throw new Error(pts.error);
     sel.append(el("option", { value: "" }, "— выберите точку —"));
     for (const p of pts) sel.append(el("option", { value: p.id }, p.name));

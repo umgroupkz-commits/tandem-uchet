@@ -1,6 +1,7 @@
 # Контекст сборки прокси своего сервера (server/Dockerfile) - корень репозитория; в образ идёт только это.
 *
 !server/package.json
+!server/package-lock.json
 !server/proxy.mjs
 !supabase/functions/uchet/webkassa.js
 !supabase/functions/uchet/fiscal.js

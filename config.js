@@ -9,10 +9,12 @@ window.TANDEM_TEST_BASE = true;
     if (document.getElementById("tandem-test-badge")) return;
     var b = document.createElement("div");
     b.id = "tandem-test-badge";
-    b.textContent = "ТЕСТОВАЯ БАЗА - для обучения, данные не настоящие";
+    // Рабочий адрес на самой плашке: сотрудник со старой закладкой GitHub Pages сразу видит, куда идти работать.
+    b.textContent = "ТЕСТОВАЯ БАЗА - только для обучения. Работать: uchet.eneshka.kz";
     b.setAttribute("style", "position:fixed;left:50%;top:0;transform:translateX(-50%);z-index:2147483646;" +
-      "background:#c62828;color:#fff;font:600 12px/1.7 system-ui,-apple-system,sans-serif;padding:0 10px;" +
-      "border-radius:0 0 6px 6px;pointer-events:none;opacity:.92;white-space:nowrap");
+      "background:#c62828;color:#fff;font:700 13px/1.8 system-ui,-apple-system,sans-serif;padding:0 12px;" +
+      "border-radius:0 0 6px 6px;pointer-events:none;opacity:.94;white-space:nowrap;max-width:96vw;" +
+      "overflow:hidden;text-overflow:ellipsis");
     document.body.appendChild(b);
     if (document.title.indexOf("ТЕСТ") !== 0) document.title = "ТЕСТ · " + document.title;
   }

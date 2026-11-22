@@ -1,10 +1,10 @@
-import { api, can } from "./api.js?v=32";
-import { el, fmt, toast, debounce, modal, confirmDlg, errText, saveFailed } from "./ui.js?v=32";
-import { loadXlsx } from "./stock.js?v=32";
-import { numInput, parseNum, fmtDate, fmtMoney } from "./inputs.js?v=32";
+import { api, can } from "./api.js?v=33";
+import { el, fmt, toast, debounce, modal, confirmDlg, errText, saveFailed } from "./ui.js?v=33";
+import { loadXlsx } from "./stock.js?v=33";
+import { numInput, parseNum, numStr, fmtDate, fmtMoney } from "./inputs.js?v=33";
 // hooks.editDoc ставит stock.js при загрузке (он уже импортирован выше ради loadXlsx): ссылка на приход
 // из карточки открывает тот же документ, что и журнал склада.
-import { hooks, stores, setStores } from "./stock-common.js?v=32";
+import { hooks, stores, setStores } from "./stock-common.js?v=33";
 
 const TYPES = { goods: "товар", dish: "блюдо", prepared: "полуфабрикат", service: "услуга" };
 let groups = [], state = { q: "", group_id: "", item_type: "", active: "true", page: 1 };
@@ -231,7 +231,11 @@ async function editItem(code) {
     for (const x of prices) if (Number.isNaN(x.price)) bad.push("цена точки «" + x.name + "»");
     if (bad.length) { err.textContent = "Не число: " + bad.join(", ") + ". Пишите цифры, копейки — через запятую."; return; }
     // Учётная цена скрыта у блюда и полуфабриката — тогда она не уходит вовсе.
-    const costChanged = !costBox.hidden && n.cost_price !== (item.cost_price == null ? "" : Number(item.cost_price));
+    // S-R3 9: сравнивается с тем, что поле показало (numStr режет до 6 знаков): цена из iiko 430,55555555555554
+    // иначе «менялась» при любом сохранении карточки, становилась «введена вручную» с сегодняшней датой, и
+    // перенос цен из iiko её больше не обновлял.
+    const shownCost = item.cost_price == null ? "" : parseNum(numStr(item.cost_price));
+    const costChanged = !costBox.hidden && n.cost_price !== shownCost;
     const groupChanged = !code || (!f.group_id.disabled && f.group_id.value !== curGroup);
     const p = { code: code || undefined, name: f.name.value, artikul: f.artikul.value, item_type: f.item_type.value, unit_id: f.unit_id.value,
       group_id: groupChanged ? f.group_id.value || null : undefined, price: n.price, pack_factor: n.pack_factor, pack_unit: f.pack_unit.value,
@@ -272,7 +276,9 @@ async function openDoc(id) {
   if (!stores.length) { const s = await api("stores_list", {}); if (s.ok) setStores(s.stores || []); }
   hooks.editDoc(id);
 }
-const docLink = (id, number) => id && can("stock", "view")
+// Ссылка на приход - только у того, кто может смотреть приходы (doc:invoice_in:view, S-R3 8): технологу сервер
+// карточку прихода не откроет, номер документа остаётся текстом.
+const docLink = (id, number) => id && can("stock", "view") && can("doc:invoice_in", "view")
   ? el("button", { type: "button", class: "link", style: "padding:0", title: "Открыть документ", onclick: () => openDoc(id) }, number || "документ")
   : (number || "");
 

@@ -15,8 +15,8 @@
 // docHtml/chartHtml отдают ту же разметку строкой (проверки сохраняют из неё PDF).
 // Поля новых версий сервера (artikul, posted_by_name, counteragent_bin, from_iiko…) необязательны:
 // нет поля — форма печатается без него. Числа в строках могут прийти и текстом из формы («0,5»).
-import { parseNum, fmtDate, fmtMoney } from "./inputs.js?v=32";
-import { TYPES, REASONS } from "./stock-common.js?v=32";
+import { parseNum, fmtDate, fmtMoney, mulRound2, sumMoney } from "./inputs.js?v=33";
+import { TYPES, REASONS } from "./stock-common.js?v=33";
 
 // Причины, которых может ещё не быть в общем справочнике (новые причины списания и ввод остатков).
 const MORE_REASONS = { defect: "брак", hospitality: "представительские", internal: "хозяйственные нужды", opening: "ввод начальных остатков" };
@@ -40,7 +40,10 @@ function dateTime(v) {
   return `${pad(d.getDate())}.${pad(d.getMonth() + 1)}.${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 // Строка внутри CSS content: "…" — кавычки и обратная косая экранируются, переносы — пробелом.
-const cssStr = (s) => '"' + String(s ?? "").replace(/[\\"]/g, "\\$&").replace(/[\r\n]+/g, " ") + '"';
+// S-R3 5: < и > - CSS-escape (\3C , \3E ): название позиции «…</style><img onerror=…>» закрывало бы тег стиля
+// страницы печати, и разметка из названия выполнялась бы в окне печати с сессией того, кто печатает.
+const cssStr = (s) => '"' + String(s ?? "").replace(/[\\"]/g, "\\$&").replace(/[\r\n]+/g, " ")
+  .replace(/</g, "\\3C ").replace(/>/g, "\\3E ") + '"';
 const has = (o, k) => o != null && Object.prototype.hasOwnProperty.call(o, k);
 
 // ---------- кирпичики разметки ----------
@@ -151,9 +154,10 @@ function lineSum(l, calc) {
   if (s !== null) return s;
   if (!calc) return null;
   const q = num(l.qty), p = num(l.price);
-  return q === null || p === null ? null : r2(q * p);
+  // до тиына, как при проведении (S-R3 10): черновик на бумаге и проведённый документ - одна сумма
+  return q === null || p === null ? null : mulRound2(q, p);
 }
-const sumOf = (vals) => r2(vals.reduce((a, v) => a + (v || 0), 0));
+const sumOf = (vals) => sumMoney(vals);
 const names = (n) => `${n} ${n % 10 === 1 && n % 100 !== 11 ? "наименование" : n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 12 || n % 100 > 14) ? "наименования" : "наименований"}`;
 
 function invoiceForm(doc, o) {

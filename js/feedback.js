@@ -1,12 +1,12 @@
-// Кнопка «Замечание» на всех экранах (сборка 21). Человек пишет, что не так, — экран сам прикладывает,
+// Кнопка «Замечание» на всех экранах (сборка 21). Человек пишет, что не так, - экран сам прикладывает,
 // где он был: страница и раздел, сборка, размер окна, последняя ошибка на экране. Обычный скрипт (не
 // модуль): его подключают и модульные страницы, и index.html с классическим app.js.
 // Страница вызывает TandemFeedback.mount({ source, send, screen, build, corner, attachTo }):
-//   send(message, context) → Promise<{ok, id?, error?, message?}> — отправка своим путём (бэк-офис —
-//     api('feedback_save'), точка и касса — действие feedback с кодом точки);
-//   screen() → строка «где я» (раздел, вкладка, точка); build — номер сборки;
-//   corner — 'br' (по умолчанию), 'bl', 'tr', 'tl'; attachTo — своя кнопка вместо плавающей.
-// TandemFeedback.noteError(text) — страница сообщает текст ошибки, показанной человеку.
+//   send(message, context) → Promise<{ok, id?, error?, message?}> - отправка своим путём (бэк-офис -
+//     api('feedback_save'), точка и касса - действие feedback с кодом точки);
+//   screen() → строка «где я» (раздел, вкладка, точка); build - номер сборки;
+//   corner - 'br' (по умолчанию), 'bl', 'tr', 'tl'; attachTo - своя кнопка вместо плавающей.
+// TandemFeedback.noteError(text) - страница сообщает текст ошибки, показанной человеку.
 // Коды, PIN и токены в сведения не попадают: адрес берётся без строки запроса.
 (function () {
   if (window.TandemFeedback) return;
@@ -29,18 +29,28 @@
     });
     return out.slice(0, 3);
   }
-  // Тост пропадает через пару секунд — запоминаем его текст, пока он виден.
+  // Тост пропадает через пару секунд - запоминаем его текст, пока он виден.
   function watchToast() {
     const t = document.getElementById("toast"); if (!t || t._fbWatch) return;
     t._fbWatch = true;
     new MutationObserver(() => { if (!t.hidden && /\bbad\b/.test(t.className)) noteError(t.textContent); })
       .observe(t, { attributes: true, childList: true, characterData: true, subtree: true });
   }
+  // Из какой базы замечание (с 20.11.2026 их две): тестовая - GitHub Pages (config.js ставит TANDEM_TEST_BASE),
+  // стенд - свой компьютер (localhost, 127.0.0.1), остальное - рабочая программа. Замечание ложится в базу того
+  // адреса, где открыт экран: замечания из обучения - в тестовую базу, их разбирают в бэк-офисе тестовой базы.
+  function base() {
+    const h = String(location.hostname || "");
+    if (window.TANDEM_TEST_BASE) return "тестовая";
+    return !h || h === "localhost" || h === "[::1]" || /^127\./.test(h) || /\.(localhost|test)$/.test(h) ? "стенд" : "рабочая";
+  }
   function context() {
     let screen = "";
     try { screen = opts && opts.screen ? String(opts.screen() || "") : ""; } catch (e) { screen = ""; }
     const vis = visibleErrors();
     return {
+      base: base(),
+      site: location.host,
       build: opts && opts.build ? String(opts.build) : "",
       screen: screen.slice(0, 200),
       url: location.pathname.split("/").pop() + location.hash,
@@ -57,7 +67,9 @@
   function open() {
     if (document.getElementById("tfb-ov")) return;
     const ctx = context();
-    const ov = mk("div", "position:fixed;inset:0;background:rgba(15,23,42,.45);z-index:10000;display:flex;align-items:center;justify-content:center;padding:12px");
+    // Выше обучалки (js/tour.js: затемнение и карточка урока - z-index до 2147483002): иначе карточка урока
+    // закрывала поле ввода, а замечание про застрявший урок пишут как раз во время урока.
+    const ov = mk("div", "position:fixed;inset:0;background:rgba(15,23,42,.45);z-index:2147483003;display:flex;align-items:center;justify-content:center;padding:12px");
     ov.id = "tfb-ov";
     const card = mk("div", "background:#fff;color:#111827;border-radius:12px;max-width:520px;width:100%;padding:18px;box-shadow:0 10px 40px rgba(0,0,0,.25);font:15px/1.4 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;max-height:92vh;overflow:auto");
     card.append(mk("div", "font-weight:700;font-size:18px;margin-bottom:6px", "Замечание"));
@@ -65,15 +77,15 @@
     const ta = mk("textarea", "display:block;width:100%;box-sizing:border-box;min-height:120px;padding:10px;border:1px solid #d1d5db;border-radius:8px;font:inherit;resize:vertical");
     ta.maxLength = 2000;
     try { ta.value = localStorage.getItem(DRAFT) || ""; } catch (e) {}
-    ta.placeholder = "Например: провёл приход, а в остатках сумма другая — ожидал 15 000";
+    ta.placeholder = "Например: провёл приход, а в остатках сумма другая - ожидал 15 000";
     ta.addEventListener("input", () => { try { localStorage.setItem(DRAFT, ta.value); } catch (e) {} });
     card.append(ta);
     const info = mk("details", "margin-top:8px;font-size:12px;color:#6b7280");
-    const sum = mk("summary", "cursor:pointer", "Что приложится: " + [ctx.screen || ctx.url, ctx.build ? "сборка " + ctx.build : "", ctx.last_error ? "последняя ошибка" : ""].filter(Boolean).join(", "));
+    const sum = mk("summary", "cursor:pointer", "Что приложится: " + [ctx.screen || ctx.url, ctx.base + " база", ctx.build ? "сборка " + ctx.build : "", ctx.last_error ? "последняя ошибка" : ""].filter(Boolean).join(", "));
     info.append(sum);
     const pre = mk("div", "white-space:pre-wrap;margin-top:6px;word-break:break-word");
-    pre.textContent = ["Экран: " + (ctx.screen || "—"), "Страница: " + ctx.url, "Сборка: " + (ctx.build || "—"), "Окно: " + ctx.w + "×" + ctx.h,
-      "Последняя ошибка: " + (ctx.last_error || "—"), ctx.on_screen.length ? "Сейчас на экране: " + ctx.on_screen.join(" | ") : ""].filter(Boolean).join("\n");
+    pre.textContent = ["База: " + ctx.base + " (" + (ctx.site || "-") + ")", "Экран: " + (ctx.screen || "-"), "Страница: " + ctx.url, "Сборка: " + (ctx.build || "-"), "Окно: " + ctx.w + "×" + ctx.h,
+      "Последняя ошибка: " + (ctx.last_error || "-"), ctx.on_screen.length ? "Сейчас на экране: " + ctx.on_screen.join(" | ") : ""].filter(Boolean).join("\n");
     info.append(pre); card.append(info);
     const msg = mk("div", "margin-top:8px;font-size:14px;min-height:1em");
     card.append(msg);
@@ -103,8 +115,8 @@
         return;
       }
       msg.style.color = "#b91c1c";
-      msg.textContent = r && r.error === "network" ? "Нет связи. Текст сохранён на этом устройстве — отправьте позже."
-        : (r && (r.message || r.error)) || "Не получилось отправить — повторите";
+      msg.textContent = r && r.error === "network" ? "Нет связи. Текст сохранён на этом устройстве - отправьте позже."
+        : (r && (r.message || r.error)) || "Не получилось отправить - повторите";
     };
     ta.focus();
   }

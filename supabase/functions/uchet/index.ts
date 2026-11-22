@@ -63,8 +63,9 @@ async function proxy(fn: string, args: unknown): Promise<Response> {
   const r = await rpc(fn, args);
   const text = await r.text();
   if (!r.ok) {
+    // Текст ошибки базы - только в журнал функции: снаружи по нему видно устройство базы (ревизия 22.11.2026)
     console.error(fn + " error", r.status, text);
-    return json({ ok: false, error: "Ошибка базы данных", detail: text.slice(0, 300) }, 500);
+    return json({ ok: false, error: "Ошибка базы данных" }, 500);
   }
   return new Response(text, { headers: { "content-type": "application/json; charset=utf-8", ...CORS } });
 }
@@ -90,6 +91,9 @@ Deno.serve(async (req: Request) => {
       return json({ ok: false, error: "Некорректный запрос" }, 400);
     }
     const action = body?.action ?? "";
+    // fiscal_prepare зовёт только фискальный модуль (fiscal.js) - напрямую RPC tandem_gate, не через эту функцию.
+    // Снаружи он не нужен: заводит строку журнала размена и изъятия и помечает чек «пробивается» без Webkassa.
+    if (action === "fiscal_prepare") return json({ ok: false, error: "Некорректное действие" }, 400);
     const raw = body?.payload;
     const payload = (raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {}) as Record<string, unknown>;
     // IP клиента — для счётчика неверных кодов в гейте; присланное клиентом _ip всегда перезаписывается.
@@ -99,8 +103,9 @@ Deno.serve(async (req: Request) => {
       try {
         return json(await handleFiscal(action, payload, fiscalDeps));
       } catch (e) {
+        // сюда доходят сбои базы (ошибки Webkassa и её настроек fiscal.js возвращает ответом): подробности - в журнал
         console.error(action + " error", e);
-        return json({ ok: false, error: "Ошибка фискализации: " + String((e as Error)?.message ?? e).slice(0, 300) }, 500);
+        return json({ ok: false, error: "Ошибка фискализации - повторите" }, 500);
       }
     }
     // Вся маршрутизация, служебный ключ и счётчик неверных кодов — в базе (public.tandem_gate,

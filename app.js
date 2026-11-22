@@ -1,4 +1,6 @@
-const API = window.TANDEM_API_URL || "https://qeehxcnnuzuwskznhdyg.supabase.co/functions/v1/uchet";   // адрес меняется в config.js
+// Без config.js: на GitHub Pages - тестовая база Supabase, на любом другом адресе - сервер на том же адресе (рабочий
+// прокси и стенды отдают экраны и API вместе); раньше запасным везде был Supabase (ревизия 22.11.2026).
+const API = window.TANDEM_API_URL || (/\.github\.io$/.test(location.hostname) ? "https://qeehxcnnuzuwskznhdyg.supabase.co/functions/v1/uchet" : location.origin + "/");   // адрес меняется в config.js
 
 var S = {
   role: null, point: null, pin: '', items: [], mode: null,
@@ -166,8 +168,16 @@ function api(action, payload, ms) {
   return post(action, payload, ms);
 }
 
+/* Режим обучения (0066): в браузере есть учётки обучения (страница обучения кладёт их в tandem_training) или это
+   тестовая база. Только тогда в списке точек есть «Учебная точка» и «Учебная касса»: на рабочем телефоне продавец
+   не выберет их по привычке с обучения. Точка, в которую этот телефон уже входил (keep), остаётся в списке. */
+function trainingMode() {
+  if (window.TANDEM_TEST_BASE) return true;
+  try { var c = JSON.parse(localStorage.getItem('tandem_training') || 'null'); return !!(c && c.creds); } catch (e) { return false; }
+}
 function initLogin() {
-  post('points', {}).then(function (pts) {
+  var keep = savedLogin();
+  post('points', { training: trainingMode(), keep: (keep && keep.point_id) || '' }).then(function (pts) {
     if (!Array.isArray(pts)) { $('lerr').textContent = (pts && pts.error) || 'Список точек не загрузился'; return; }
     var sel = $('lpoint');
     sel.innerHTML = '<option value="">— выберите точку —</option>';
@@ -208,6 +218,7 @@ function doLogin(asOwner) {
     // Код собственника и водителя на странице не оставляем: поле очищается сразу после входа.
     $('opin').value = '';
     S.role = res.role;
+    S.trainOwner = !!res.training;   // 0066: учебный код сводки - записей развоза ему не показываем
     if (res.role === 'owner') { showDash(); return; }
     if (res.role === 'driver') { showDriver(); return; }
     S.point = res.point; S.mode = res.point.mode;
@@ -217,7 +228,8 @@ function doLogin(asOwner) {
 }
 
 function logout() {
-  S.role = null; S.point = null; S.pin = ''; S.dash = null; S.ready = false;
+  S.role = null; S.point = null; S.pin = ''; S.dash = null; S.ready = false; S.trainOwner = false;
+  S.unfiscal = 0; S.unfiscalBusy = false;
   // Ответы на запросы, ушедшие до выхода, больше не применяются. Незавершённое сохранение отчёта
   // не держит кнопку следующего входа: его ответ отбрасывается по saveSeq.
   S.loadSeq++; S.dashSeq++; S.saveSeq++; S.saving = false;
@@ -279,6 +291,7 @@ function showForm() {
     S.mode === 'import' ? 'загрузка листа продаж' :
     S.mode === 'checks' ? 'касса: закрытие смены' : 'только суммы';
   $('date').value = today();
+  dateLimits();
   $('block-takeout').hidden = (S.mode !== 'takeout');
   $('block-sales').hidden = (S.mode !== 'position' && S.mode !== 'import');
   $('block-import').hidden = (S.mode !== 'import');
@@ -286,6 +299,10 @@ function showForm() {
   // (они видны в кассе, вкладка «Смена»). Сохранение этой формы и есть закрытие смены.
   var isK = S.mode === 'checks';
   $('block-kassa').hidden = !isK; $('moneyhint').hidden = !isK;
+  // Пробитый в налоговой чек не исправляют, а отменяют (чек возврата) и пробивают заново - как в уроках и памятке.
+  $('moneyhint').textContent = 'Суммы собраны из чеков кассы и здесь не правятся. ' + (S.point.fiscal
+    ? 'Ошибку в чеке исправляют в кассе: вкладка «Смена» → «Отменить чек» (будет чек возврата) и пробить чек заново.'
+    : 'Ошибку исправляют в самом чеке: касса → «Смена» → «Исправить».');
   ['cash', 'kaspi_qr', 'transfer', 'card'].forEach(function (id) { $(id).readOnly = isK; });
   $('savebtn').textContent = isK ? 'Закрыть смену' : 'Сохранить отчёт';
   if (S.mode === 'import') mountImport();
@@ -489,15 +506,64 @@ function drawFirstBy() {
   box.textContent = t; box.hidden = !t;
 }
 
+/* Окно дат отчёта (0066), как на сервере: не раньше 01.01.2024 и не позже сегодняшнего дня (сервер пускает и
+   завтра - если часы телефона отстают). Границы обновляются при каждой загрузке: после полуночи «сегодня» другое. */
+function dateLimits() { var d = $('date'); if (d) { d.min = '2024-01-01'; d.max = today(); } }
+
+/* Подсказка дня (0066, только текст, дату формы не меняет): касса пробивала чеки, а смену за прошлый день не
+   закрыли (open_shift), или вчерашний отчёт точки без кассы не сдан (prev_missing). Видна, когда открыт сегодняшний
+   день - так бывает после полуночи и когда смену забыли закрыть вечером. */
+function drawPrevDay(r, date) {
+  var box = $('prevday'); if (!box) return;
+  var t = '', bad = false;
+  if (r && date === today()) {
+    if (r.open_shift) {
+      bad = true;
+      t = 'Смена за ' + dmy(r.open_shift) + ' не закрыта. Чтобы закрыть её, выберите выше дату ' + dmy(r.open_shift) +
+        ' и нажмите «Закрыть смену».';
+    } else if (r.prev_missing) {
+      t = 'Отчёт за ' + dmy(r.prev_missing) + ' (вчера) не сдан. Если сдаёте отчёт за вчера, выберите эту дату выше.';
+    }
+  }
+  box.textContent = t; box.hidden = !t;
+  box.className = 'chk ' + (bad ? 'bad' : 'wait');
+}
+
+/* Не пробитые в налоговой продажи дня (участок кассы, 0065/0066): с ними смену кассы не закрыть - сервер откажет
+   тем же текстом, а Z-отчёт Webkassa их не примет. Экран показывает причину сразу, как только отчёт загружен, и
+   переспрашивает счёт, когда продавец вернулся из кассы (там он пробивает или отменяет такой чек). */
+function unfiscalText(n) {
+  return 'Не пробиты в налоговой: ' + n + ' - откройте кассу (вкладка «Смена»), нажмите «Проверить в налоговой» или отмените такой чек';
+}
+function drawUnfiscal() {
+  var box = $('kfiscal'); if (!box) return;
+  var n = S.mode === 'checks' && S.point && S.point.fiscal ? num(S.unfiscal) : 0;
+  box.hidden = !(n > 0);
+  box.textContent = n > 0 ? unfiscalText(n) + '. Пока они не пробиты, смену не закрыть: Z-отчёт Webkassa их не примет.' : '';
+}
+function refreshUnfiscal() {
+  if (!(S.mode === 'checks' && S.point && S.point.fiscal && S.ready)) return Promise.resolve(num(S.unfiscal));
+  var date = $('date').value, point = S.point;
+  return api('get_report', { date: date, brief: true }).then(function (r) {
+    if (S.point !== point || $('date').value !== date) return num(S.unfiscal);
+    if (r.ok) { S.unfiscal = num(r.unfiscal); drawUnfiscal(); }
+    return num(S.unfiscal);
+  });
+}
+
 function loadReport() {
   if (!S.itemsOk) { reloadForm(); return; }   // отчёт загрузится следом за списком позиций
   var seq = ++S.loadSeq, date = $('date').value;
+  dateLimits(); drawPrevDay(null, date);
+  S.unfiscal = 0; drawUnfiscal();
   S.late = null; S.firstBy = ''; S.firstSure = false; drawLate(); drawFirstBy();   // пометки прошлого дня не должны висеть над другим днём
   lockSave('Загружаю отчёт за ' + dmy(date) + '…');
   api('get_report', { date: date }).then(function (r) {
     if (seq !== S.loadSeq) return;   // пока грузилось, выбрали другой день
     if (!r.ok) { loadFailed('Отчёт не загрузился: ' + (r.offline ? 'нет связи с сервером' : (r.error || 'ошибка сервера'))); return; }
     say('');
+    drawPrevDay(r, date);
+    S.unfiscal = num(r.unfiscal); drawUnfiscal();
     S.expenses = r.expenses || []; S.takeout = r.takeout || []; S.sales = r.sales || [];
     // В строках продаж не хранится единица измерения — восстанавливаем из справочника,
     // иначе шаг «+/−» для килограммов станет штучным.
@@ -1114,14 +1180,64 @@ function loadRealization() {
       w.appendChild(d);
     });
     var b = $('rbody'); b.innerHTML = '';
-    (r.recent || []).forEach(function (x) {
-      var tr = document.createElement('tr');
-      tr.innerHTML = '<td>' + esc(x.date) + '</td><td>' + esc(x.client) + '</td>' +
-        '<td class="n">' + fmt(x.delivered) + '</td><td class="n">' + fmt(x.paid) + '</td>' +
-        '<td class="n">' + fmt(x.returned) + '</td><td>' + esc(x.note || '') + '</td>';
-      b.appendChild(tr);
-    });
+    (r.recent || []).forEach(function (x) { b.appendChild(realRow(x)); });
     if (!(r.recent || []).length) b.innerHTML = '<tr><td colspan="6" class="empty">Записей пока нет</td></tr>';
+  });
+}
+/* Строка записи развоза (водитель и собственник, 0066): отменённая собственником - суммы зачёркнуты, рядом причина;
+   в долг она не входит. onCancel - кнопка «Отменить» (только у собственника). */
+function realRow(x, onCancel) {
+  var tr = document.createElement('tr'), off = !!x.cancelled_at;
+  var n = function (v) { return '<td class="n"' + (off ? ' style="text-decoration:line-through;color:var(--muted)"' : '') + '>' + fmt(v) + '</td>'; };
+  tr.innerHTML = '<td>' + esc(dmy(x.date)) + '</td><td>' + esc(x.client) + '</td>' + n(x.delivered) + n(x.paid) + n(x.returned) +
+    '<td>' + esc(x.note || '') + (off ? ' <span class="pill warn">отменена: ' + esc(x.cancel_reason || '') + '</span>' : '') + '</td>';
+  if (onCancel) {
+    var td = document.createElement('td');
+    if (!off) {
+      var btn = document.createElement('button');
+      btn.type = 'button'; btn.className = 'ghost small'; btn.textContent = 'Отменить';
+      btn.onclick = function () { onCancel(x, btn); };
+      td.appendChild(btn);
+    }
+    tr.appendChild(td);
+  }
+  return tr;
+}
+
+/* Записи развоза у собственника (0066, ревизия, находка 15): последние 30; ошибочную запись водителя собственник
+   отменяет с причиной - в долг она больше не входит и остаётся в списке с пометкой. У учебного кода сводки развоза нет. */
+function loadRealLog() {
+  var card = $('rlog-card'); if (!card) return;
+  if (S.role !== 'owner' || S.trainOwner) { card.hidden = true; return; }
+  api('realization', { op: 'list' }).then(function (r) {
+    if (S.role !== 'owner') return;
+    card.hidden = false;
+    drawRealLog(r);
+  });
+}
+function drawRealLog(r) {
+  var b = $('rlog'); if (!b) return;
+  b.innerHTML = '';
+  if (!r.ok) { b.innerHTML = '<tr><td colspan="7" class="empty">' + esc(r.offline ? 'нет связи с сервером' : (r.error || 'не загрузилось')) + '</td></tr>'; return; }
+  (r.recent || []).forEach(function (x) { b.appendChild(realRow(x, r.can_cancel ? cancelReal : null)); });
+  if (!(r.recent || []).length) b.innerHTML = '<tr><td colspan="7" class="empty">Записей пока нет</td></tr>';
+}
+function cancelReal(x, btn) {
+  var m = $('rlogmsg');
+  var reason = window.prompt('Отменить запись развоза за ' + dmy(x.date) + ' «' + (x.client || '') + '»? Напишите причину - её увидит водитель:', '');
+  if (reason === null) return;
+  if (!reason.trim()) { m.className = 'msg bad'; m.textContent = 'Без причины запись не отменяется'; return; }
+  btn.disabled = true; m.className = 'msg'; m.textContent = 'Отменяю…';
+  api('realization', { op: 'cancel', data: { id: x.id, reason: reason.trim() } }).then(function (r) {
+    if (S.role !== 'owner') return;
+    if (!r.ok) {
+      btn.disabled = false; m.className = 'msg bad';
+      m.textContent = r.offline ? 'Нет связи - неизвестно, отменилась ли запись. Нажмите «Показать» и проверьте' : (r.error || 'Запись не отменилась');
+      return;
+    }
+    m.className = 'msg'; m.textContent = 'Запись отменена: в долг она больше не входит';
+    drawRealLog(r);
+    loadDash();   // долги по реализации пересчитаны
   });
 }
 function saveRealization() {
@@ -1297,10 +1413,30 @@ function saveReport() {
   if (!S.ready || S.saving) return;
   var date = $('date').value;
   if (!date) { say('Укажите дату отчёта', true); return; }
+  // 0066: окно дат, как на сервере; день больше двух месяцев назад - переспросить (не тот год в календаре)
+  var tmr = new Date(), old = new Date();
+  tmr.setDate(tmr.getDate() + 1); old.setDate(old.getDate() - 62);
+  if (date < '2024-01-01' || date > isoDate(tmr)) {
+    say('Дата отчёта ' + dmy(date) + ' не подходит: отчёт сдают не раньше 01.01.2024 и не позже сегодняшнего дня. Проверьте дату', true);
+    return;
+  }
+  if (date < isoDate(old) && !window.confirm('Отчёт за ' + dmy(date) + ' - больше двух месяцев назад. Сохранить за эту дату?')) return;
   if (S.mode === 'checks') {
     var pend = kassaPending(date);
     drawKassaQueue();   // непринятые (bad) остаются предупреждением над формой и закрыть не мешают
     if (pend.wait) { say(kassaPendingText(pend), true); return; }
+    // 0066 (касса, 0065): не пробитые в налоговой продажи дня - смену не закрыть. Счёт мог устареть (чек пробили
+    // в кассе, пока форма была открыта) - перед отказом спрашиваем свежий и, если их уже нет, закрываем.
+    if (S.point.fiscal && num(S.unfiscal) > 0) {
+      if (S.unfiscalBusy) return;
+      S.unfiscalBusy = true;
+      say('Проверяю, все ли чеки дня пробиты в налоговой…');
+      refreshUnfiscal().then(function (n) {
+        S.unfiscalBusy = false;
+        if (n > 0) say(unfiscalText(n), true); else saveReport();
+      });
+      return;
+    }
   }
   var fields = {};
   ['shift_by', 'comment'].concat(MONEY_FIELDS).forEach(function (id) { fields[id] = $(id).value; });
@@ -1322,6 +1458,7 @@ function saveReport() {
     S.saving = false;
     $('savebtn').disabled = !S.ready;
     if (!r.ok) {
+      if (r.unfiscal) { S.unfiscal = num(r.unfiscal); drawUnfiscal(); }   // 0066: сервер насчитал не пробитые чеки
       say(r.offline ? 'Нет связи — неизвестно, сохранился ли отчёт. Черновик на телефоне, нажмите «' +
         $('savebtn').textContent + '» ещё раз' : 'Ошибка: ' + (r.error || 'не сохранилось'), true);
       return;
@@ -1367,10 +1504,14 @@ function closeFiscalShift(date, msg, changed, stale) {
   // 0058: не пробитые чеки дня сервер проверяет сам и отвечает отказом с их числом.
   api('fiscal_z', { date: date, seller: $('shift_by').value.trim() }, 60000).then(function (z) {
     if (!z || stale()) return;
-    if (!z.ok) { say(msg + '. Z-отчёт Webkassa не снят: ' + (z.offline ? 'нет связи' : z.message || z.error || 'ошибка') + '. Закройте смену ещё раз', true); return; }
+    // 0065: warn - о чём Z предупреждает, не останавливаясь (не пробитые возвраты, чеки прошлых дней, расхождения
+    // с налоговой): показываем человеку и при успехе, и при сбое, а не прячем.
+    var warn = z.warn ? '. ' + String(z.warn).replace(/\.\s*$/, '') : '';
+    if (!z.ok) { say(msg + '. Z-отчёт Webkassa не снят: ' + (z.offline ? 'нет связи' : z.message || z.error || 'ошибка') + '. Закройте смену ещё раз' + warn, true); return; }
     var got = z.withdrawn ? '. Изъято из кассы Webkassa ' + fmt(z.withdrawn) + ' ₸ (выручка сдана)' : '';
     var wbad = z.withdraw_error ? '. Изъятие не прошло: ' + z.withdraw_error + ' - наличные остались в Webkassa, изымите их кнопкой в кассе' : '';
-    say(msg + got + (z.already ? '. Смена Webkassa уже была закрыта' : '. Смена Webkassa закрыта, Z-отчёт по смене №' + z.report.ShiftNumber) + wbad, changed || !!wbad);
+    say(msg + got + (z.already ? '. Смена Webkassa уже была закрыта' : '. Смена Webkassa закрыта, Z-отчёт по смене №' + (z.report && z.report.ShiftNumber)) + wbad + warn,
+      changed || !!wbad || !!warn);
   });
 }
 
@@ -1380,6 +1521,8 @@ function showDash() {
   showFeedback(true);
   // Как в отчётах бэк-офиса: по умолчанию — этот месяц, иначе цифры сводки и «Прибыли по точкам» не сравнить.
   setPeriod('month');
+  if ($('rlogmsg')) $('rlogmsg').textContent = '';
+  loadRealLog();
 }
 
 /* Быстрые периоды: сегодня, вчера, неделя (7 дней), этот месяц (с 1-го по сегодня) и прошлый месяц
@@ -1450,6 +1593,17 @@ function wasNow(v) {
    «Не сдано» — дни без сданного отчёта по вчерашний день (сегодняшний ещё идёт), начиная с первого
    отчёта точки: до него точка в программе не работала (points[].first_report, миграция 0047; null —
    отчётов ещё не было). Старый сервер first_report не отдаёт — тогда с начала периода, как раньше. */
+/* Позиции против выручки (0066, ревизия, находка 9) - та же сверка, что на экране точки (recalc): сумма по позициям
+   (у заборного листа - по листу) отличается от выручки больше чем на 1 ₸ - расхождение. Отчёт без позиций не
+   сверяется (точка сдала только суммы), касса тоже: у неё позиции и деньги из одних и тех же чеков.
+   Возвращает разницу «позиции минус выручка» (0 - сходится или сверять нечего) и сумму по позициям. */
+function itemsDiff(x) {
+  var items = x.mode === 'position' || x.mode === 'import' ? num(x.sales_amount)
+    : x.mode === 'takeout' ? num(x.takeout_amount) : 0;
+  if (!(items > 0)) return { d: 0, items: 0 };
+  var d = round2(items - num(x.revenue_total));
+  return { d: Math.abs(d) > 1 ? d : 0, items: items };
+}
 function dashStats(r, from, to, todayIso) {
   var rows = r.rows || [], pts = r.points || [];
   var hasFirst = pts.some(function (p) { return p && Object.prototype.hasOwnProperty.call(p, 'first_report'); });
@@ -1472,7 +1626,7 @@ function dashStats(r, from, to, todayIso) {
     if (x.mode === 'checks' && !x.closed_at) return;   // смена идёт: сверять и считать сданным рано
     // Расхождения — на момент закрытия: чеки после закрытия не делают ложной недостачи (owner Д1).
     var v = closeView(x);
-    var diffSum = Math.abs(num(v.diffQr)) + Math.abs(num(v.diffTr)) + Math.abs(num(v.diffCash));
+    var diffSum = Math.abs(num(v.diffQr)) + Math.abs(num(v.diffTr)) + Math.abs(num(v.diffCash)) + Math.abs(itemsDiff(x).d);
     if (diffSum > 0 || num(x.expenses_no_receipt) > 0) { st.flags++; p.badDays++; }
     p.diff += diffSum;
     p.days++; p.dates[String(x.report_date).slice(0, 10)] = true; st.submitted++;
@@ -1524,7 +1678,7 @@ function drawPointsTable(st) {
   });
   $('phint').textContent = (st.hasChecks ? '«Чеков» и «Средний чек» — по чекам кассы (отменённые не считаются); у точек без кассы чеков нет. ' : '') +
     '«Не сдано» — дни без сданного отчёта ' + (st.hasFirst ? 'с первого отчёта точки' : 'с начала периода') +
-    ' по вчерашний день; смена кассы считается сданной после закрытия.';
+    ' по вчерашний день; смена кассы считается сданной после закрытия. «Расхождение» - выписки, касса и сумма по позициям против выручки.';
 }
 // 'master' — общий счётчик неверных кодов. Старый сервер называл его «общий замок входа собственника
 // и водителя» — непонятно; пишем, что он делает (порог — в tandem_gate: 10 неверных за 5 минут).
@@ -1569,7 +1723,8 @@ function reportMarks(y) {
 // «Открыть смену для исправления»), false — не обновилась или устарела.
 function loadDash() {
   var seq = ++S.dashSeq;
-  return api('dashboard', { from: $('dfrom').value, to: $('dto').value }).then(function (r) {
+  // only_real (0066): в сводке только рабочие точки - без учебных и служебных zz_* (учебный код сервер и так ограничит учебными)
+  return api('dashboard', { from: $('dfrom').value, to: $('dto').value, only_real: true }).then(function (r) {
     if (seq !== S.dashSeq) return false;   // пока грузилось, выбрали другой период
     if (!r.ok) {
       $('derr').textContent = 'Сводка не обновилась: ' + (r.error || 'нет доступа') + (S.dash ? '. Ниже — данные прошлого запроса' : '');
@@ -1686,6 +1841,8 @@ function loadDash() {
       if (num(cv.diffTr) !== 0) issues.push('переводы: расхождение с выпиской ' + fmt(Math.abs(cv.diffTr)) + ' ₸');
       if (num(cv.diffCash) !== 0) issues.push(cashDiffText(cv.diffCash).toLowerCase());
       if (num(y.expenses_no_receipt) > 0) issues.push('без чека: ' + num(y.expenses_no_receipt));
+      var idf = itemsDiff(y);   // 0066: как сверка на экране точки
+      if (idf.d) issues.push((y.mode === 'takeout' ? 'по листу ' : 'по позициям ') + fmt(idf.items) + ' ₸ при выручке ' + fmt(y.revenue_total) + ' ₸');
       if (y.qr_statement === null && y.tr_statement === null) issues.push('нет сверки');
       var vbadge = voidBadge(y);
       var open = y.mode === 'checks' && !y.closed_at;   // касса: строку создал первый чек, смена ещё идёт
@@ -1814,6 +1971,12 @@ function toggleReportDetail(tr, row, note) {
     };
     html += stLine('Kaspi QR', cv.kaspi, src.qr_statement, cv.diffQr);
     html += stLine('Переводы', cv.transfer, src.tr_statement, cv.diffTr);
+    // 0066: позиции (заборный лист) против выручки - как сверка на экране точки
+    var idf = itemsDiff(src);
+    if (idf.d) {
+      html += '<div class="rrow"><span>' + (src.mode === 'takeout' ? 'По заборному листу ' : 'По позициям ') + fmt(idf.items) +
+        ' ₸, выручка ' + fmt(src.revenue_total) + ' ₸</span><b style="color:var(--bad)">расхождение ' + fmt(Math.abs(idf.d)) + ' ₸</b></div>';
+    }
     // «Должно» с расшифровкой: без неё «должно 11 460 ₸» при наличных 2 960 ₸ непонятно, откуда взялось.
     var counted = src.cash_counted !== null && src.cash_counted !== undefined;
     var dc = num(cv.diffCash);
@@ -1902,9 +2065,12 @@ function exportCsv() {
   // Расхождения — на момент закрытия смены, как на экране (closeView); суммы по каналам — весь день.
   // Точка с запятой — разделитель колонок для русского Excel: в названиях и тексте её заменяем запятой.
   // Числа — с запятой: «1234.5» русский Excel читает как текст или дату.
+  // Текст, который Excel принял бы за формулу (=, +, -, @ в начале - название точки, 0066), - с апострофом впереди.
   var cell = function (v) {
     if (v === null || v === undefined) return '';
-    return typeof v === 'number' ? numStr(v) : String(v).replace(/[;\r\n]+/g, ', ');
+    if (typeof v === 'number') return numStr(v);
+    var s = String(v).replace(/[;\r\n]+/g, ', ');
+    return /^[=+\-@\t]/.test(s) ? "'" + s : s;
   };
   var lines = [head.join(';')];
   for (var i = 0; i < rows.length; i++) {
@@ -1949,7 +2115,8 @@ window.addEventListener('DOMContentLoaded', function () {
   $('reloadbtn').onclick = reloadForm;
   // Касса в соседней вкладке досылает чеки — предупреждение о неотправленных обновляется само.
   window.addEventListener('storage', function (e) { if (e.key && e.key.indexOf('tandem_kassa_queue_') === 0) drawKassaQueue(); });
-  window.addEventListener('focus', drawKassaQueue);
+  // Вернулись из кассы: неотправленные чеки и не пробитые в налоговой (0066) - заново.
+  window.addEventListener('focus', function () { drawKassaQueue(); refreshUnfiscal(); });
   $('logout').onclick = logout;
   $('logout2').onclick = logout;
   $('logout3').onclick = logout;

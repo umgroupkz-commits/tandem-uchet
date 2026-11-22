@@ -1,6 +1,6 @@
-import { api, session, setSession, can, BUILD } from "./api.js?v=32";
-import { el, toast, errText, modal } from "./ui.js?v=32";
-import { fmtDateTime } from "./inputs.js?v=32";
+import { api, session, setSession, can, BUILD } from "./api.js?v=33";
+import { el, toast, errText, modal } from "./ui.js?v=33";
+import { fmtDateTime } from "./inputs.js?v=33";
 
 // Замечания разбирают администратор и собственник (сервер 0044 проверяет роль, а не права раздела:
 // в role_permissions такого раздела нет).
@@ -139,6 +139,11 @@ function start() {
   show("shell");
   $("uname").textContent = s.user.name;
   $("urole").textContent = { admin: "администратор", owner: "собственник", accountant: "бухгалтер", technologist: "технолог", storekeeper: "кладовщик", smm: "СММ" }[s.user.role] || s.user.role;
+  // «Телефон» (stock.html) - только ролям с операциями склада с телефона: технолог и СММ попадали на «У вашей роли
+  // нет складских операций» (обход кнопок, ревизия 22.11.2026). Права - те же, что у сценариев js/stock/app.js.
+  const phone = $("phonelink");
+  if (phone) phone.hidden = !["doc:invoice_in:edit", "doc:transfer:edit", "doc:writeoff:edit", "doc:inventory:edit"]
+    .some((p) => (s.permissions || []).includes(p));
   const menu = $("menu"); menu.innerHTML = "";
   const allowed = allowedSections();
   for (const x of allowed) {
@@ -209,7 +214,7 @@ setInterval(() => { if (session() && fbReader() && !$("shell").hidden && !docume
 const FB_SRC = { office: "бэк-офис", stock: "склад с телефона", kassa: "касса", point: "точка", order: "заявка", owner: "собственник", driver: "водитель" };
 const FB_ROLE = { admin: "администратор", owner: "собственник", accountant: "бухгалтер", technologist: "технолог", storekeeper: "кладовщик", smm: "СММ", driver: "водитель" };
 // Сведения, которые приложила кнопка: подписи по-русски, неизвестные поля — как пришли.
-const FB_CTX = { screen: "Экран", url: "Страница", build: "Сборка", w: "Ширина окна", h: "Высота окна", online: "Связь", last_error: "Последняя ошибка",
+const FB_CTX = { base: "База", site: "Сайт", screen: "Экран", url: "Страница", build: "Сборка", w: "Ширина окна", h: "Высота окна", online: "Связь", last_error: "Последняя ошибка",
   on_screen: "На экране", at: "Время на устройстве", ua: "Браузер" };
 const fbState = { status: "new" };
 let fbSeq = 0;

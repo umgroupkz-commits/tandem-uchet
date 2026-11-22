@@ -1,6 +1,9 @@
 // Вызовы бэк-офиса: токен сессии в payload, хранение сессии в localStorage.
-export const BUILD = 32;
-const API = (typeof window !== "undefined" && window.TANDEM_API_URL) || "https://qeehxcnnuzuwskznhdyg.supabase.co/functions/v1/uchet";   // адрес меняется в config.js
+export const BUILD = 33;
+// Без config.js (не загрузился): на GitHub Pages - тестовая база Supabase, на любом другом адресе - сервер на том же
+// адресе (рабочий прокси и стенды отдают экраны и API вместе). Раньше запасным везде был Supabase, и рабочий экран
+// без config.js молча писал бы в тестовую базу (ревизия 22.11.2026).
+const API = (typeof window !== "undefined" && (window.TANDEM_API_URL || (/\.github\.io$/.test(location.hostname) ? "https://qeehxcnnuzuwskznhdyg.supabase.co/functions/v1/uchet" : location.origin + "/"))) || "https://qeehxcnnuzuwskznhdyg.supabase.co/functions/v1/uchet";   // адрес меняется в config.js
 const KEY = "tandem_office";
 const TIMEOUT_MS = 20000;
 // Долгие действия (пересчёт продаж «готовым со склада», «Провести продажи за период», документы

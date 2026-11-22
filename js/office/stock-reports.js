@@ -1,10 +1,10 @@
 // Вкладки отчётов склада: продажи точек, оборотная ведомость, заявки и план выпечки, «готовым со
 // склада», расход для 1С, отчёты (прибыль, закупки, продажи по блюдам) и «Готовность». Журнал и форма
 // документа — stock.js.
-import { api, LONG_MS } from "./api.js?v=32";
-import { el, fmt, toast, debounce, modal, confirmDlg, today, isoDate, errText } from "./ui.js?v=32";
-import { fmtDate, fmtMoney } from "./inputs.js?v=32";
-import { TYPES, perms, stores, active, opts, myIds, mine, seqs, nextSeq, tabOut, sel, hooks } from "./stock-common.js?v=32";
+import { api, LONG_MS } from "./api.js?v=33";
+import { el, fmt, toast, debounce, modal, confirmDlg, today, isoDate, errText } from "./ui.js?v=33";
+import { fmtDate, fmtMoney, csvSafe } from "./inputs.js?v=33";
+import { TYPES, perms, stores, active, opts, myIds, mine, seqs, nextSeq, tabOut, sel, hooks } from "./stock-common.js?v=33";
 const editDoc = (id) => hooks.editDoc(id);
 
 // ---------- общее для отчётов ----------
@@ -66,7 +66,13 @@ const periodText = (st) => `${fmtDate(st.date_from)}—${fmtDate(st.date_to)}`;
 // Фильтры складов в отчётах — только действующие и закреплённые за пользователем, по алфавиту:
 // выключенные («Основной», «Центральный») только мешали найти нужный, по чужим сервер откажет.
 const storeList = () => mine(active()).slice().sort((a, b) => String(a.name).localeCompare(String(b.name), "ru"));
-const allStores = () => myIds.length ? "мои склады" : "все склады";
+// «Все склады» в отчётах - без учебных складов и складов служебных точек (сервер, S-R3 2): учебные приходы,
+// продажи и производство иначе попадали в «Расход для 1С», «Закупки» и итоги. Учебный склад - выбором из списка.
+const allStores = () => myIds.length ? "мои склады" : "все склады (без учебных)";
+const NO_TRAINING = "Учебные склады и точки в отчёт не входят - чтобы посмотреть учебный склад, выберите его в списке.";
+const noTrain = () => (myIds.length ? "" : " " + NO_TRAINING);
+// То же для отчётов по точкам (вкладка «Продажи», «Продажи по блюдам»): учебные и служебные точки - выбором точки.
+const noTrainPoint = (pointId) => (pointId || myIds.length ? "" : " Учебные точки сюда не входят - чтобы посмотреть учебную, выберите её в списке точек.");
 function storeSel(st, allLabel, reload) {
   const list = storeList();
   if (st.store_id && !list.some((s) => s.id === st.store_id)) st.store_id = "";
@@ -82,7 +88,9 @@ const textCode = (v) => /^0\d+$/.test(String(v || "")) ? { raw: `="${v}"` } : (v
 function csvSave(fileName, lines) {
   const q = (v) => {
     if (v && typeof v === "object" && "raw" in v) return v.raw;
-    const s = typeof v === "number" ? String(v).replace(".", ",") : String(v ?? "");
+    // Текст с = + - @ в начале Excel выполнил бы как формулу (CSV-инъекция) - csvSafe ставит апостроф;
+    // намеренные формулы ="00725" идут объектом {raw} выше и не трогаются.
+    const s = typeof v === "number" ? String(v).replace(".", ",") : csvSafe(v);
     return /[;"\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
   };
   const text = lines.map((r) => r.map(q).join(";")).join("\r\n");
@@ -178,7 +186,8 @@ export async function loadSales() {
   }
   put(out, el("div", { class: "card", style: "padding:0;overflow:auto" }, t),
     el("div", { class: "dim", style: "margin-top:8px" },
-      "Продажа проводится сама, когда точка сохраняет отчёт. «Провести продажи за период» нужна, если склад точке привязали позже или отчёт правили."));
+      "Продажа проводится сама, когда точка сохраняет отчёт. «Провести продажи за период» нужна, если склад точке привязали позже или отчёт правили."
+      + noTrainPoint(period.point_id)));
 }
 // Строка проданной позиции (вкладка «Продажи» и «Продажи по блюдам»): у неполной себестоимости — метка
 // с названиями ингредиентов без цены (missing_names), фудкост такой строки не зелёный (выше порога — красный).
@@ -228,7 +237,7 @@ export async function loadTurnover() {
       if (turn.last && turn.last.out.isConnected) drawTurnover(turn.last.out, turn.last.r, turn.last.ctx);
     } }, label));
     return [el("div", { class: "tools" },
-      storeSel(turn, myIds.length ? "мои склады вместе" : "все склады вместе", loadTurnover),
+      storeSel(turn, myIds.length ? "мои склады вместе" : "все склады вместе (без учебных)", loadTurnover),
       ...periodTools(turn, loadTurnover),
       el("input", { placeholder: "Позиция или код", value: turn.q, oninput: debounce((e) => { turn.q = e.target.value; loadTurnover(); }, 400) }),
       el("button", { class: "ghost csv" }, "Скачать CSV")),
@@ -341,7 +350,8 @@ function drawTurnover(out, r, ctx) {
     el("div", { class: "dim", style: "margin-top:8px" }, "Суммы — по себестоимости движений: количество × себестоимость позиции на складе в момент движения. Расход показан положительными числами."
       + (split ? " «Излишки» и «Недостача» — итоги инвентаризаций, оба положительными числами." : "")
       + (opening ? " «Ввод остатков» — инвентаризации с отметкой «ввод начальных остатков»: это не излишек и не недостача, в прибыль не входят." : "")
-      + (reval ? " «Переоценка» — поправка стоимости без количества: приход на склад, ушедший в минус, пересчитал недостающее по цене прихода; суммы на начало и конец её включают." : "")));
+      + (reval ? " «Переоценка» — поправка стоимости без количества: приход на склад, ушедший в минус, пересчитал недостающее по цене прихода; суммы на начало и конец её включают." : "")
+      + (ctx.store_id ? "" : noTrain())));
   pinRightCols(t);
 }
 function turnoverCsv(r, ctx) {
@@ -438,7 +448,8 @@ export async function loadOrders() {
           el("td", {}, (o.kind === "delivery" ? "доставка, " : "самовывоз, ") + o.point_name),
           el("td", {}, (o.lines || []).map((l) => `${l.title} ${fmt(l.qty)} ${l.unit}`).join("; ")),
           el("td", {}, o.status_name), el("td", {}, o.in_act ? el("span", { class: "tag ok" }, "в акте") : el("span", { class: "tag bad" }, "после акта")))))));
-    if (late.length && perms().includes("doc:production:edit")) out.append(el("div", { class: "actions" }, el("button", { onclick: async (e) => {
+    // Право - как у сервера (corder_docs_save): акт производства (doc:production:edit) в разделе склада (stock:edit).
+    if (late.length && perms().includes("doc:production:edit") && perms().includes("stock:edit")) out.append(el("div", { class: "actions" }, el("button", { onclick: async (e) => {
       e.target.disabled = true;
       const x = await api("corder_docs_save", { for_date: day }, { timeout: LONG_MS });
       e.target.disabled = false;
@@ -631,7 +642,7 @@ export async function loadC1() {
     // было на сервере, а кнопки не было, и в новой базе «Расход для 1С» оставался пустым).
     const file = el("input", { type: "file", accept: ".xlsx,.xls", style: "display:none", onchange: (e) => { if (e.target.files[0]) upload1c(e.target, e.target.nextSibling); } });
     return [el("div", { class: "tools" },
-      storeSel(c1, myIds.length ? "мои склады вместе" : "все склады вместе", loadC1),
+      storeSel(c1, myIds.length ? "мои склады вместе" : "все склады вместе (без учебных)", loadC1),
       ...periodTools(c1, loadC1),
       el("button", { class: "ghost csv" }, "Скачать для 1С (CSV)"),
       canEdit ? file : null,
@@ -674,7 +685,7 @@ export async function loadC1() {
       + (canEdit ? "Загрузите материальную ведомость 1С кнопкой «Загрузить справочник 1С (xlsx)»." : "Загрузить его может бухгалтер или собственник.")) : null,
     el("div", { class: "card", style: "padding:0;overflow:auto" }, t),
     el("div", { class: "tot" }, el("span", {}, `Позиций 1С: ${groups.length}` + (cat.ok ? ` · в справочнике 1С: ${catSize}` : "")), el("span", {}, `${money(total)} ₸`)),
-    el("div", { class: "dim", style: "margin-top:8px" }, "Расход проведённых продаж и актов производства, кроме полуфабрикатов и выпечки с кухни, проданной готовой: 1С знает сырьё, из которого они сделаны. Себестоимость — по нашему складу; в акте 1С сумму поставит сама 1С по своим ценам."));
+    el("div", { class: "dim", style: "margin-top:8px" }, "Расход проведённых продаж и актов производства, кроме полуфабрикатов и выпечки с кухни, проданной готовой: 1С знает сырьё, из которого они сделаны. Себестоимость — по нашему складу; в акте 1С сумму поставит сама 1С по своим ценам." + (ctx.store_id ? "" : noTrain())));
   c1.notice = "";
   if (free.length) {
     const ft = el("table");
@@ -687,7 +698,8 @@ export async function loadC1() {
   }
   csvBtn.onclick = () => csvSave(`расход для 1С ${storeName(ctx.store_id)} ${periodText(ctx)}`, [
     ["Код 1С", "Номенклатура 1С", "Счёт", "Ед.", "Количество", "Себестоимость учёта, ₸"],
-    ...groups.map((g) => [g.code, g.name, g.account || "", g.unit || "", Math.round(g.qty * 1000) / 1000, n2(g.sum)]),
+    // Код 1С «00000000033» Excel превратил бы в число 33 - пишем формулой ="…", как код iiko (textCode).
+    ...groups.map((g) => [textCode(g.code), g.name, g.account || "", g.unit || "", Math.round(g.qty * 1000) / 1000, n2(g.sum)]),
     // Бухгалтер должен видеть в самом файле, что списано не всё: раньше пустой файл молчал о 26 позициях.
     ...(free.length ? [[`Не попали: ${free.length} ${plural(free.length, "позиция", "позиции", "позиций")} без связи с 1С`]] : []),
   ]);
@@ -738,7 +750,7 @@ async function upload1c(input, btn) {
     let wb;
     try {
       const buf = await file.arrayBuffer();
-      const { loadXlsx } = await import("./stock.js?v=32");
+      const { loadXlsx } = await import("./stock.js?v=33");
       await loadXlsx();
       wb = window.XLSX.read(new Uint8Array(buf), { type: "array" });
     } catch (e) { toast("Файл не прочитан: " + (e && e.message || e), "bad"); return; }
@@ -805,7 +817,10 @@ function linkC1(x) {
 // ---------- отчёты: прибыль по точкам, закупки, продажи по блюдам ----------
 const rep = { kind: "pnl", store_id: "", point_id: "", q: "", date_from: "", date_to: "", auto: true };
 export async function loadReports() {
-  const KINDS = { pnl: "Прибыль по точкам", purchases: "Закупки", dishes: "Продажи по блюдам" };
+  // «Закупки» - только с правом смотреть приходы (сервер отвечает «Нет права смотреть приходы»): технологу
+  // её не предлагаем.
+  const KINDS = { pnl: "Прибыль по точкам", ...(perms().includes("doc:invoice_in:view") ? { purchases: "Закупки" } : {}), dishes: "Продажи по блюдам" };
+  if (!KINDS[rep.kind]) rep.kind = "pnl";
   if (rep.kind === "dishes") {
     await loadSalePoints();
     if (rep.point_id && !salePoints.some((x) => x.id === rep.point_id)) rep.point_id = "";
@@ -901,7 +916,7 @@ async function reportPnl(out, csvBtn, n, period) {
       + (split ? "и итоги инвентаризаций со складов точки: излишки в плюс, недостача в минус. " : "и итог инвентаризаций со складов точки — недостача с минусом. ")
       + "Итог по продуктам = выручка − себестоимость − списания + излишки − недостача. Ввод начальных остатков (день X) в прибыль не входит. "
       + (disc ? "Скидки кассы показаны для сведения: выручка уже за их вычетом. " : "")
-      + "Склады, не привязанные к точке, — строкой «Склады без точки». Зарплата, аренда и прочие расходы появятся с разделом «Финансы»."));
+      + "Склады, не привязанные к точке, — строкой «Склады без точки». Зарплата, аренда и прочие расходы появятся с разделом «Финансы»." + noTrain()));
   csvBtn.onclick = () => {
     const head = ["Точка", "Выручка", ...(disc ? ["Скидки"] : []), "Себестоимость", ...(revalPts.length ? ["в т. ч. переоценка"] : []), "Валовая прибыль", "Фудкост, %", "Списания",
       ...(split ? ["Излишки", "Недостача"] : ["Инвентаризация"]), "Итог по продуктам", ...(hasInc ? ["Себестоимость неполная, поз."] : [])];
@@ -956,7 +971,7 @@ async function reportPurchases(out, csvBtn, n, period) {
     el("div", { class: "card", style: "padding:0;overflow:auto" }, st),
     r.suppliers.length ? el("div", { class: "dim", style: "margin:-6px 0 0" }, "Щелчок по поставщику — его приходные накладные за этот период и по этому складу в журнале документов.") : null,
     el("h3", { style: "margin:16px 0 8px" }, "По товарам"), el("div", { class: "card", style: "padding:0;overflow:auto" }, t),
-    el("div", { class: "dim", style: "margin-top:8px" }, `${where} · ${periodText(period)}. Проведённые приходные накладные за период. Красным — максимальная цена выше минимальной больше чем на 10 %: стоит спросить поставщика.`));
+    el("div", { class: "dim", style: "margin-top:8px" }, `${where} · ${periodText(period)}. Проведённые приходные накладные за период. Красным — максимальная цена выше минимальной больше чем на 10 %: стоит спросить поставщика.` + (period.store_id ? "" : noTrain())));
   // Оба раздела в одном файле, как отчёт iiko: сначала поставщики, затем товары; в шапке и в имени — склад и период.
   csvBtn.onclick = () => csvSave(`закупки ${where} ${periodText(period)}`, [
     [`Закупки · ${where} · ${periodText(period)}`],
@@ -998,7 +1013,7 @@ async function reportDishes(out, csvBtn, n, period) {
     put(out, el("div", { class: "card", style: "padding:0;overflow:auto" }, t),
       el("div", { class: "dim", style: "margin-top:8px" }, `${where} · ${periodText(period)}. Проданные позиции по выручке. Фудкост выше ${FC_ALERT} % — красным; `
         + "«себест. неполная» — в техкарте есть ингредиент без цены, себестоимость и фудкост занижены (наведите на метку — какие): "
-        + `такой фудкост до ${FC_ALERT} % — без цвета, выше — тоже красным.`));
+        + `такой фудкост до ${FC_ALERT} % — без цвета, выше — тоже красным.` + noTrainPoint(period.point_id)));
   };
   draw();
   csvBtn.onclick = () => {
@@ -1025,6 +1040,8 @@ const READY_GO = {
   store: { ok: () => !!menuBtn("stores"), go: () => { const b = menuBtn("stores"); if (b) b.click(); } },
   user: { ok: () => !!menuBtn("users"), go: () => { const b = menuBtn("users"); if (b) b.click(); } },
   sale: { ok: () => !!tabBtn("Продажи"), go: () => { const b = tabBtn("Продажи"); if (b) b.click(); } },
+  // склад кухни плана заявок учебный - настройка во вкладке «Заявки»
+  orders: { ok: () => !!tabBtn("Заявки"), go: () => { const b = tabBtn("Заявки"); if (b) b.click(); } },
 };
 export async function loadReady() {
   const host = document.getElementById("ready-root"); if (!host) return;
