@@ -2,9 +2,9 @@
 // попадает в дневной отчёт точки и на склад (миграция 0033). Связь на точках нестабильная, поэтому
 // чек сначала кладётся в очередь планшета (localStorage) и досылается в фоне; сервер узнаёт
 // повторную досылку по uid и второй чек не создаёт.
-import { el, fmt, toast, today, debounce, isoDate } from "../office/ui.js?v=34";
-import { mountOrders, stopOrders } from "./orders.js?v=34";
-import { initFiscal, fiscalOn, fiscalize, retryPending, fiscalBadges, xReport, moneyOp, autoPrint, setAutoPrint, pendingCount, queueFiscal, moneyJournal } from "./fiscal.js?v=34";
+import { el, fmt, toast, today, debounce, isoDate } from "../office/ui.js?v=35";
+import { mountOrders, stopOrders } from "./orders.js?v=35";
+import { initFiscal, fiscalOn, fiscalize, retryPending, fiscalBadges, xReport, moneyOp, autoPrint, setAutoPrint, pendingCount, queueFiscal, moneyJournal } from "./fiscal.js?v=35";
 
 // Без config.js (не загрузился): на GitHub Pages - тестовая база Supabase, на любом другом адресе - сервер на том же
 // адресе (рабочий прокси и стенды отдают экраны и API вместе). Раньше запасным везде был Supabase, и рабочий экран

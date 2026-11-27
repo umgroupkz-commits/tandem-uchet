@@ -6,7 +6,7 @@
 // ответила - чек мог уйти в налоговую, правка закрыта, касса проверяет его повтором); mismatch - в налоговой этот
 // чек на другую сумму (только отмена и офис); у отменённого возврат check - касса сначала узнаёт у Webkassa, была
 // ли продажа, manual - возврат через офис.
-import { el, toast } from "../office/ui.js?v=34";
+import { el, toast } from "../office/ui.js?v=35";
 
 let C = null;   // {call(action, payload), point(), seller(), store, changed() - список «не пробиты» изменился, blocked() - код точки не принят}
 const QR_LIB = "https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js";

@@ -1,7 +1,7 @@
 import { ask, el, fmtMoney, fmtDate, today, toast, debounce, itemPicker, linesTable, drafts, warningsText, readyNotes, commentOf,
-  withBusy, saveDoc, postDoc, showPosted, newKey, draftHint, okNum, numOf, hasNum, selectOnFocus, askSheet } from "./common.js?v=34";
-import { isoDate } from "../office/ui.js?v=34";
-import { numStr, mulRound2, sumMoney } from "../office/inputs.js?v=34";
+  withBusy, saveDoc, postDoc, showPosted, newKey, draftHint, okNum, numOf, hasNum, selectOnFocus, askSheet } from "./common.js?v=35";
+import { isoDate } from "../office/ui.js?v=35";
+import { numStr, mulRound2, sumMoney } from "../office/inputs.js?v=35";
 
 const SCN = "receive";
 const shift = (days) => { const t = new Date(); t.setDate(t.getDate() + days); return isoDate(t); };

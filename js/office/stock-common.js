@@ -1,9 +1,9 @@
 // Общее для экранов склада бэк-офиса: справочники документов, права, список складов пользователя
 // и мелкие помощники вкладок. Журнал и форма документа — stock.js, отчёты — stock-reports.js.
-import { session } from "./api.js?v=34";
-import { el } from "./ui.js?v=34";
+import { session } from "./api.js?v=35";
+import { el } from "./ui.js?v=35";
 
-export const TYPES = { invoice_in: "Приход", invoice_out: "Расходная накладная", transfer: "Перемещение", writeoff: "Списание", production: "Производство", inventory: "Инвентаризация", sale: "Продажа" };
+export const TYPES = { invoice_in: "Приход", invoice_out: "Расходная накладная", resort: "Пересорт", transfer: "Перемещение", writeoff: "Списание", production: "Производство", inventory: "Инвентаризация", sale: "Продажа" };
 // Продажу заводит отчёт точки, а не человек: в «+ Новый документ» её нет.
 export const MANUAL = Object.keys(TYPES).filter((k) => k !== "sale");
 // Причины списания — статьи, к которым привыкли в iiko (брак, представительские, хознужды); список тот же,

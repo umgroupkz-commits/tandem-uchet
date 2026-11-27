@@ -15,8 +15,8 @@
 // docHtml/chartHtml отдают ту же разметку строкой (проверки сохраняют из неё PDF).
 // Поля новых версий сервера (artikul, posted_by_name, counteragent_bin, from_iiko…) необязательны:
 // нет поля — форма печатается без него. Числа в строках могут прийти и текстом из формы («0,5»).
-import { parseNum, fmtDate, fmtMoney, mulRound2, sumMoney } from "./inputs.js?v=34";
-import { TYPES, REASONS } from "./stock-common.js?v=34";
+import { parseNum, fmtDate, fmtMoney, mulRound2, sumMoney } from "./inputs.js?v=35";
+import { TYPES, REASONS } from "./stock-common.js?v=35";
 
 // Причины, которых может ещё не быть в общем справочнике (новые причины списания и ввод остатков).
 const MORE_REASONS = { defect: "брак", hospitality: "представительские", internal: "хозяйственные нужды", opening: "ввод начальных остатков" };
@@ -194,6 +194,18 @@ ${authors(doc)}${signs(["Отпустил", "Получил (покупател�
   return { name: "Расходная накладная", body };
 }
 
+// 0074: пересорт - что пробили по ошибке и что отдали на самом деле; цен нет (чеки не меняются).
+function resortForm(doc) {
+  const L = doc.lines || [];
+  const cols = [colNo, colCode(L), colName(), { h: "Отдали на самом деле", get: (l) => esc(l.note_name || l.note || "") }, colUnit,
+    { h: "Кол-во", cls: "num", w: "19mm", get: (l) => qty(l.qty) }];
+  const body = `<div class="org">Тандем</div><h1>${esc(title("Пересорт", doc))}</h1>${draftMark(doc)}
+${req([["Склад", esc(doc.store_from_name || "")], ["Комментарий", esc(doc.comment || "")]])}
+${grid(cols, L, "")}
+<div class="end"><div class="sum"><div>Всего ${names(L.length)}</div></div>${authors(doc)}${signs(["Составил", "Проверил"])}</div>`;
+  return { name: "Пересорт", body };
+}
+
 function transferForm(doc, o) {
   const L = doc.lines || [];
   const posted = doc.status === "posted";
@@ -324,7 +336,7 @@ ${cons.count ? `<h2>Списано со склада</h2>${cons.html}` : ""}
   return { name: TYPES.sale || "Продажа", body };
 }
 
-const FORMS = { invoice_in: invoiceForm, invoice_out: invoiceOutForm, transfer: transferForm, writeoff: writeoffForm, production: productionForm, inventory: inventoryForm, sale: saleForm };
+const FORMS = { invoice_in: invoiceForm, invoice_out: invoiceOutForm, resort: resortForm, transfer: transferForm, writeoff: writeoffForm, production: productionForm, inventory: inventoryForm, sale: saleForm };
 
 export function docHtml(src, o = {}) {
   // Принимаем и документ (r.doc), и весь ответ doc_get.
