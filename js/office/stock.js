@@ -424,6 +424,9 @@ async function editDoc(id, newType, preset) {
     if (i >= 0 && i < all.length - 1) all[i + 1].focus(); else focusSearch();
   };
   const qkey = isInv ? "fact_qty" : "qty";
+  // 0070: в проведённой описи блюдо или полуфабрикат, которого склад не получает готовым, разложен до сырья (строки
+  // расхода с for_item = его код): у самой строки нет разницы, а сырьё её описи получило прибавку к факту.
+  const decSet = new Set(isInv && posted ? (doc.consume || []).map((c) => c.for_item) : []);
   // Сумма строки - до тиына так же, как при проведении (mulRound2), итог - из сумм строк: форма, журнал и
   // проведённый документ показывают одну цифру (раньше 50,25 в форме, 50,24 в журнале и 50,26 после проведения).
   const lineSum = (l) => mulRound2(num0(l[qkey]), num0(l.price));
@@ -459,10 +462,16 @@ async function editDoc(id, newType, preset) {
         el("td", {}, l.name, isInv && !posted && l.current_qty != null ? el("i", { class: "dim", style: "display:block;font-style:normal;font-size:11px" }, "расчёт: " + Number(l.current_qty).toLocaleString("ru-RU", { maximumFractionDigits: 3 })) : null),
         el("td", {}, l.unit_id || "")];
       if (ro) {
-        tds.push(el("td", { class: "num" }, fmt(l[qkey])));
+        const dec = decSet.has(l.item_code);
+        // Факт описи после 0070 - пересчитанное плюс сырьё из разложенных строк (qty); до 0070 qty = fact_qty.
+        const addPf = isInv && posted && !dec ? num0(l.qty ?? l.fact_qty) - num0(l.fact_qty) : 0;
+        tds.push(el("td", { class: "num" }, fmt(l[qkey]), Math.abs(addPf) > 0.00005
+          ? el("i", { class: "dim", style: "display:block;font-style:normal;font-size:11px" }, "+" + fmt(addPf) + " из полуфабрикатов") : null));
         if (isInv && posted) {
-          const diff = num0(l.fact_qty ?? l.qty) - num0(l.calc_qty);
-          tds.push(el("td", { class: "num" }, fmt(l.calc_qty)), el("td", { class: "num" + (diff < 0 ? " bad" : "") }, fmt(diff)),
+          const diff = num0(l.qty ?? l.fact_qty) - num0(l.calc_qty);
+          tds.push(el("td", { class: "num" }, dec ? "" : fmt(l.calc_qty)),
+            el("td", { class: "num" + (!dec && diff < 0 ? " bad" : ""), title: dec ? "Склад не получает эту позицию готовой: посчитанное разложено по техкарте и прибавлено к сырью ниже" : null },
+              dec ? "разложено" : fmt(diff)),
             el("td", { class: "num" }, priceTxt(l.price)), el("td", { class: "num" }, fmtMoney(l.sum)));
         } else if (isIn || isInv) tds.push(el("td", { class: "num" }, priceTxt(l.price)), el("td", { class: "num" }, fmtMoney(posted && l.sum != null ? l.sum : lineSum(l) || null)));
         else if (posted) tds.push(el("td", { class: "num" }, priceTxt(l.price)), el("td", { class: "num" }, fmtMoney(l.sum)));
@@ -762,7 +771,16 @@ async function editDoc(id, newType, preset) {
     }
     m.root.append(tools);
   }
-  if (doc.consume && doc.consume.length) {
+  if (doc.consume && doc.consume.length && isInv) {
+    // 0070: опись - что разложено из полуфабрикатов и блюд; сырьё, которого в описи нет, не пересчитано и не учтено.
+    const counted = new Set(lines.filter((l) => !decSet.has(l.item_code)).map((l) => l.item_code));
+    const ct = el("table"); ct.append(el("tr", {}, ...["Сырьё", "Ед.", "Кол-во", "Из чего"].map((h, i) => el("th", { class: i === 2 ? "num" : "" }, h))));
+    const nameOf = (code) => (lines.find((l) => l.item_code === code) || {}).name || code;
+    for (const c of doc.consume) ct.append(el("tr", {}, el("td", {}, c.name, counted.has(c.item_code) ? null
+        : el("i", { class: "dim", style: "display:block;font-style:normal;font-size:11px" }, "нет в описи - не учтено")),
+      el("td", {}, c.unit_id), el("td", { class: "num" }, fmt(c.qty)), el("td", {}, nameOf(c.for_item))));
+    m.root.append(el("h2", { style: "margin-top:14px" }, "Разложено по техкартам (прибавлено к факту сырья)"), ct);
+  } else if (doc.consume && doc.consume.length) {
     const ct = el("table"); ct.append(el("tr", {}, ...["Расход сырья", "Ед.", "Кол-во", "Себест.", "Сумма"].map((h, i) => el("th", { class: i >= 2 ? "num" : "" }, h))));
     for (const c of doc.consume) ct.append(el("tr", {}, el("td", {}, c.name), el("td", {}, c.unit_id), el("td", { class: "num" }, fmt(c.qty)), el("td", { class: "num" }, priceTxt(c.price)), el("td", { class: "num" }, fmtMoney(c.sum))));
     m.root.append(el("h2", { style: "margin-top:14px" }, isSale ? "Списано со склада (по техкартам и как есть)" : "Списано по техкартам"), ct);
@@ -844,7 +862,14 @@ async function editDoc(id, newType, preset) {
     if (charts.length) box.append(el("div", { class: "warnbox" },
       `Нет действующей техкарты на ${fmtDate(f.date.value)}: ${listNames(charts)} — документ не проведётся. `
       + "Уберите эти позиции из выпуска или заведите техкарту в разделе «Техкарты»."));
-    if (pv.consume && pv.consume.length) box.append(el("div", { class: "dim", style: "margin-top:6px" }, "Будет списано: " + pv.consume.map((c) => `${c.name} ${fmt(c.qty)} ${c.unit_id}`).join(", ")));
+    if (pv.consume && pv.consume.length) box.append(el("div", { class: "dim", style: "margin-top:6px" },
+      (isInv ? "Полуфабрикаты и блюда разложатся по техкартам, к факту сырья прибавится: " : "Будет списано: ")
+      + pv.consume.map((c) => `${c.name} ${fmt(c.qty)} ${c.unit_id}`).join(", ")));
+    // 0070: сырьё из разложенного, которого нет в описи, - его не пересчитывали, и проведение его не тронет.
+    const skipped = Array.isArray(pv.skipped) ? pv.skipped : [];
+    if (isInv && skipped.length) box.append(el("div", { class: "warnbox" },
+      "Нет в описи: " + skipped.map((c) => `${c.name} (${fmt(c.qty)} ${c.unit_id} в полуфабрикатах)`).join(", ")
+      + ". Эти позиции не пересчитаны, их остаток не изменится. Если они есть на складе - добавьте их в опись с фактом."));
     const minus = (Array.isArray(pv.warnings) ? pv.warnings : []).filter((w) => w.balance_after !== null && w.balance_after !== undefined);
     if (minus.length) box.append(el("div", { class: "warnbox" }, "Уйдут в минус: " + minus.map((w) => `${w.name} (${w.store_name}) → ${fmt(w.balance_after)}`).join("; "),
       prepHint(minus)));

@@ -2641,6 +2641,124 @@ SECTIONS.corders_kitchen = async (ctx) => {
   check("кухня: строки заказа в акте не правятся", r.ok === false && r.error === "validation", r);
 };
 
+// 0070: полуфабрикаты раскладываются до сырья, как в iiko Тандема (у всех блюд и ПФ там выключено «учитывать
+// остатки»): при продаже, в акте производства, при списании и на ревизии. Исключение - то, что склад получил
+// готовым (перемещением или своим актом): оно списывается и считается само.
+SECTIONS.raskladka = async (ctx) => {
+  const t = ctx.token;
+  const pin = process.env.TANDEM_OWNER_PIN || "";
+  if (!pin) { console.log("  пропуск: нужен TANDEM_OWNER_PIN (отчёт точки сдаётся кодом)"); return; }
+  const near = (a, b, e = 0.0005) => Math.abs(Number(a) - Number(b)) < e;
+  let r = await call("office_store_save", { token: t, name: "ZZ_TEST_склад раскладки", point_id: "zz_test", is_default: true }); const P = r.id;
+  r = await call("office_store_save", { token: t, name: "ZZ_TEST_кухня раскладки" }); const K = r.id;
+  r = await call("office_counteragent_save", { token: t, name: "ZZ_TEST_поставщик раскладки", kind: "supplier" }); const SUP = r.id;
+  const mk = async (name, item_type, unit_id) => (await call("office_item_save", { token: t, name, item_type, unit_id })).code;
+  const muka = await mk("ZZ_TEST_р мука", "goods", "кг"), myaso = await mk("ZZ_TEST_р мясо", "goods", "кг");
+  const luk = await mk("ZZ_TEST_р лук", "goods", "кг"), sahar = await mk("ZZ_TEST_р сахар", "goods", "кг");
+  const lukPf = await mk("ZZ_TEST_р лук очищ ПФ", "prepared", "кг"), farsh = await mk("ZZ_TEST_р фарш ПФ", "prepared", "кг");
+  const kompPf = await mk("ZZ_TEST_р компот ПФ", "prepared", "л");
+  const kotl = await mk("ZZ_TEST_р котлета", "dish", "шт"), komp = await mk("ZZ_TEST_р компот 200", "dish", "порц");
+  const chart = (code, out, lines) => call("office_chart_save", { token: t, code, date_from: "2020-01-01", output_amount: out,
+    lines: lines.map(([ingredient_code, brutto]) => ({ ingredient_code, brutto, netto: brutto, output: brutto })) });
+  const ch = [await chart(lukPf, 1, [[luk, 1.25]]), await chart(farsh, 1, [[myaso, 0.8], [lukPf, 0.2]]),
+    await chart(kompPf, 1, [[sahar, 0.1]]), await chart(kotl, 1, [[farsh, 0.1], [muka, 0.01]]), await chart(komp, 1, [[kompPf, 0.2]])];
+  check("раскладка: подготовка - склады, позиции, карты", P && K && SUP && kotl && komp && ch.every((x) => x.ok), ch);
+  for (const S of [P, K]) {
+    r = await call("office_doc_save", { token: t, doc_type: "invoice_in", doc_date: "2024-06-01", store_to: S, counteragent_id: SUP,
+      lines: [{ item_code: muka, qty: 10, price: 100 }, { item_code: myaso, qty: 10, price: 1000 }, { item_code: luk, qty: 10, price: 50 }, { item_code: sahar, qty: 10, price: 200 }] });
+    await call("office_doc_post", { token: t, id: r.id });
+  }
+  const bal = async (S, code) => { const b = await call("office_stock_balances", { token: t, store_id: S, only_nonzero: false });
+    const row = (b.rows || []).find((x) => x.item_code === code); return row ? Number(row.qty) : 0; };
+  const report = (date, sales) => call("save_report", { pin, point_id: "zz_test", date, comment: "ZZ_TEST_раскладка", cash: 1000, sales, takeout: [] });
+  const saleDoc = async (date) => { const rows = (await call("office_doc_sales_list", { token: t, date_from: date, date_to: date, point_id: "zz_test" })).rows || [];
+    return rows[0] && rows[0].doc_id ? (await call("office_doc_get", { token: t, id: rows[0].doc_id })).doc : null; };
+  const cq = (d, code) => ((d && d.consume) || []).filter((c) => c.item_code === code).reduce((s, c) => s + Number(c.qty), 0);
+  const forItem = (d, root, code) => ((d && d.consume) || []).filter((c) => c.for_item === root && c.item_code === code).reduce((s, c) => s + Number(c.qty), 0);
+
+  // 1. Продажа: котлета → фарш ПФ → мясо и лук очищ ПФ → лук; компот 200 → компот ПФ → сахар.
+  r = await report("2024-06-02", [{ item_code: kotl, item_name: "котлета", qty: 10, price: 500 }, { item_code: komp, item_name: "компот", qty: 5, price: 200 }]);
+  let doc = await saleDoc("2024-06-02");
+  check("раскладка: продажа списала сырьё - мясо 0,8, лук 0,25, мука 0,1, сахар 0,1, полуфабрикаты не тронуты",
+    r.ok && doc && near(cq(doc, myaso), 0.8) && near(cq(doc, luk), 0.25) && near(cq(doc, muka), 0.1) && near(cq(doc, sahar), 0.1)
+    && !doc.consume.some((c) => [farsh, lukPf, kompPf].includes(c.item_code)), doc && doc.consume);
+  check("раскладка: полуфабрикаты на складе точки не ушли в минус",
+    near(await bal(P, farsh), 0) && near(await bal(P, kompPf), 0) && near(await bal(P, lukPf), 0) && near(await bal(P, myaso), 9.2),
+    { farsh: await bal(P, farsh), kompPf: await bal(P, kompPf), myaso: await bal(P, myaso) });
+
+  // 2. Акт производства на кухне: фарш раскладывается до мяса и лука (лук очищ ПФ кухня не выпускала).
+  r = await call("office_doc_save", { token: t, doc_type: "production", doc_date: "2024-06-03", store_from: K, lines: [{ item_code: farsh, qty: 3 }] });
+  const act1 = r.id;
+  r = await call("office_doc_preview", { token: t, id: act1 });
+  check("раскладка: предпросмотр акта - мясо 2,4 и лук 0,75, без лука очищ ПФ", r.ok && near((r.consume.find((c) => c.item_code === myaso) || {}).qty, 2.4)
+    && near((r.consume.find((c) => c.item_code === luk) || {}).qty, 0.75) && !r.consume.some((c) => c.item_code === lukPf), r.consume);
+  r = await call("office_doc_post", { token: t, id: act1 });
+  check("раскладка: акт проведён - фарш на кухне 3, мясо 7,6, лук 9,25",
+    r.ok && near(await bal(K, farsh), 3) && near(await bal(K, myaso), 7.6) && near(await bal(K, luk), 9.25) && near(await bal(K, lukPf), 0), r);
+
+  // 3. Перемещение фарша на склад точки: там он «готовым», продажа котлеты списывает фарш, а не мясо.
+  r = await call("office_doc_save", { token: t, doc_type: "transfer", doc_date: "2024-06-03", store_from: K, store_to: P, lines: [{ item_code: farsh, qty: 2 }] });
+  r = await call("office_doc_post", { token: t, id: r.id });
+  check("раскладка: фарш перемещён на точку", r.ok && near(await bal(P, farsh), 2), r);
+  await report("2024-06-04", [{ item_code: kotl, item_name: "котлета", qty: 10, price: 500 }]);
+  doc = await saleDoc("2024-06-04");
+  check("раскладка: фарш на точке готовым - списан фарш 1 и мука 0,1, мясо не тронуто",
+    doc && near(cq(doc, farsh), 1) && near(cq(doc, muka), 0.1) && cq(doc, myaso) === 0 && near(await bal(P, farsh), 1) && near(await bal(P, myaso), 9.2),
+    doc && doc.consume);
+
+  // 4. Полуфабрикат, выпущенный в том же акте, расходуется готовым: фарш берёт выпущенный лук очищ ПФ, а не лук.
+  r = await call("office_doc_save", { token: t, doc_type: "production", doc_date: "2024-06-05", store_from: K, lines: [{ item_code: lukPf, qty: 1 }, { item_code: farsh, qty: 2 }] });
+  const act2 = r.id;
+  r = await call("office_doc_post", { token: t, id: act2 });
+  doc = (await call("office_doc_get", { token: t, id: act2 })).doc;
+  check("раскладка: акт с полуфабрикатом внутри - фарш: лук очищ ПФ 0,4 и мясо 1,6; лук очищ ПФ: лук 1,25",
+    r.ok && near(forItem(doc, farsh, lukPf), 0.4) && near(forItem(doc, farsh, myaso), 1.6) && near(forItem(doc, lukPf, luk), 1.25) && forItem(doc, farsh, luk) === 0,
+    doc && doc.consume);
+  check("раскладка: лук очищ ПФ на кухне 0,6", near(await bal(K, lukPf), 0.6), await bal(K, lukPf));
+
+  // 5. Списание: компот ПФ на точке не хранится - списывается сахар; фарш там готовым - списывается сам.
+  r = await call("office_doc_save", { token: t, doc_type: "writeoff", doc_date: "2024-06-06", store_from: P, reason: "spoilage",
+    lines: [{ item_code: kompPf, qty: 0.5 }, { item_code: farsh, qty: 0.2 }] });
+  const wo = r.id;
+  r = await call("office_doc_preview", { token: t, id: wo });
+  check("раскладка: предпросмотр списания - сахар 0,05 по техкарте", r.ok && near((r.consume.find((c) => c.item_code === sahar) || {}).qty, 0.05), r.consume);
+  r = await call("office_doc_post", { token: t, id: wo });
+  check("раскладка: списание - сахар 0,05 по техкарте, фарш 0,2 как есть, компот ПФ не в минусе",
+    // фарш пришёл с кухни по себестоимости акта: (2,4 × 1000 + 0,75 × 50) / 3 = 812,5 за кг
+    r.ok && near(await bal(P, sahar), 9.85) && near(await bal(P, farsh), 0.8) && near(await bal(P, kompPf), 0) && near(r.total_sum, 0.05 * 200 + 0.2 * 812.5, 0.01),
+    { r, sahar: await bal(P, sahar), farsh: await bal(P, farsh) });
+
+  // 6. Ревизия: компот ПФ 2 л - это сахар 0,2 к пересчитанному сахару; котлеты 3 шт - фарш 0,3 (готовым) и мука 0,03.
+  // Сырьё, которого нет в описи (мука), не трогается: пересчитано только то, что в строках, - предпросмотр это называет.
+  r = await call("office_doc_save", { token: t, doc_type: "inventory", doc_date: "2024-06-07", store_from: P,
+    lines: [{ item_code: kompPf, fact_qty: 2 }, { item_code: sahar, fact_qty: 9 }, { item_code: kotl, fact_qty: 3 }, { item_code: farsh, fact_qty: 0.5 }] });
+  const inv = r.id;
+  r = await call("office_doc_preview", { token: t, id: inv });
+  check("раскладка: предпросмотр ревизии - разложит компот и котлеты, муки нет в описи",
+    r.ok && near((r.consume.find((c) => c.item_code === sahar) || {}).qty, 0.2) && near((r.consume.find((c) => c.item_code === farsh) || {}).qty, 0.3)
+    && (r.skipped || []).some((s) => s.item_code === muka) && !(r.skipped || []).some((s) => s.item_code === sahar), r);
+  r = await call("office_doc_post", { token: t, id: inv });
+  check("раскладка: ревизия - сахар 9 + 0,2 из компота, фарш 0,5 + 0,3 из котлет, мука не тронута, ПФ и блюдо без остатка",
+    r.ok && near(await bal(P, sahar), 9.2) && near(await bal(P, farsh), 0.8) && near(await bal(P, muka), 9.8) && near(await bal(P, kompPf), 0) && near(await bal(P, kotl), 0),
+    { r, sahar: await bal(P, sahar), farsh: await bal(P, farsh), muka: await bal(P, muka), kotl: await bal(P, kotl) });
+  doc = (await call("office_doc_get", { token: t, id: inv })).doc;
+  check("раскладка: в проведённой ревизии видно разложенное", doc && doc.consume.some((c) => c.item_code === sahar && c.for_item === kompPf && near(c.qty, 0.2)), doc && doc.consume);
+  r = await call("office_doc_unpost", { token: t, id: inv });
+  check("раскладка: отмена ревизии вернула остатки", r.ok && near(await bal(P, sahar), 9.85) && near(await bal(P, farsh), 0.8), { r, sahar: await bal(P, sahar) });
+  doc = (await call("office_doc_get", { token: t, id: inv })).doc;
+  check("раскладка: после отмены разложенного в ревизии нет", doc && doc.consume.length === 0, doc && doc.consume);
+  await call("office_doc_delete", { token: t, id: inv });
+
+  // 7. Сводка собственника: «расход сырья» - тоже до сырья (компот 200 → сахар, а не компот ПФ).
+  r = await call("dashboard", { pin, from: "2024-06-02", to: "2024-06-02" });
+  const ru = (r.raw_usage || []);
+  check("раскладка: сводка - расход сырья до сырья (сахар 0,1, мясо 0,8), без полуфабрикатов",
+    r.ok && ru.some((x) => x.name === "ZZ_TEST_р сахар" && near(x.amount, 0.1)) && ru.some((x) => x.name === "ZZ_TEST_р мясо" && near(x.amount, 0.8))
+    && !ru.some((x) => /ПФ/.test(x.name) && /^ZZ_TEST_р/.test(x.name)), ru);
+
+  await call("office_store_save", { token: t, id: P, name: "ZZ_TEST_склад раскладки", point_id: null, is_default: false });
+};
+
 // migrate и reimport требуют TANDEM_OWNER_PIN и в "all" входят только при его наличии;
 // любой раздел кроме auth/migrate сначала прогоняет auth — ему нужен токен.
 const NEEDS_OWNER = ["migrate", "reimport", "gate"];
