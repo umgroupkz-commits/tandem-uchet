@@ -2,9 +2,9 @@
 // попадает в дневной отчёт точки и на склад (миграция 0033). Связь на точках нестабильная, поэтому
 // чек сначала кладётся в очередь планшета (localStorage) и досылается в фоне; сервер узнаёт
 // повторную досылку по uid и второй чек не создаёт.
-import { el, fmt, toast, today, debounce, isoDate } from "../office/ui.js?v=33";
-import { mountOrders, stopOrders } from "./orders.js?v=33";
-import { initFiscal, fiscalOn, fiscalize, retryPending, fiscalBadges, xReport, moneyOp, autoPrint, setAutoPrint, pendingCount, queueFiscal, moneyJournal } from "./fiscal.js?v=33";
+import { el, fmt, toast, today, debounce, isoDate } from "../office/ui.js?v=34";
+import { mountOrders, stopOrders } from "./orders.js?v=34";
+import { initFiscal, fiscalOn, fiscalize, retryPending, fiscalBadges, xReport, moneyOp, autoPrint, setAutoPrint, pendingCount, queueFiscal, moneyJournal } from "./fiscal.js?v=34";
 
 // Без config.js (не загрузился): на GitHub Pages - тестовая база Supabase, на любом другом адресе - сервер на том же
 // адресе (рабочий прокси и стенды отдают экраны и API вместе). Раньше запасным везде был Supabase, и рабочий экран
@@ -303,9 +303,12 @@ function drawState(text, retry) {
   const t = $("tiles"); t.innerHTML = "";
   t.append(el("div", { class: "state" }, text, retry ? el("div", {}, el("button", { onclick: retry }, "Повторить")) : null));
 }
+// 0073: кнопка группы - папка как в iiko («Завтрак · ТЭМК», «Выпечка · ТЭМК Вып»): одноимённые группы разных папок
+// больше не сливаются. Старый сервер или меню из кэша без folder - по имени группы, как раньше.
+const folderOf = (i) => i.folder || i.category;
 function drawChips() {
   const c = $("chips"); c.innerHTML = "";
-  const cats = [...new Set(S.items.map((i) => i.category).filter(Boolean))].sort((a, b) => a.localeCompare(b, "ru"));
+  const cats = [...new Set(S.items.map(folderOf).filter(Boolean))].sort((a, b) => a.localeCompare(b, "ru"));
   const list = [["__all", "Все"], ...cats.map((x) => [x, x])];
   if (S.items.some((i) => i.rank !== null && i.rank !== undefined)) list.unshift(["__fav", "Частые"]);
   for (const [id, title] of list)
@@ -315,7 +318,7 @@ function visibleItems() {
   if (S.q) { const words = norm(S.q).split(" ").filter(Boolean); return S.items.filter((i) => words.every((w) => i._n.includes(w))); }
   if (S.cat === "__fav") return S.items.filter((i) => i.rank !== null && i.rank !== undefined).sort((a, b) => a.rank - b.rank);
   if (S.cat === "__all") return S.items;
-  return S.items.filter((i) => i.category === S.cat);
+  return S.items.filter((i) => folderOf(i) === S.cat);
 }
 function drawTiles() {
   const t = $("tiles"); t.innerHTML = "";

@@ -1,6 +1,6 @@
-import { api, session, setSession, can, BUILD } from "./api.js?v=33";
-import { el, toast, errText, modal } from "./ui.js?v=33";
-import { fmtDateTime } from "./inputs.js?v=33";
+import { api, session, setSession, can, BUILD } from "./api.js?v=34";
+import { el, toast, errText, modal } from "./ui.js?v=34";
+import { fmtDateTime } from "./inputs.js?v=34";
 
 // Замечания разбирают администратор и собственник (сервер 0044 проверяет роль, а не права раздела:
 // в role_permissions такого раздела нет).
@@ -22,7 +22,7 @@ const allowedSections = () => SECTIONS.filter((x) => (x.allow ? x.allow() : can(
 // собственник — отчёты склада, технолог — техкарты. Раньше все попадали в «Номенклатуру»
 // (1 644 позиции), и первым делом приходилось искать нужный раздел. Администратор — как раньше.
 const ROLE_START = { storekeeper: { id: "stock", tab: "docs" }, accountant: { id: "stock", tab: "docs" },
-  owner: { id: "stock", tab: "rep" }, technologist: { id: "charts" }, smm: { id: "leads" } };
+  owner: { id: "stock", tab: "rep" }, technologist: { id: "charts" }, smm: { id: "leads" }, techbuh: { id: "stock", tab: "docs" } };
 const $ = (id) => document.getElementById(id);
 let current = null;
 // Вход только что выполнен (а не страница перезагружена с живой сессией): стартовый экран роли.
@@ -138,7 +138,7 @@ function start() {
   if (s.must_change_pin) { showPinChange(false); return; }
   show("shell");
   $("uname").textContent = s.user.name;
-  $("urole").textContent = { admin: "администратор", owner: "собственник", accountant: "бухгалтер", technologist: "технолог", storekeeper: "кладовщик", smm: "СММ" }[s.user.role] || s.user.role;
+  $("urole").textContent = { admin: "администратор", owner: "собственник", accountant: "бухгалтер", technologist: "технолог", storekeeper: "кладовщик", smm: "СММ", techbuh: "технолог-бухгалтер" }[s.user.role] || s.user.role;
   // «Телефон» (stock.html) - только ролям с операциями склада с телефона: технолог и СММ попадали на «У вашей роли
   // нет складских операций» (обход кнопок, ревизия 22.11.2026). Права - те же, что у сценариев js/stock/app.js.
   const phone = $("phonelink");
@@ -212,7 +212,7 @@ async function refreshFbCount(quiet) {
 setInterval(() => { if (session() && fbReader() && !$("shell").hidden && !document.hidden) refreshFbCount(true); }, 600000);
 
 const FB_SRC = { office: "бэк-офис", stock: "склад с телефона", kassa: "касса", point: "точка", order: "заявка", owner: "собственник", driver: "водитель" };
-const FB_ROLE = { admin: "администратор", owner: "собственник", accountant: "бухгалтер", technologist: "технолог", storekeeper: "кладовщик", smm: "СММ", driver: "водитель" };
+const FB_ROLE = { admin: "администратор", owner: "собственник", accountant: "бухгалтер", technologist: "технолог", storekeeper: "кладовщик", smm: "СММ", techbuh: "технолог-бухгалтер", driver: "водитель" };
 // Сведения, которые приложила кнопка: подписи по-русски, неизвестные поля — как пришли.
 const FB_CTX = { base: "База", site: "Сайт", screen: "Экран", url: "Страница", build: "Сборка", w: "Ширина окна", h: "Высота окна", online: "Связь", last_error: "Последняя ошибка",
   on_screen: "На экране", at: "Время на устройстве", ua: "Браузер" };

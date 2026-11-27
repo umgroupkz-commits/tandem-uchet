@@ -1,7 +1,7 @@
-import { api, session } from "./api.js?v=33";
-import { el, toast, modal, errText } from "./ui.js?v=33";
+import { api, session } from "./api.js?v=34";
+import { el, toast, modal, errText } from "./ui.js?v=34";
 
-const ROLES = { admin: "администратор", owner: "собственник", accountant: "бухгалтер", technologist: "технолог", storekeeper: "кладовщик", smm: "СММ (заявки WhatsApp)" };
+const ROLES = { admin: "администратор", owner: "собственник", accountant: "бухгалтер", technologist: "технолог", storekeeper: "кладовщик", smm: "СММ (заявки WhatsApp)", techbuh: "технолог-бухгалтер (ревизии, приходы, перемещения, техкарты)" };
 // Склады — полным списком, с выключенными: склад, закреплённый за пользователем и потом
 // выключенный, должен оставаться в его карточке. По алфавиту — как ищут глазами.
 let root, stores = [];

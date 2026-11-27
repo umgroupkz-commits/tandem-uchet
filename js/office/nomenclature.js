@@ -1,10 +1,10 @@
-import { api, can } from "./api.js?v=33";
-import { el, fmt, toast, debounce, modal, confirmDlg, errText, saveFailed } from "./ui.js?v=33";
-import { loadXlsx } from "./stock.js?v=33";
-import { numInput, parseNum, numStr, fmtDate, fmtMoney } from "./inputs.js?v=33";
+import { api, can } from "./api.js?v=34";
+import { el, fmt, toast, debounce, modal, confirmDlg, errText, saveFailed } from "./ui.js?v=34";
+import { loadXlsx } from "./stock.js?v=34";
+import { numInput, parseNum, numStr, fmtDate, fmtMoney } from "./inputs.js?v=34";
 // hooks.editDoc ставит stock.js при загрузке (он уже импортирован выше ради loadXlsx): ссылка на приход
 // из карточки открывает тот же документ, что и журнал склада.
-import { hooks, stores, setStores } from "./stock-common.js?v=33";
+import { hooks, stores, setStores } from "./stock-common.js?v=34";
 
 const TYPES = { goods: "товар", dish: "блюдо", prepared: "полуфабрикат", service: "услуга" };
 let groups = [], state = { q: "", group_id: "", item_type: "", active: "true", page: 1 };
@@ -48,7 +48,13 @@ function drawTree() {
     el("button", { class: state.group_id === "" ? "on" : "", onclick: () => pick("") }, "Все позиции"));
   const byId = new Map(groups.map((g) => [g.id, g]));
   const shownParent = (g) => { const p = g.parent_id ? byId.get(g.parent_id) : null; return p && p.active ? p.id : null; };
-  const kids = (pid) => groups.filter((g) => g.active && shownParent(g) === pid).sort((a, b) => a.sort_order - b.sort_order || a.name.localeCompare(b.name, "ru"));
+  // Пустые группы (ни одной активной позиции ни в ней, ни во вложенных - больницы, реал гарниры после разбора номенклатуры)
+  // спрятаны: они загромождали список. Кнопка внизу показывает их; выбранная группа видна всегда.
+  const full = new Map();
+  const hasItems = (g) => { if (full.has(g.id)) return full.get(g.id); full.set(g.id, false);
+    const v = Number(g.items_count) > 0 || groups.some((c) => c.parent_id === g.id && c.active && hasItems(c)); full.set(g.id, v); return v; };
+  const shown = (g) => state.showEmpty || g.id === state.group_id || hasItems(g);
+  const kids = (pid) => groups.filter((g) => g.active && shownParent(g) === pid && shown(g)).sort((a, b) => a.sort_order - b.sort_order || a.name.localeCompare(b.name, "ru"));
   const walk = (pid, depth) => {
     for (const g of kids(pid)) {
       tree.append(el("button", { class: state.group_id === g.id ? "on" : "", style: `padding-left:${8 + depth * 14}px`, onclick: () => pick(g.id) },
@@ -57,6 +63,9 @@ function drawTree() {
     }
   };
   walk(null, 0);
+  const empty = groups.filter((g) => g.active && !hasItems(g)).length;
+  if (empty) tree.append(el("button", { class: "link", onclick: () => { state.showEmpty = !state.showEmpty; drawTree(); } },
+    state.showEmpty ? "Скрыть пустые группы" : `Показать пустые группы (${empty})`));
   // append(null) вывел бы текст «null» под кнопкой — вторая кнопка только при выбранной группе
   if (can("nomenclature", "edit")) tree.append(...[el("button", { class: "link", onclick: () => editGroup(null) }, "+ Группа"),
     state.group_id ? el("button", { class: "link", onclick: () => editGroup(groups.find((g) => g.id === state.group_id)) }, "Переименовать / переместить") : null].filter(Boolean));

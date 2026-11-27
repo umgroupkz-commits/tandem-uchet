@@ -15,8 +15,8 @@
 // docHtml/chartHtml отдают ту же разметку строкой (проверки сохраняют из неё PDF).
 // Поля новых версий сервера (artikul, posted_by_name, counteragent_bin, from_iiko…) необязательны:
 // нет поля — форма печатается без него. Числа в строках могут прийти и текстом из формы («0,5»).
-import { parseNum, fmtDate, fmtMoney, mulRound2, sumMoney } from "./inputs.js?v=33";
-import { TYPES, REASONS } from "./stock-common.js?v=33";
+import { parseNum, fmtDate, fmtMoney, mulRound2, sumMoney } from "./inputs.js?v=34";
+import { TYPES, REASONS } from "./stock-common.js?v=34";
 
 // Причины, которых может ещё не быть в общем справочнике (новые причины списания и ввод остатков).
 const MORE_REASONS = { defect: "брак", hospitality: "представительские", internal: "хозяйственные нужды", opening: "ввод начальных остатков" };
@@ -178,6 +178,22 @@ ${authors(doc)}${signs(["Сдал (поставщик)", "Принял"])}</div>
   return { name: "Приходная накладная", body };
 }
 
+// 0071: расходная накладная покупателю - цены продажи печатаются всегда (это документ для покупателя), себестоимости нет.
+function invoiceOutForm(doc) {
+  const L = doc.lines || [];
+  const sums = L.map((l) => lineSum(l, true));
+  const cols = [colNo, colCode(L), colName(), colUnit, { h: "Кол-во", cls: "num", w: "19mm", get: (l) => qty(l.qty) },
+    { h: "Цена", cls: "num", w: "22mm", get: (l) => price(l.price) }, { h: "Сумма", cls: "num", w: "25mm", get: (l, i) => money(sums[i]) }];
+  const total = sumOf(sums);
+  const body = `<div class="org">Тандем</div><h1>${esc(title("Расходная накладная", doc))}</h1>${draftMark(doc)}
+${req([["Покупатель", esc(doc.counteragent_name || "-") + (doc.counteragent_bin ? `, БИН/ИИН ${esc(doc.counteragent_bin)}` : "")],
+  ["Склад-отправитель", esc(doc.store_from_name || "")], ["Комментарий", esc(doc.comment || "")]])}
+${grid(cols, L, totalRow(cols, { "Сумма": money(total) }))}
+<div class="end"><div class="sum"><div>Всего ${names(L.length)}, на сумму <b>${money(total)} ₸</b></div></div>
+${authors(doc)}${signs(["Отпустил", "Получил (покупатель)"])}</div>`;
+  return { name: "Расходная накладная", body };
+}
+
 function transferForm(doc, o) {
   const L = doc.lines || [];
   const posted = doc.status === "posted";
@@ -308,7 +324,7 @@ ${cons.count ? `<h2>Списано со склада</h2>${cons.html}` : ""}
   return { name: TYPES.sale || "Продажа", body };
 }
 
-const FORMS = { invoice_in: invoiceForm, transfer: transferForm, writeoff: writeoffForm, production: productionForm, inventory: inventoryForm, sale: saleForm };
+const FORMS = { invoice_in: invoiceForm, invoice_out: invoiceOutForm, transfer: transferForm, writeoff: writeoffForm, production: productionForm, inventory: inventoryForm, sale: saleForm };
 
 export function docHtml(src, o = {}) {
   // Принимаем и документ (r.doc), и весь ответ doc_get.

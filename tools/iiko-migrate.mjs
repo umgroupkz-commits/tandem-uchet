@@ -101,7 +101,8 @@ const d = await load();
 const unitName = Object.fromEntries(d.units.map((u) => [u.id, u.name]));
 const typeMap = { GOODS: "goods", DISH: "dish", PREPARED: "prepared", SERVICE: "service" };
 
-const groups = d.groups.map((g, i) => ({ id: g.groupId, name: g.name, deleted: !!g.isDeleted, sort: i }));
+// 0073: parent - iiko_id родительской группы: перенос ставит вложенность папок, как в iiko.
+const groups = d.groups.map((g, i) => ({ id: g.groupId, name: g.name, deleted: !!g.isDeleted, sort: i, parent: g.parentId || null }));
 const stores = d.stores.map((s) => ({ id: s.id, name: s.name, organization_id: s.organizationId || null, deleted: !!s.deleted }));
 const counteragents = d.counteragents.map((c) => ({
   id: c.id, name: c.name,
